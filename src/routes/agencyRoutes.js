@@ -7,6 +7,8 @@ const {
   createAgency,
   updateAgency,
   deleteAgency,
+  learnAgencyPattern,
+  refreshAgencyFiles,
 } = require('../controllers/agencyController');
 
 const router = express.Router();
@@ -19,5 +21,7 @@ router.get('/:id', getAgencyById);
 router.put('/:id', updateAgency);
 router.patch('/:id', updateAgency);
 router.delete('/:id', deleteAgency);
+router.post('/:id/learn-pattern', learnAgencyPattern);
+router.post('/:id/refresh-files', refreshAgencyFiles);
 
 module.exports = router;

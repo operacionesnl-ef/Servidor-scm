@@ -5,7 +5,10 @@ const authRoutes = require('./authRoutes');
 const agencyRoutes = require('./agencyRoutes');
 const gmailRoutes = require('./gmailRoutes');
 const userRoutes = require('./userRoutes');
+const templateRoutes = require('./templateRoutes');
 
+
+router.use('/templates', templateRoutes);
 router.use('/auth', authRoutes);
 router.use('/agencies', agencyRoutes);
 router.use('/gmail', gmailRoutes);
