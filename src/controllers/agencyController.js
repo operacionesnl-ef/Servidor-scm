@@ -354,6 +354,7 @@ const deleteAgency = async (req, res, next) => {
       });
     }
 
+    req.auditRecovery = { entity: 'Agency', snapshot: agency.toObject({ depopulate: true }) };
     await agency.deleteOne();
     return success(res, { id: agency._id }, 'Agency deleted');
   } catch (err) {

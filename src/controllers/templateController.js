@@ -112,6 +112,7 @@ const deleteTemplate = async (req, res) => {
       return res.status(404).json({ ok: false, message: 'Plantilla no encontrada.' });
     }
 
+    req.auditRecovery = { entity: 'Template', snapshot: template.toObject({ depopulate: true }) };
     res.json({ ok: true, message: 'Plantilla eliminada correctamente.' });
   } catch (error) {
     console.error('[templateController] deleteTemplate:', error);

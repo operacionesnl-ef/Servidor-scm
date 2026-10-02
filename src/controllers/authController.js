@@ -1,6 +1,7 @@
 const { OAuth2Client } = require('google-auth-library');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { logServerEvent } = require('../utils/serverLogger');
 
 const googleClient = new OAuth2Client();
 
@@ -46,12 +47,15 @@ const googleLogin = async (req, res, next) => {
       JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
+    await logServerEvent('session_started', { userId: user._id });
+    req.user = user;
 
     return res.json({
       user: {
         _id: user._id,
         nombre: user.nombre,
         correo: user.correo,
+        rol: user.rol,
         status: user.status,
       },
       token,

@@ -4,6 +4,11 @@ const userSchema = new mongoose.Schema(
   {
     nombre: { type: String, required: true, trim: true },
     correo: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    rol: {
+      type: String,
+      enum: ['developer', 'admin', 'user'],
+      default: 'user',
+    },
     status: {
       type: String,
       enum: ['activo', 'inactivo', 'suspendido'],

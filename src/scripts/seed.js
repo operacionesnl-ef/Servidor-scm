@@ -70,11 +70,11 @@ async function seed() {
 
   // ── Usuarios ──────────────────────────────────────────
   const usersData = [
-    { nombre: 'Ana García',      correo: 'ana.garcia@ejemplo.com',      status: 'activo' },
-    { nombre: 'Carlos López',    correo: 'carlos.lopez@ejemplo.com',    status: 'activo' },
-    { nombre: 'María Rodríguez', correo: 'maria.rodriguez@ejemplo.com', status: 'inactivo' },
-    { nombre: 'Jorge Martínez',  correo: 'jorge.martinez@ejemplo.com',  status: 'activo' },
-    { nombre: 'Laura Sánchez',   correo: 'laura.sanchez@ejemplo.com',   status: 'suspendido' },
+    { nombre: 'Ana García',      correo: 'ana.garcia@ejemplo.com',      rol: 'developer', status: 'activo' },
+    { nombre: 'Carlos López',    correo: 'carlos.lopez@ejemplo.com',    rol: 'admin',     status: 'activo' },
+    { nombre: 'María Rodríguez', correo: 'maria.rodriguez@ejemplo.com', rol: 'user',      status: 'inactivo' },
+    { nombre: 'Jorge Martínez',  correo: 'jorge.martinez@ejemplo.com',  rol: 'user',      status: 'activo' },
+    { nombre: 'Laura Sánchez',   correo: 'laura.sanchez@ejemplo.com',   rol: 'user',      status: 'suspendido' },
   ];
 
   const users = await User.insertMany(

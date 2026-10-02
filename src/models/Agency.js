@@ -42,10 +42,10 @@ const agencySchema = new mongoose.Schema(
     archivos: {
       carpetaPrincipal: { type: String, trim: true },
       carpetaBase: { type: String, trim: true },
-      archivo1: archivoSchema,
-      archivo2: archivoSchema,
-      archivo3: archivoSchema,
-      archivo4: archivoSchema,
+      archivo1: archivoSchema, //ANX
+      archivo2: archivoSchema, //FOR
+      archivo3: archivoSchema, //REP
+      archivo4: archivoSchema, //REV
     },
     // Mapa aprendido: una entrada por cada archivoN
     drivePattern: {
