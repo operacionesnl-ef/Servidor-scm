@@ -11,7 +11,7 @@ const GOOGLE_EXPORT_TYPES = {
   'application/vnd.google-apps.presentation': 'application/pdf',
   'application/vnd.google-apps.drawing': 'image/png',
 };
-const MAX_ATTACHMENT_BYTES = 18 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
 let workerPromise = null;
 let pollTimer = null;
@@ -42,7 +42,7 @@ async function readDriveFile(drive, file) {
   for await (const chunk of response.data) {
     const buffer = Buffer.from(chunk);
     size += buffer.length;
-    if (size > MAX_ATTACHMENT_BYTES) throw new Error(`El archivo ${metadata.name} supera el límite de 20 MB.`);
+    if (size > MAX_ATTACHMENT_BYTES) throw new Error(`El archivo ${metadata.name} supera el límite de 40 MB.`);
     chunks.push(buffer);
   }
 
@@ -60,7 +60,7 @@ async function buildAttachments(drive, recipient, globalAttachments) {
   for (const file of files) {
     const attachment = await readDriveFile(drive, file);
     totalBytes += attachment.content.length;
-    if (totalBytes > MAX_ATTACHMENT_BYTES) throw new Error('Los adjuntos superan el límite total de 20 MB.');
+    if (totalBytes > MAX_ATTACHMENT_BYTES) throw new Error('Los adjuntos superan el límite total de 40 MB.');
     attachments.push({ ...attachment, code: file.code, driveId: file.driveId });
   }
   return attachments;
