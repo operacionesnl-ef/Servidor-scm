@@ -25,6 +25,13 @@ El worker envía destinatarios en serie y guarda cada resultado. Si falla la aut
 
 Mantén `JWT_SECRET` como secreto aleatorio, privado y estable entre reinicios. En producción, usa HTTPS y agrega el origen exacto del frontend a `CORS_ORIGINS`. Ejecuta `npm start` bajo un administrador de procesos (por ejemplo, systemd, PM2 o el servicio de contenedores) y conserva MongoDB disponible para persistir los trabajos.
 
+## Actualización de archivos de agencias
+El front solicita el permiso `https://www.googleapis.com/auth/drive.readonly` y crea una tarea con `POST /api/agencies/refresh-jobs`, enviando los IDs de agencia, el período y el access token temporal de Google. El servidor valida el permiso, cifra el token y recorre las carpetas de Drive desde Node; los descendientes ya no se envían desde el navegador.
+
+Los trabajos y su progreso se guardan en MongoDB. `GET /api/agencies/refresh-jobs/active` recupera la tarea activa del usuario y `GET /api/agencies/refresh-jobs/:jobId` consulta el estado; al reiniciar Node, las tareas en proceso se reanudan. El token no se devuelve en respuestas ni se escribe en logs. Los trabajos sin incidencias caducan después de 30 días; los que registran fallos se conservan como historial. La actualización individual también usa `POST /api/agencies/:id/refresh-files` con `year`, `month`, `folderId` opcional y `googleAccessToken`.
+
+El Administrador de Agencias crea verificaciones completas con `POST /api/agencies/integrity-jobs`; `GET /api/agencies/integrity-jobs/active` consulta el proceso activo. El worker comprueba cada archivo vinculado contra Drive (acceso, nombre/marca, período, fecha de modificación y peso) y conserva los detalles por agencia en el mismo historial. `GET /api/agencies/maintenance/history?limit=30` devuelve procesos terminados con incidencias del usuario autenticado. Los permisos de Drive siguen siendo validados antes de encolar el trabajo.
+
 ## Actividad y recuperación
 La consola imprime cada solicitud con usuario, ruta, estado, duración y datos de entrada sanitizados; tokens y contraseñas siempre se redactan. MongoDB guarda acciones de todos los usuarios en `ActivityLog`, asociadas al actor. Las lecturas repetidas iguales se agrupan durante un minuto; su contador evita llenar la colección con consultas de sondeo. Los registros caducan en 365 días por defecto; configura `ACTIVITY_LOG_RETENTION_DAYS` para cambiar el plazo.
 

@@ -9,7 +9,9 @@ test('encrypts Google tokens and decrypts them with the application secret', () 
     const encrypted = encryptGoogleToken('google-access-token');
     assert.notEqual(encrypted, 'google-access-token');
     assert.equal(decryptGoogleToken(encrypted), 'google-access-token');
-    assert.throws(() => decryptGoogleToken(`${encrypted.slice(0, -1)}x`));
+    const [iv, tag, ciphertext] = encrypted.split('.');
+    const firstCharacter = ciphertext[0] === 'A' ? 'B' : 'A';
+    assert.throws(() => decryptGoogleToken(`${iv}.${tag}.${firstCharacter}${ciphertext.slice(1)}`));
   } finally {
     if (originalSecret === undefined) delete process.env.JWT_SECRET;
     else process.env.JWT_SECRET = originalSecret;

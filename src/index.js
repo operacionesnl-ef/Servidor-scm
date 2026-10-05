@@ -8,6 +8,7 @@ const auditActivity = require('./middlewares/auditActivity');
 const notFound = require('./middlewares/notFound');
 const errorHandler = require('./middlewares/errorHandler');
 const { startMailJobWorker } = require('./services/mailJobWorker');
+const { startAgencyRefreshJobWorker } = require('./services/agencyRefreshJobWorker');
 const { logServerEvent } = require('./utils/serverLogger');
 
 const app = express();
@@ -43,6 +44,7 @@ app.use(errorHandler);
 
 connectDB().then(async () => {
   await startMailJobWorker();
+  await startAgencyRefreshJobWorker();
   app.listen(PORT, async () => {
     await logServerEvent('server_started');
     console.info(JSON.stringify({

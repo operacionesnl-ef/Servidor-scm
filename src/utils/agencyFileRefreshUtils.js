@@ -27,6 +27,7 @@ const isDriveFolder = (file) => file.mimeType === 'application/vnd.google-apps.f
 function periodFromSegments(segments) {
   const years = [];
   const months = [];
+  const directPeriods = [];
 
   segments.forEach((rawSegment, index) => {
     const segment = normalize(rawSegment);
@@ -34,45 +35,104 @@ function periodFromSegments(segments) {
       years.push({ year: Number(match[0]), index });
     }
 
+    const combinedDate = segment.match(/(?:^|\D)((?:19|20)\d{2})\D+(0?[1-9]|1[0-2])(?:\D|$)/);
+    const reversedDate = segment.match(/(?:^|\D)(0?[1-9]|1[0-2])\D+((?:19|20)\d{2})(?:\D|$)/);
+    if (combinedDate) directPeriods.push({ year: Number(combinedDate[1]), month: Number(combinedDate[2]), index });
+    if (reversedDate) directPeriods.push({ year: Number(reversedDate[2]), month: Number(reversedDate[1]), index });
+
     MONTH_NAMES.forEach((name, monthIndex) => {
       if (new RegExp(`(^|[^a-z])${name}([^a-z]|$)`).test(segment)) {
-        months.push({ month: monthIndex + 1, index });
+        months.push({ month: monthIndex + 1, index, explicit: true });
       }
     });
 
-    const combinedDate = segment.match(/(?:19|20)\d{2}\D+(0?[1-9]|1[0-2])(?:\D|$)/);
-    if (combinedDate) months.push({ month: Number(combinedDate[1]), index });
-    const reversedDate = segment.match(/(?:^|\D)(0?[1-9]|1[0-2])\D+(?:19|20)\d{2}(?:\D|$)/);
-    if (reversedDate) months.push({ month: Number(reversedDate[1]), index });
-
     if (/^(0?[1-9]|1[0-2])$/.test(segment)) {
-      months.push({ month: Number(segment), index });
+      months.push({ month: Number(segment), index, explicit: false });
     }
   });
+
+  if (directPeriods.length) {
+    directPeriods.sort((left, right) => right.index - left.index);
+    return directPeriods[0];
+  }
 
   const pairs = [];
   years.forEach((year) => {
     months.forEach((month) => {
       const distance = Math.abs(year.index - month.index);
-      if (distance <= 2) pairs.push({ year: year.year, month: month.month, distance });
+      if (distance <= 2) pairs.push({
+        year: year.year,
+        month: month.month,
+        distance,
+        monthIndex: month.index,
+        explicit: month.explicit,
+      });
     });
   });
 
-  pairs.sort((left, right) => left.distance - right.distance);
+  pairs.sort((left, right) => (
+    Number(right.explicit) - Number(left.explicit) ||
+    left.distance - right.distance ||
+    right.monthIndex - left.monthIndex
+  ));
   return pairs[0] ? { year: pairs[0].year, month: pairs[0].month } : null;
+}
+
+function periodFromFilenameForFolderMonth(name, folderMonth) {
+  const dates = [...String(name || '').matchAll(/(?:^|[^\d])(\d{1,2})[-./](\d{1,2})[-./](\d{2,4})(?=$|[^\d])/g)]
+    .map((match) => {
+      const first = Number(match[1]);
+      const second = Number(match[2]);
+      let year = Number(match[3]);
+      if (year < 100) year += 2000;
+      const month = first > 12 ? second : second > 12 ? first : second;
+      const day = first > 12 ? first : second > 12 ? second : first;
+      if (day < 1 || day > 31 || month < 1 || month > 12) return null;
+      const date = new Date(Date.UTC(year, month - 1, day));
+      if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day) return null;
+      return { year, month };
+    })
+    .filter(Boolean);
+
+  const sourceDate = dates[0];
+  return sourceDate?.month === folderMonth
+    ? { year: sourceDate.year, month: sourceDate.month }
+    : null;
 }
 
 function getFilePeriod(file) {
   const folderPath = Array.isArray(file.folderPath) ? file.folderPath.flatMap(splitPath) : [];
-  const pathFolders = splitPath(file.path).slice(0, -1);
-  const sources = [folderPath, pathFolders, [file.name]];
+  const pathValue = String(file.path || '').trim();
+  const pathWithoutFileName = file.name && pathValue.endsWith(file.name)
+    ? pathValue.slice(0, -file.name.length).replace(/[\\/]+$/, '')
+    : pathValue;
+  const pathFolders = splitPath(pathWithoutFileName);
+  const sources = folderPath.length ? [folderPath] : [pathFolders].filter((segments) => segments.length);
+  let monthOnlyFolder = null;
+  let hasFolderYear = false;
+
+  for (const segments of sources) {
+    if (segments.some((segment) => /(?:19|20)\d{2}/.test(segment))) hasFolderYear = true;
+    const explicitMonth = segments.reduce((latest, segment) => {
+      const normalized = normalize(segment);
+      const monthIndex = MONTH_NAMES.findIndex((name) => (
+        new RegExp(`(^|[^a-z])${name}([^a-z]|$)`).test(normalized)
+      ));
+      return monthIndex >= 0 ? monthIndex + 1 : latest;
+    }, null);
+    if (explicitMonth) monthOnlyFolder = explicitMonth;
+  }
+
+  if (!hasFolderYear && monthOnlyFolder) {
+    return periodFromFilenameForFolderMonth(file.name, monthOnlyFolder);
+  }
 
   for (const segments of sources) {
     const period = periodFromSegments(segments);
     if (period) return period;
   }
 
-  return null;
+  return monthOnlyFolder ? periodFromFilenameForFolderMonth(file.name, monthOnlyFolder) : null;
 }
 
 function containsIdentifier(value, fileType) {
@@ -146,4 +206,4 @@ function selectRefreshFiles(descendants, year, month) {
   return selected;
 }
 
-module.exports = { FILE_TYPES, selectRefreshFiles };
+module.exports = { FILE_TYPES, identifyFileType, getFilePeriod, selectRefreshFiles };

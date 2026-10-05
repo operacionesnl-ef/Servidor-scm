@@ -5,8 +5,9 @@ const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const mongoose = require('mongoose');
 const Agency = require('../src/models/Agency');
-const { getAgencies, refreshAgencyFiles } = require('../src/controllers/agencyController');
-const { FILE_TYPES, selectRefreshFiles } = require('../src/utils/agencyFileRefreshUtils');
+const { getAgencies } = require('../src/controllers/agencyController');
+const { FILE_TYPES, getFilePeriod, selectRefreshFiles } = require('../src/utils/agencyFileRefreshUtils');
+const { buildAgencyRefresh } = require('../src/services/agencyDriveRefresh');
 
 const MONTH_NAMES = [
   'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
@@ -59,6 +60,49 @@ test('selects the newest recognized period at or before the requested month', ()
   assert.equal(selected.archivo1.period.month, 7);
 });
 
+test('uses October folder metadata instead of a September date in the filename', () => {
+  const octoberFile = driveFile('ANX', 2026, 10, {
+    name: 'ANX-documento-30-09-2026.xlsx',
+  });
+
+  const selected = selectRefreshFiles([octoberFile], 2026, 10);
+
+  assert.equal(selected.archivo1.period.year, 2026);
+  assert.equal(selected.archivo1.period.month, 10);
+});
+
+test('does not infer a period from a dated filename when its folders have no period', () => {
+  const file = driveFile('ANX', 2026, 9, {
+    name: 'ANX-documento-30-09-2026.xlsx',
+    folderPath: ['Agencia', 'Sucursal 09'],
+    path: 'Agencia/Sucursal 09/ANX-documento-30-09-2026.xlsx',
+  });
+
+  assert.equal(selectRefreshFiles([file], 2026, 10).archivo1, null);
+});
+
+test('uses the date belonging to a month-only folder across supported date formats', () => {
+  const names = [
+    'ANX-FOT-KIA-PZA-VER-(20/09/2026).xlsx',
+    'ANX-FOT-KIA-PZA-VER-(20/09/26).xlsx',
+    'ANX-FOT-KIA-PZA-VER-(09/20/2026).xlsx',
+    'ANX-FOT-KIA-PZA-VER-(20/09/2026)-(20/10/2026).xlsx',
+    'ANX-FOT-KIA-PZA-VER-(20/09/26)-(20/10/26).xlsx',
+    'ANX-FOT-KIA-PZA-VER-(09/22/26)-(10/22/2026).xlsx',
+  ];
+
+  for (const name of names) {
+    const file = {
+      ...driveFile('ANX', 2026, 9),
+      name,
+      folderPath: ['VERACRUZ', 'POZA RICA', 'KIA TAJIN', 'Septiembre'],
+      path: `VERACRUZ/POZA RICA/KIA TAJIN/Septiembre/${name}`,
+    };
+    assert.deepEqual(getFilePeriod(file), { year: 2026, month: 9 }, name);
+    assert.equal(selectRefreshFiles([file], 2026, 10).archivo1.period.month, 9, name);
+  }
+});
+
 test('does not choose a newer folder containing only irrelevant files', () => {
   const irrelevant = driveFile('XYZ', 2025, 8);
   const selected = selectRefreshFiles([
@@ -105,7 +149,7 @@ test('reports empty slots and keeps the actual period independently for each fil
   assert.equal(selected.archivo4.period.month, 7);
 });
 
-test('refresh persists files and GET agencies reads their per-file periods from MongoDB', {
+test('refresh results persist files and GET agencies reads their per-file periods from MongoDB', {
   skip: !process.env.TEST_MONGO_URI,
 }, async () => {
   await mongoose.connect(process.env.TEST_MONGO_URI);
@@ -122,29 +166,23 @@ test('refresh persists files and GET agencies reads their per-file periods from 
       },
     });
 
-    const { statusCode, body } = await invokeController(refreshAgencyFiles, {
-      params: { id: agency.id },
-      body: {
-        year: 2025,
-        month: 8,
-        descendants: [
-          driveFile('ANX', 2025, 6),
-          driveFile('REP', 2025, 8),
-          driveFile('REV', 2025, 7),
-          driveFile('XYZ', 2025, 8),
-        ],
-      },
-    });
+    const update = buildAgencyRefresh(agency, [
+      driveFile('ANX', 2025, 6),
+      driveFile('REP', 2025, 8),
+      driveFile('REV', 2025, 7),
+      driveFile('XYZ', 2025, 8),
+    ], 2025, 8);
+    agency.set('archivos', update.archivos);
+    await agency.save();
 
-    assert.equal(statusCode, 200);
-    assert.equal(body.data.summary.found, 3);
-    assert.equal(body.data.summary.missing, 1);
-    assert.equal(body.data.summary.year, 2025);
-    assert.equal(body.data.summary.month, 8);
-    assert.equal(body.data.results.archivo1.periodMonth, 6);
-    assert.equal(body.data.results.archivo2.status, 'missing');
-    assert.equal(body.data.results.archivo3.periodMonth, 8);
-    assert.equal(body.data.results.archivo4.periodMonth, 7);
+    assert.equal(update.summary.found, 3);
+    assert.equal(update.summary.missing, 1);
+    assert.equal(update.summary.year, 2025);
+    assert.equal(update.summary.month, 8);
+    assert.equal(update.results.archivo1.periodMonth, 6);
+    assert.equal(update.results.archivo2.status, 'missing');
+    assert.equal(update.results.archivo3.periodMonth, 8);
+    assert.equal(update.results.archivo4.periodMonth, 7);
 
     const stored = await Agency.findById(agency.id).lean();
     assert.equal(stored.archivos.archivo1.driveId, 'ANX-2025-6');

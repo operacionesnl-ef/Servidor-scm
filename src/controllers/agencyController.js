@@ -1,9 +1,14 @@
 const mongoose = require('mongoose');
+const { google } = require('googleapis');
 const Agency = require('../models/Agency');
+const AgencyRefreshJob = require('../models/AgencyRefreshJob');
 const SentEmail = require('../models/SentEmail');
 const { success } = require('../utils/response');
 const { updateDrivePattern } = require('../utils/drivePatternUtils');
-const { FILE_TYPES, selectRefreshFiles } = require('../utils/agencyFileRefreshUtils');
+const { FILE_TYPES } = require('../utils/agencyFileRefreshUtils');
+const { encryptGoogleToken } = require('../utils/mailJobCrypto');
+const { kickAgencyRefreshJobWorker } = require('../services/agencyRefreshJobWorker');
+const { refreshAgencyFromDrive } = require('../services/agencyDriveRefresh');
 
 const ALLOWED_FIELDS = new Set([
   'nombre',
@@ -16,6 +21,66 @@ const ALLOWED_STATUSES = new Set(['activa', 'inactiva', 'suspendida']);
 const FILE_FIELDS = new Set(['archivo1', 'archivo2', 'archivo3', 'archivo4']);
 const FILE_CODES = { archivo1: 'ANX', archivo2: 'FOR', archivo3: 'REP', archivo4: 'REV' };
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const REQUIRED_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+
+async function validateDriveToken(token) {
+  const oauthClient = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID);
+  oauthClient.setCredentials({ access_token: token });
+  let tokenInfo;
+  try {
+    tokenInfo = await oauthClient.getTokenInfo(token);
+  } catch (error) {
+    if ([400, 401].includes(Number(error.code || error.response?.status))) {
+      const invalidToken = new Error('La autorización de Google Drive expiró. Autoriza Drive e inténtalo de nuevo.');
+      invalidToken.status = 401;
+      throw invalidToken;
+    }
+    throw error;
+  }
+  if (!(tokenInfo.scopes || []).includes(REQUIRED_DRIVE_SCOPE)) {
+    const error = new Error('Falta el permiso de lectura de Google Drive.');
+    error.status = 403;
+    throw error;
+  }
+  return oauthClient;
+}
+
+function serializeAgencyRefreshJob(job) {
+  return {
+    id: String(job._id),
+    kind: job.jobType || 'refresh',
+    status: job.status,
+    year: job.year,
+    month: job.month,
+    total: job.total,
+    completed: job.completed,
+    currentName: job.currentName,
+    scannedFiles: job.scannedFiles,
+    failed: job.results
+      .filter((result) => ['issues', 'failed'].includes(result.status))
+      .map((result) => ({
+        agency: {
+          _id: result.agencyId,
+          nombre: result.agencyName,
+          correo: result.correo,
+          entidadFederativa: result.entidadFederativa,
+          status: result.agencyStatus,
+          archivos: result.files || {},
+        },
+        missingKeys: result.missingKeys,
+        files: result.files || {},
+        selectedFiles: {},
+        error: result.error,
+        missingRoot: result.missingRoot,
+        checks: result.checks || [],
+      })),
+    skipped: job.results.filter((result) => result.status === 'skipped').length,
+    results: job.results,
+    error: job.error,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+  };
+}
 
 const validationFailure = (res, errors) =>
   res.status(400).json({ success: false, message: 'Validation failed', errors });
@@ -427,107 +492,194 @@ const learnAgencyPattern = async (req, res, next) => {
 const refreshAgencyFiles = async (req, res, next) => {
   if (!validateId(req.params.id, res)) return;
 
-  const body = req.body;
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    return validationFailure(res, { body: 'A JSON object is required' });
-  }
-
-  const { year, month, descendants } = body;
-
-  if (!Number.isInteger(year) || year < 2020 || year > 2040)
+  const { year, month, googleAccessToken, folderId } = req.body || {};
+  if (!Number.isInteger(year) || year < 2020 || year > 2040) {
     return validationFailure(res, { year: 'Must be an integer between 2020 and 2040' });
-  if (!Number.isInteger(month) || month < 1 || month > 12)
+  }
+  if (!Number.isInteger(month) || month < 1 || month > 12) {
     return validationFailure(res, { month: 'Must be an integer between 1 and 12' });
-  if (!Array.isArray(descendants))
-    return validationFailure(res, { descendants: 'Must be an array' });
-  if (descendants.length > 10000)
-    return validationFailure(res, { descendants: 'Must contain no more than 10000 entries' });
-
-  const inputErrors = {};
-  descendants.forEach((file, index) => {
-    if (!file || typeof file !== 'object' || Array.isArray(file)) {
-      inputErrors[`descendants.${index}`] = 'Must be an object';
-      return;
-    }
-    if (typeof file.id !== 'string' || !file.id.trim() || file.id.length > 2048) {
-      inputErrors[`descendants.${index}.id`] = 'A Drive ID of at most 2048 characters is required';
-    }
-    if (typeof file.name !== 'string' || !file.name.trim() || file.name.length > 255) {
-      inputErrors[`descendants.${index}.name`] = 'A file name of at most 255 characters is required';
-    }
-    if (file.mimeType !== undefined && (typeof file.mimeType !== 'string' || file.mimeType.length > 255)) {
-      inputErrors[`descendants.${index}.mimeType`] = 'Must be a string of at most 255 characters';
-    }
-    for (const field of ['parents', 'folderPath']) {
-      if (file[field] !== undefined && (
-        !Array.isArray(file[field])
-        || file[field].length > 100
-        || file[field].some((part) => typeof part !== 'string' || part.length > 255)
-      )) {
-        inputErrors[`descendants.${index}.${field}`] = 'Must be an array of at most 100 strings of at most 255 characters';
-      }
-    }
-    if (file.path !== undefined && (typeof file.path !== 'string' || file.path.length > 4096)) {
-      inputErrors[`descendants.${index}.path`] = 'Must be a string of at most 4096 characters';
-    }
-  });
-  if (Object.keys(inputErrors).length) return validationFailure(res, inputErrors);
+  }
+  if (typeof googleAccessToken !== 'string' || !googleAccessToken.trim()) {
+    return validationFailure(res, { googleAccessToken: 'A Google Drive access token is required' });
+  }
+  if (folderId !== undefined && (
+    typeof folderId !== 'string' || !folderId.trim() || folderId.trim().length > 2048
+  )) {
+    return validationFailure(res, { folderId: 'Must be a non-empty Drive folder ID of at most 2048 characters' });
+  }
 
   try {
     const agency = await Agency.findById(req.params.id);
     if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
 
-    const selected = selectRefreshFiles(descendants, year, month);
-    const results = {};
-    const newArchivos = { ...(agency.archivos?.toObject?.() || agency.archivos || {}) };
+    const auth = await validateDriveToken(googleAccessToken.trim());
+    const drive = google.drive({ version: 'v3', auth });
+    const update = await refreshAgencyFromDrive(agency, drive, year, month, folderId?.trim());
 
-    for (const { key } of FILE_TYPES) {
-      const match = selected[key];
-      if (!match) {
-        results[key] = { status: 'missing' };
-        continue;
-      }
+    return success(res, update, 'Files refreshed');
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ success: false, message: err.message });
+    if (Number(err.code || err.response?.status) === 401) {
+      return res.status(401).json({ success: false, message: 'La autorización de Google Drive expiró. Autoriza Drive e inténtalo de nuevo.' });
+    }
+    if (Number(err.code || err.response?.status) === 403) {
+      return res.status(403).json({ success: false, message: 'La cuenta autorizada de Google no tiene acceso a la carpeta seleccionada.' });
+    }
+    return next(err);
+  }
+};
 
-      const file = match.file;
-      const folderPath = Array.isArray(file.folderPath)
-        ? file.folderPath
-        : splitDrivePath(file.path).slice(0, -1);
-      const persistedFile = {
-        nombre: file.name.trim(),
-        ruta: file.parents?.[0] || file.id,
-        driveId: file.id,
-        pseudoPath: folderPath,
-        path: typeof file.path === 'string' && file.path.trim()
-          ? file.path.trim()
-          : [...folderPath, file.name.trim()].join(' / '),
-        periodYear: match.period.year,
-        periodMonth: match.period.month,
-      };
+const createAgencyRefreshJob = async (req, res, next) => {
+  const { agencyIds, year, month, googleAccessToken } = req.body || {};
+  if (
+    !Array.isArray(agencyIds) || agencyIds.length === 0 || agencyIds.length > 500 ||
+    !agencyIds.every((id) => typeof id === 'string' && mongoose.isValidObjectId(id)) ||
+    !Number.isInteger(year) || year < 2020 || year > 2040 ||
+    !Number.isInteger(month) || month < 1 || month > 12 ||
+    typeof googleAccessToken !== 'string' || !googleAccessToken.trim()
+  ) {
+    return res.status(400).json({ message: 'Selecciona agencias, período y autorización de Google Drive válidos.' });
+  }
 
-      newArchivos[key] = persistedFile;
-      results[key] = {
-        status: 'found',
-        file: persistedFile,
-        periodYear: match.period.year,
-        periodMonth: match.period.month,
-      };
+  try {
+    const activeJob = await AgencyRefreshJob.exists({
+      owner: req.user._id,
+      status: { $in: ['queued', 'processing'] },
+    });
+    if (activeJob) {
+      return res.status(409).json({ message: 'Ya tienes un proceso de agencias en curso.' });
     }
 
-    agency.set('archivos', newArchivos);
-    await agency.save();
+    await validateDriveToken(googleAccessToken.trim());
+    const selectedIds = [...new Set(agencyIds.map(String))];
+    const agencies = await Agency.find({ _id: { $in: selectedIds } }).select('_id');
+    if (agencies.length !== selectedIds.length) {
+      return res.status(400).json({ message: 'Una o más agencias ya no existen. Actualiza la lista e inténtalo de nuevo.' });
+    }
 
-    return success(res, {
-      archivos: agency.archivos,
-      results,
-      summary: {
-        found: FILE_TYPES.filter(({ key }) => results[key].status === 'found').length,
-        missing: FILE_TYPES.filter(({ key }) => results[key].status === 'missing').length,
-        year,
-        month,
-      },
-    }, 'Files refreshed');
-  } catch (err) {
-    return next(err);
+    const job = await AgencyRefreshJob.create({
+      owner: req.user._id,
+      ownerEmail: req.user.correo,
+      year,
+      month,
+      agencyIds: selectedIds,
+      total: selectedIds.length,
+      encryptedGoogleAccessToken: encryptGoogleToken(googleAccessToken.trim()),
+    });
+    kickAgencyRefreshJobWorker();
+    return res.status(202).json(serializeAgencyRefreshJob(job));
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    if (Number(error.code || error.response?.status) === 401) {
+      return res.status(401).json({ message: 'La autorización de Google Drive expiró. Autoriza Drive e inténtalo de nuevo.' });
+    }
+    return next(error);
+  }
+};
+
+const getActiveAgencyRefreshJob = async (req, res, next) => {
+  try {
+    const job = await AgencyRefreshJob.findOne({
+      owner: req.user._id,
+      jobType: 'refresh',
+      status: { $in: ['queued', 'processing'] },
+    }).sort({ createdAt: -1 });
+    return res.json(job ? serializeAgencyRefreshJob(job) : null);
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const createAgencyIntegrityJob = async (req, res, next) => {
+  const { agencyIds, year, month, googleAccessToken } = req.body || {};
+  if (
+    !Array.isArray(agencyIds) || agencyIds.length === 0 || agencyIds.length > 500 ||
+    !agencyIds.every((id) => typeof id === 'string' && mongoose.isValidObjectId(id)) ||
+    !Number.isInteger(year) || year < 2020 || year > 2040 ||
+    !Number.isInteger(month) || month < 1 || month > 12 ||
+    typeof googleAccessToken !== 'string' || !googleAccessToken.trim()
+  ) {
+    return res.status(400).json({ message: 'Selecciona agencias, período y autorización de Google Drive válidos.' });
+  }
+
+  try {
+    const activeJob = await AgencyRefreshJob.exists({
+      owner: req.user._id,
+      status: { $in: ['queued', 'processing'] },
+    });
+    if (activeJob) return res.status(409).json({ message: 'Ya tienes un proceso de agencias en curso.' });
+
+    await validateDriveToken(googleAccessToken.trim());
+    const selectedIds = [...new Set(agencyIds.map(String))];
+    const agencies = await Agency.find({ _id: { $in: selectedIds } }).select('_id');
+    if (agencies.length !== selectedIds.length) {
+      return res.status(400).json({ message: 'Una o más agencias ya no existen. Actualiza la lista e inténtalo de nuevo.' });
+    }
+
+    const job = await AgencyRefreshJob.create({
+      owner: req.user._id,
+      ownerEmail: req.user.correo,
+      jobType: 'integrity',
+      year,
+      month,
+      agencyIds: selectedIds,
+      total: selectedIds.length,
+      encryptedGoogleAccessToken: encryptGoogleToken(googleAccessToken.trim()),
+    });
+    kickAgencyRefreshJobWorker();
+    return res.status(202).json(serializeAgencyRefreshJob(job));
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    if (Number(error.code || error.response?.status) === 401) {
+      return res.status(401).json({ message: 'La autorización de Google Drive expiró. Autoriza Drive e inténtalo de nuevo.' });
+    }
+    return next(error);
+  }
+};
+
+const getActiveAgencyIntegrityJob = async (req, res, next) => {
+  try {
+    const job = await AgencyRefreshJob.findOne({
+      owner: req.user._id,
+      jobType: 'integrity',
+      status: { $in: ['queued', 'processing'] },
+    }).sort({ createdAt: -1 });
+    return res.json(job ? serializeAgencyRefreshJob(job) : null);
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const getAgencyMaintenanceHistory = async (req, res, next) => {
+  const limit = req.query.limit === undefined ? 30 : Number(req.query.limit);
+  const skip = req.query.skip === undefined ? 0 : Number(req.query.skip);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    return validationFailure(res, { limit: 'Must be an integer between 1 and 100' });
+  }
+  if (!Number.isInteger(skip) || skip < 0 || skip > 100000) {
+    return validationFailure(res, { skip: 'Must be an integer between 0 and 100000' });
+  }
+  try {
+    const jobs = await AgencyRefreshJob.find({
+      owner: req.user._id,
+      status: { $in: ['completed', 'completed_with_issues', 'failed'] },
+    }).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit);
+    return res.json(jobs.map(serializeAgencyRefreshJob));
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const getAgencyRefreshJob = async (req, res, next) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.jobId)) {
+      return res.status(404).json({ message: 'No se encontró la actualización.' });
+    }
+    const job = await AgencyRefreshJob.findOne({ _id: req.params.jobId, owner: req.user._id });
+    if (!job) return res.status(404).json({ message: 'No se encontró la actualización.' });
+    return res.json(serializeAgencyRefreshJob(job));
+  } catch (error) {
+    return next(error);
   }
 };
 
@@ -540,6 +692,10 @@ module.exports = {
   deleteAgency,
   learnAgencyPattern,
   refreshAgencyFiles,
+  createAgencyRefreshJob,
+  getActiveAgencyRefreshJob,
+  createAgencyIntegrityJob,
+  getActiveAgencyIntegrityJob,
+  getAgencyMaintenanceHistory,
+  getAgencyRefreshJob,
 };
-
-const splitDrivePath = (path = '') => String(path).split(/[\\/]/).map((part) => part.trim()).filter(Boolean);
