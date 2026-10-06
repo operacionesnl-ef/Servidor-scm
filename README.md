@@ -5,6 +5,10 @@
 npm install
 ```
 
+## Monitor de disponibilidad
+
+Configura UptimeRobot con un monitor **HTTP(s)** para `https://<tu-dominio>/health`, método `GET` y un intervalo de revisión adecuado para tu plan. La ruta es pública y devuelve `200` con `status: "ok"` cuando el proceso está activo y conectado a MongoDB; si la conexión a la base de datos se pierde, devuelve `503` con `status: "degraded"` para que el monitor marque el servicio como no disponible. La respuesta incluye `timestamp`, `uptimeSeconds` y el estado de MongoDB.
+
 ## Variables de entorno
 Copia `.env.example` a `.env` y configura tus variables.
 

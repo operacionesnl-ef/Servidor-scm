@@ -12,6 +12,7 @@ const { startAgencyRefreshJobWorker } = require('./services/agencyRefreshJobWork
 const { startActivityLogCleanupWorker } = require('./services/activityLogCleanupWorker');
 const { logServerEvent } = require('./utils/serverLogger');
 const { logStartup } = require('./utils/consoleLogger');
+const { getHealth } = require('./controllers/healthController');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,6 +23,8 @@ const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000,http:
 app.use(cors({ origin: allowedOrigins }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+app.get('/health', getHealth);
 
 app.use(auditActivity);
 app.use('/api', routes);
