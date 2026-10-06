@@ -97,5 +97,6 @@ mailLogSchema.index({ templateKey: 1, createdAt: -1 });
 mailLogSchema.index({ 'recipients.agencyId': 1, createdAt: -1 });
 mailLogSchema.index({ year: 1, month: 1, createdAt: -1 });
 mailLogSchema.index({ batchStatus: 1 });
+mailLogSchema.index({ sentBy: 1, createdAt: -1 });
 
 module.exports = mongoose.model('MailLog', mailLogSchema);

@@ -1,7 +1,8 @@
 const ServerEvent = require('../models/ServerEvent');
+const { logEvent } = require('./consoleLogger');
 
 function logConsoleEvent(event, details = {}) {
-  console.info(JSON.stringify({ timestamp: new Date().toISOString(), event, ...details }));
+  logEvent(event, { timestamp: new Date().toISOString(), ...details });
 }
 
 async function logServerEvent(event, details = {}) {
@@ -27,7 +28,7 @@ async function logServerEvent(event, details = {}) {
       at,
     });
   } catch {
-    console.error(JSON.stringify({ at: summary.at, e: 'event_store_failed', ref: event }));
+    logEvent('event_store_failed', { at: summary.at, message: `No se guardó el evento ${event}` });
   }
 
   logConsoleEvent(event, summary);

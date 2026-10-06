@@ -8,6 +8,7 @@ const { FILE_TYPES } = require('../utils/agencyFileRefreshUtils');
 const { refreshAgencyFromDrive } = require('./agencyDriveRefresh');
 const { inspectAgencyIntegrity } = require('./agencyIntegrityCheck');
 const { logServerEvent } = require('../utils/serverLogger');
+const { logEvent } = require('../utils/consoleLogger');
 
 let workerPromise = null;
 let pollTimer = null;
@@ -161,14 +162,14 @@ async function startAgencyRefreshJobWorker() {
   kickAgencyRefreshJobWorker();
   if (!pollTimer) {
     pollTimer = setInterval(() => {
-      processQueuedJobs().catch((error) => console.error('[agency-refresh] worker error:', error.message));
+      processQueuedJobs().catch((error) => logEvent('agency_refresh_worker_failed', { message: error.message }));
     }, 1500);
     pollTimer.unref?.();
   }
 }
 
 function kickAgencyRefreshJobWorker() {
-  processQueuedJobs().catch((error) => console.error('[agency-refresh] worker error:', error.message));
+  processQueuedJobs().catch((error) => logEvent('agency_refresh_worker_failed', { message: error.message }));
 }
 
 module.exports = { startAgencyRefreshJobWorker, kickAgencyRefreshJobWorker, isVerifiedForPeriod };

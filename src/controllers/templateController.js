@@ -1,4 +1,5 @@
 const Template = require('../models/Template');
+const { logError } = require('../utils/consoleLogger');
 
 const getTemplates = async (req, res) => {
   try {
@@ -8,7 +9,7 @@ const getTemplates = async (req, res) => {
 
     res.json({ ok: true, data: templates });
   } catch (error) {
-    console.error('[templateController] getTemplates:', error);
+    logError('No se pudieron cargar las plantillas', error);
     res.status(500).json({ ok: false, message: 'No se pudieron obtener las plantillas.' });
   }
 };
@@ -33,7 +34,7 @@ const getTemplateByKey = async (req, res) => {
 
     res.json({ ok: true, data: template });
   } catch (error) {
-    console.error('[templateController] getTemplateByKey:', error);
+    logError('No se pudo consultar la plantilla', error);
     res.status(500).json({ ok: false, message: 'No se pudo obtener la plantilla.' });
   }
 };
@@ -66,7 +67,7 @@ const createTemplate = async (req, res) => {
     if (error.code === 11000) {
       return res.status(409).json({ ok: false, message: 'Ya existe una plantilla con esa key.' });
     }
-    console.error('[templateController] createTemplate:', error);
+    logError('No se pudo crear la plantilla', error);
     res.status(500).json({ ok: false, message: 'No se pudo crear la plantilla.' });
   }
 };
@@ -99,7 +100,7 @@ const updateTemplate = async (req, res) => {
 
     res.json({ ok: true, data: template });
   } catch (error) {
-    console.error('[templateController] updateTemplate:', error);
+    logError('No se pudo actualizar la plantilla', error);
     res.status(500).json({ ok: false, message: 'No se pudo actualizar la plantilla.' });
   }
 };
@@ -115,7 +116,7 @@ const deleteTemplate = async (req, res) => {
     req.auditRecovery = { entity: 'Template', snapshot: template.toObject({ depopulate: true }) };
     res.json({ ok: true, message: 'Plantilla eliminada correctamente.' });
   } catch (error) {
-    console.error('[templateController] deleteTemplate:', error);
+    logError('No se pudo eliminar la plantilla', error);
     res.status(500).json({ ok: false, message: 'No se pudo eliminar la plantilla.' });
   }
 };
@@ -133,7 +134,7 @@ const toggleTemplate = async (req, res) => {
 
     res.json({ ok: true, data: template });
   } catch (error) {
-    console.error('[templateController] toggleTemplate:', error);
+    logError('No se pudo cambiar el estado de la plantilla', error);
     res.status(500).json({ ok: false, message: 'No se pudo cambiar el estado de la plantilla.' });
   }
 };

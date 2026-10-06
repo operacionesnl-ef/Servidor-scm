@@ -9,7 +9,9 @@ const notFound = require('./middlewares/notFound');
 const errorHandler = require('./middlewares/errorHandler');
 const { startMailJobWorker } = require('./services/mailJobWorker');
 const { startAgencyRefreshJobWorker } = require('./services/agencyRefreshJobWorker');
+const { startActivityLogCleanupWorker } = require('./services/activityLogCleanupWorker');
 const { logServerEvent } = require('./utils/serverLogger');
+const { logStartup } = require('./utils/consoleLogger');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -45,13 +47,13 @@ app.use(errorHandler);
 connectDB().then(async () => {
   await startMailJobWorker();
   await startAgencyRefreshJobWorker();
+  startActivityLogCleanupWorker();
   app.listen(PORT, async () => {
     await logServerEvent('server_started');
-    console.info(JSON.stringify({
-      status: 'ready',
+    logStartup({
       port: PORT,
       pid: process.pid,
       database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-    }));
+    });
   });
 });

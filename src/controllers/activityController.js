@@ -3,7 +3,7 @@ const ServerEvent = require('../models/ServerEvent');
 const ActivityLog = require('../models/ActivityLog');
 const Agency = require('../models/Agency');
 const Template = require('../models/Template');
-const MailLog = require('../models/MailLog');
+const MailLog = require('../models/Maillog');
 
 const RESTORABLE_MODELS = { Agency, Template, MailLog };
 

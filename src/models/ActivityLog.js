@@ -1,9 +1,5 @@
 const mongoose = require('mongoose');
-
-const retentionDaysValue = Number(process.env.ACTIVITY_LOG_RETENTION_DAYS || 365);
-const retentionDays = Number.isInteger(retentionDaysValue) && retentionDaysValue > 0
-  ? retentionDaysValue
-  : 365;
+const { getActivityLogExpiryDate } = require('../utils/activityLogRetention');
 
 const activityLogSchema = new mongoose.Schema(
   {
@@ -19,7 +15,7 @@ const activityLogSchema = new mongoose.Schema(
     ip: { type: String },
     expiresAt: {
       type: Date,
-      default: () => new Date(Date.now() + retentionDays * 24 * 60 * 60 * 1000),
+      default: getActivityLogExpiryDate,
     },
   },
   { timestamps: false }

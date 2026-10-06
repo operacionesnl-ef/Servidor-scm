@@ -33,16 +33,55 @@ Los trabajos y su progreso se guardan en MongoDB. `GET /api/agencies/refresh-job
 El Administrador de Agencias crea verificaciones completas con `POST /api/agencies/integrity-jobs`; `GET /api/agencies/integrity-jobs/active` consulta el proceso activo. El worker comprueba cada archivo vinculado contra Drive (acceso, nombre/marca, período, fecha de modificación y peso) y conserva los detalles por agencia en el mismo historial. `GET /api/agencies/maintenance/history?limit=30` devuelve procesos terminados con incidencias del usuario autenticado. Los permisos de Drive siguen siendo validados antes de encolar el trabajo.
 
 ## Actividad y recuperación
-La consola imprime cada solicitud con usuario, ruta, estado, duración y datos de entrada sanitizados; tokens y contraseñas siempre se redactan. MongoDB guarda acciones de todos los usuarios en `ActivityLog`, asociadas al actor. Las lecturas repetidas iguales se agrupan durante un minuto; su contador evita llenar la colección con consultas de sondeo. Los registros caducan en 365 días por defecto; configura `ACTIVITY_LOG_RETENTION_DAYS` para cambiar el plazo.
+La consola imprime cada solicitud con usuario, ruta, estado, duración y datos de entrada sanitizados; tokens y contraseñas siempre se redactan. MongoDB guarda acciones de todos los usuarios en `ActivityLog`, asociadas al actor. Las lecturas repetidas iguales se agrupan durante un minuto; su contador evita llenar la colección con consultas de sondeo. La auditoría caduca a los 14 días.
 
 `GET /api/activity?limit=50` lista tus acciones y usa `nextCursor` como `cursor`. `GET /api/activity/:id` consulta el detalle. Los borrados de agencias, plantillas y registros de correo incluyen un snapshot; el mismo usuario puede restaurarlo con `POST /api/activity/:id/restore`. Los envíos conservan además su historial detallado en `GET /api/maillogs/job/:jobId`.
 
-Los snapshots facilitan recuperar registros borrados por la aplicación, pero no sustituyen los backups de MongoDB para corrupción, borrados directos en la base o incidentes que afecten también a la auditoría.
+Solo los registros normales de actividad (`ActivityLog`) se eliminan al cumplir 14 días. La limpieza se ejecuta al iniciar el servidor y cada 24 horas; el índice TTL de MongoDB también elimina registros vencidos. Los eventos del servidor (`ServerEvent`) y el historial de envíos (`MailLog`) no se borran con esta limpieza, por lo que el dashboard puede calcular el mes completo. Los snapshots facilitan recuperar registros borrados por la aplicación, pero no sustituyen los backups de MongoDB para corrupción, borrados directos en la base o incidentes que afecten también a la auditoría.
 
 ## Herramientas developer en desarrollo
 Con `NODE_ENV=development`, las cuentas con rol `developer` pueden usar `GET /api/users`, `POST /api/users`, `PATCH /api/users/:id` y `DELETE /api/users/:id` para consultar y administrar accesos. La eliminación es lógica y cambia `status` a `inactivo`; no se permite desactivar la propia cuenta ni dejar el sistema sin un developer activo.
 
 El visor consulta `GET /api/activity/server?source=activity&limit=50` para paginar auditorías de solicitudes de todos los usuarios; `source=events` selecciona eventos operativos `ServerEvent`. Ambos feeds aceptan `cursor`. Las APIs responden `404` fuera de desarrollo y requieren un JWT válido cuyo usuario tenga rol `developer`. La autorización del servidor es obligatoria aunque el frontend también oculte las rutas.
+
+La salida de consola presenta solicitudes HTTP con método, estado, duración y usuario; los eventos de workers muestran estado y progreso en barra cuando hay un total conocido. Los colores se activan en terminales interactivas y pueden controlarse con `NO_COLOR` o `FORCE_COLOR`.
+
+## Dashboard, recursos y exportaciones administrativas
+
+Las rutas `/api/admin/*` requieren `Authorization: Bearer <token>` y una cuenta activa con rol `admin` o `developer`:
+
+- `GET /api/admin/dashboard?year=2026&month=10`: envíos y agencias del mes UTC. Sin parámetros usa el mes UTC actual. Incluye agencias con envíos, agencias sin un correo válido, campañas, totales enviados/fallidos y dos métricas de archivos: completitud de los campos `nombre`/`ruta` de los cuatro archivos de agencias activas, y porcentaje de archivos en estado `ok` según la última verificación de integridad completada por agencia.
+- `GET /api/admin/system`: memoria y uptime del proceso Node, recursos del host y tamaño/uso de MongoDB. `storageUsagePercentage` es `null` si no se configura el límite; establece `STORAGE_LIMIT_BYTES` en `.env` con un entero positivo para calcularlo. El límite debe corresponder al límite contratado/configurado en tu proveedor.
+- `GET /api/admin/exports`: lista las colecciones Mongoose disponibles para descarga y su número estimado de documentos.
+- `GET /api/admin/exports/:collection?format=json|csv`: descarga una colección en JSON (predeterminado) o CSV. Cada petición descarga una colección; consulta primero la lista anterior. Para evitar exportar credenciales, se excluyen hashes/identificadores de acceso de usuarios y tokens de Google cifrados de trabajos.
+
+Ejemplo de React para consultar el dashboard:
+
+```js
+const response = await fetch(
+  `${API_URL}/api/admin/dashboard?year=2026&month=10`,
+  { headers: { Authorization: `Bearer ${token}` } }
+);
+if (!response.ok) throw new Error('No se pudo cargar el dashboard');
+const dashboard = await response.json();
+```
+
+Para descargar datos desde el cliente, el mismo JWT sirve para listar colecciones y solicitar el archivo:
+
+```js
+const response = await fetch(`${API_URL}/api/admin/exports/maillogs?format=csv`, {
+  headers: { Authorization: `Bearer ${token}` },
+});
+if (!response.ok) throw new Error('No se pudo exportar la colección');
+const downloadUrl = URL.createObjectURL(await response.blob());
+const link = document.createElement('a');
+link.href = downloadUrl;
+link.download = 'maillogs.csv';
+link.click();
+URL.revokeObjectURL(downloadUrl);
+```
+
+`GET /api/admin/system` devuelve estadísticas de base de datos; el porcentaje no representa el espacio libre del disco del servidor. Para que coincida con un plan de hosting, configura `STORAGE_LIMIT_BYTES` con el límite aplicable a MongoDB.
 
 ## Estructura
 ```

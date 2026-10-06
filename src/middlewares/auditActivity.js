@@ -1,6 +1,8 @@
 const { createHash } = require('node:crypto');
 const ActivityLog = require('../models/ActivityLog');
 const { createRecoverySnapshot, sanitizeAuditValue } = require('../utils/auditSanitizer');
+const { getActivityLogExpiryDate } = require('../utils/activityLogRetention');
+const { logEvent, logRequest } = require('../utils/consoleLogger');
 
 function auditActivity(req, res, next) {
   const startedAt = Date.now();
@@ -30,7 +32,7 @@ function auditActivity(req, res, next) {
     };
 
     const sendResponse = () => {
-      console.info(JSON.stringify(entry));
+      logRequest(entry);
       return originalJson(responseBody);
     };
 
@@ -62,7 +64,7 @@ function auditActivity(req, res, next) {
       ultimaFecha: finishedAt,
       veces: 1,
       ip: req.ip,
-      expiresAt: new Date(finishedAt.getTime() + getRetentionMs()),
+      expiresAt: getActivityLogExpiryDate(finishedAt),
     };
 
     const persistActivity = async () => {
@@ -90,18 +92,12 @@ function auditActivity(req, res, next) {
     };
 
     return persistActivity().then(sendResponse).catch(() => {
-      console.error(JSON.stringify({ timestamp: finishedAt.toISOString(), event: 'activity_log_failed' }));
+      logEvent('activity_log_failed', { timestamp: finishedAt.toISOString() });
       return sendResponse();
     });
   };
 
   return next();
-}
-
-function getRetentionMs() {
-  const configuredDays = Number(process.env.ACTIVITY_LOG_RETENTION_DAYS || 365);
-  const days = Number.isInteger(configuredDays) && configuredDays > 0 ? configuredDays : 365;
-  return days * 24 * 60 * 60 * 1000;
 }
 
 module.exports = auditActivity;

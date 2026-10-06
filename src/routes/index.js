@@ -10,6 +10,7 @@ const maillogRoutes = require('./maillogRoutes');
 const userRoutes = require('./userRoutes');
 const templateRoutes = require('./templateRoutes');
 const notificationRoutes = require('./notificationRoutes');
+const adminRoutes = require('./adminRoutes');
 
 
 router.use('/templates', templateRoutes);
@@ -21,5 +22,6 @@ router.use('/mail-jobs', mailJobRoutes);
 router.use('/maillogs', maillogRoutes);
 router.use('/users', userRoutes);
 router.use('/notifications', notificationRoutes);
+router.use('/admin', adminRoutes);
 
 module.exports = router;

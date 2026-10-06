@@ -1,9 +1,10 @@
 const { google } = require('googleapis');
 const MailJob = require('../models/MailJob');
-const MailLog = require('../models/MailLog');
+const MailLog = require('../models/Maillog');
 const { decryptGoogleToken } = require('../utils/mailJobCrypto');
 const { buildRawMessage } = require('../utils/gmailMessage');
 const { logConsoleEvent, logServerEvent } = require('../utils/serverLogger');
+const { logEvent } = require('../utils/consoleLogger');
 
 const GOOGLE_EXPORT_TYPES = {
   'application/vnd.google-apps.document': 'application/pdf',
@@ -256,14 +257,14 @@ async function startMailJobWorker() {
   kickMailJobWorker();
   if (!pollTimer) {
     pollTimer = setInterval(() => {
-      processQueuedJobs().catch((error) => console.error('[mail-job] worker error:', error.message));
+      processQueuedJobs().catch((error) => logEvent('mail_job_worker_failed', { message: error.message }));
     }, 1500);
     pollTimer.unref?.();
   }
 }
 
 function kickMailJobWorker() {
-  processQueuedJobs().catch((error) => console.error('[mail-job] worker error:', error.message));
+  processQueuedJobs().catch((error) => logEvent('mail_job_worker_failed', { message: error.message }));
 }
 
 module.exports = { startMailJobWorker, kickMailJobWorker };

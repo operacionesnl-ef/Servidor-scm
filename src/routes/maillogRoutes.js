@@ -7,7 +7,7 @@ const {
   getMailLogByJobId,
   getMailLogsByAgency,
   deleteMailLog,
-} = require('../controllers/mailLogController');
+} = require('../controllers/maillogController');
 
 const router = express.Router();
 
