@@ -12,6 +12,8 @@ Configura UptimeRobot con un monitor **HTTP(s)** para `https://<tu-dominio>/heal
 ## Variables de entorno
 Copia `.env.example` a `.env` y configura tus variables.
 
+La conexión de MongoDB acepta `MONGO_URI` o `MONGODB_URI` y usa la base definida por `MONGODB_DATABASE` (por defecto `EFCore`). Configura `MONGODB_DATABASE=EFCore` en Render y conserva el URI de Atlas en su variable actual. La base de datos se crea automáticamente cuando MongoDB guarda el primer documento. El servidor seguirá usando colecciones separadas por modelo (por ejemplo, `agencies`, `users` y `maillogs`); `EFCore` es el nombre de la base de datos, no de una colección única.
+
 ## Scripts
 ```bash
 npm run dev   # Desarrollo con nodemon
