@@ -16,7 +16,7 @@ const { getHealth } = require('./controllers/healthController');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:3001')
+const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:3001,http://127.0.0.1:43127')
   .split(',')
   .map((origin) => origin.trim());
 
