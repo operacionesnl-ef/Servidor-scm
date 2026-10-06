@@ -109,6 +109,37 @@ test('rejects invalid loopback callback or PKCE values before exchanging a code'
   assert.equal(response.statusCode, 400);
 });
 
+test('requires the desktop OAuth client secret before exchanging a code', async () => {
+  const original = {
+    clientId: process.env.GOOGLE_DESKTOP_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_DESKTOP_CLIENT_SECRET,
+    jwtSecret: process.env.JWT_SECRET,
+  };
+  process.env.GOOGLE_DESKTOP_CLIENT_ID = 'desktop.apps.googleusercontent.com';
+  delete process.env.GOOGLE_DESKTOP_CLIENT_SECRET;
+  process.env.JWT_SECRET = 'desktop-auth-test-secret';
+
+  try {
+    const response = createResponse();
+    await googleDesktopLogin({
+      body: {
+        code: 'one-time-code',
+        codeVerifier: 'A'.repeat(43),
+        redirectUri: 'http://127.0.0.1:43210',
+      },
+    }, response, (error) => { throw error; });
+    assert.equal(response.statusCode, 500);
+    assert.match(response.body.message, /not configured/);
+  } finally {
+    if (original.clientId === undefined) delete process.env.GOOGLE_DESKTOP_CLIENT_ID;
+    else process.env.GOOGLE_DESKTOP_CLIENT_ID = original.clientId;
+    if (original.clientSecret === undefined) delete process.env.GOOGLE_DESKTOP_CLIENT_SECRET;
+    else process.env.GOOGLE_DESKTOP_CLIENT_SECRET = original.clientSecret;
+    if (original.jwtSecret === undefined) delete process.env.JWT_SECRET;
+    else process.env.JWT_SECRET = original.jwtSecret;
+  }
+});
+
 test('reports a safe Google error code when the authorization code exchange is rejected', async () => {
   const original = {
     getToken: OAuth2Client.prototype.getToken,

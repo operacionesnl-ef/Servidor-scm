@@ -110,7 +110,7 @@ const googleDesktopLogin = async (req, res, next) => {
   ) {
     return res.status(400).json({ message: 'Desktop Google authorization response is invalid' });
   }
-  if (!GOOGLE_DESKTOP_CLIENT_ID || !JWT_SECRET) {
+  if (!GOOGLE_DESKTOP_CLIENT_ID || !GOOGLE_DESKTOP_CLIENT_SECRET || !JWT_SECRET) {
     return res.status(500).json({ message: 'Desktop Google authentication is not configured on the server' });
   }
 
@@ -120,7 +120,7 @@ const googleDesktopLogin = async (req, res, next) => {
   try {
     const oauthClient = new OAuth2Client(
       GOOGLE_DESKTOP_CLIENT_ID,
-      GOOGLE_DESKTOP_CLIENT_SECRET || undefined,
+      GOOGLE_DESKTOP_CLIENT_SECRET,
       redirectUri,
     );
     ({ tokens } = await oauthClient.getToken({
