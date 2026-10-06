@@ -18,11 +18,11 @@ function createResponse() {
 }
 
 test('accepts only the desktop loopback callback shape', () => {
-  assert.equal(isLoopbackRedirectUri('http://127.0.0.1:43210/'), true);
-  assert.equal(isLoopbackRedirectUri('http://localhost:43210/'), false);
-  assert.equal(isLoopbackRedirectUri('https://127.0.0.1:43210/'), false);
+  assert.equal(isLoopbackRedirectUri('http://127.0.0.1:43210'), true);
+  assert.equal(isLoopbackRedirectUri('http://localhost:43210'), false);
+  assert.equal(isLoopbackRedirectUri('https://127.0.0.1:43210'), false);
   assert.equal(isLoopbackRedirectUri('http://127.0.0.1:43210/other'), false);
-  assert.equal(isLoopbackRedirectUri('http://127.0.0.1:0/'), false);
+  assert.equal(isLoopbackRedirectUri('http://127.0.0.1:0'), false);
 });
 
 test('exchanges a PKCE authorization code, verifies desktop audience, and issues an app session', async () => {
@@ -32,6 +32,7 @@ test('exchanges a PKCE authorization code, verifies desktop audience, and issues
     findOne: User.findOne,
     eventCreate: ServerEvent.create,
     clientId: process.env.GOOGLE_DESKTOP_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_DESKTOP_CLIENT_SECRET,
     jwtSecret: process.env.JWT_SECRET,
   };
   let exchanged;
@@ -46,6 +47,7 @@ test('exchanges a PKCE authorization code, verifies desktop audience, and issues
     save: async () => {},
   };
   process.env.GOOGLE_DESKTOP_CLIENT_ID = 'desktop.apps.googleusercontent.com';
+  process.env.GOOGLE_DESKTOP_CLIENT_SECRET = 'desktop-client-secret-test';
   process.env.JWT_SECRET = 'desktop-auth-test-secret';
   OAuth2Client.prototype.getToken = async function getToken(options) {
     exchanged = { clientId: this._clientId, clientSecret: this._clientSecret, ...options };
@@ -64,16 +66,16 @@ test('exchanges a PKCE authorization code, verifies desktop audience, and issues
       body: {
         code: 'one-time-code',
         codeVerifier: 'A'.repeat(43),
-        redirectUri: 'http://127.0.0.1:43210/',
+        redirectUri: 'http://127.0.0.1:43210',
       },
     }, response, (error) => { throw error; });
 
     assert.equal(response.statusCode, 200);
     assert.equal(exchanged.clientId, process.env.GOOGLE_DESKTOP_CLIENT_ID);
-    assert.equal(exchanged.clientSecret, undefined);
+    assert.equal(exchanged.clientSecret, process.env.GOOGLE_DESKTOP_CLIENT_SECRET);
     assert.equal(exchanged.code, 'one-time-code');
     assert.equal(exchanged.codeVerifier, 'A'.repeat(43));
-    assert.equal(exchanged.redirect_uri, 'http://127.0.0.1:43210/');
+    assert.equal(exchanged.redirect_uri, 'http://127.0.0.1:43210');
     assert.deepEqual(verified, {
       idToken: 'verified-id-token',
       audience: process.env.GOOGLE_DESKTOP_CLIENT_ID,
@@ -88,6 +90,8 @@ test('exchanges a PKCE authorization code, verifies desktop audience, and issues
     ServerEvent.create = originals.eventCreate;
     if (originals.clientId === undefined) delete process.env.GOOGLE_DESKTOP_CLIENT_ID;
     else process.env.GOOGLE_DESKTOP_CLIENT_ID = originals.clientId;
+    if (originals.clientSecret === undefined) delete process.env.GOOGLE_DESKTOP_CLIENT_SECRET;
+    else process.env.GOOGLE_DESKTOP_CLIENT_SECRET = originals.clientSecret;
     if (originals.jwtSecret === undefined) delete process.env.JWT_SECRET;
     else process.env.JWT_SECRET = originals.jwtSecret;
   }
@@ -109,9 +113,11 @@ test('reports a safe Google error code when the authorization code exchange is r
   const original = {
     getToken: OAuth2Client.prototype.getToken,
     clientId: process.env.GOOGLE_DESKTOP_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_DESKTOP_CLIENT_SECRET,
     jwtSecret: process.env.JWT_SECRET,
   };
   process.env.GOOGLE_DESKTOP_CLIENT_ID = 'desktop.apps.googleusercontent.com';
+  process.env.GOOGLE_DESKTOP_CLIENT_SECRET = 'desktop-client-secret-test';
   process.env.JWT_SECRET = 'desktop-auth-test-secret';
   OAuth2Client.prototype.getToken = async () => {
     const error = new Error('Sensitive request contents must not be returned');
@@ -125,16 +131,19 @@ test('reports a safe Google error code when the authorization code exchange is r
       body: {
         code: 'one-time-code',
         codeVerifier: 'A'.repeat(43),
-        redirectUri: 'http://127.0.0.1:43210/',
+        redirectUri: 'http://127.0.0.1:43210',
       },
     }, response, (error) => { throw error; });
     assert.equal(response.statusCode, 401);
     assert.match(response.body.message, /invalid_grant/);
-    assert.doesNotMatch(response.body.message, /already used|Sensitive/);
+    assert.match(response.body.message, /authorization code already used/);
+    assert.doesNotMatch(response.body.message, /Sensitive/);
   } finally {
     OAuth2Client.prototype.getToken = original.getToken;
     if (original.clientId === undefined) delete process.env.GOOGLE_DESKTOP_CLIENT_ID;
     else process.env.GOOGLE_DESKTOP_CLIENT_ID = original.clientId;
+    if (original.clientSecret === undefined) delete process.env.GOOGLE_DESKTOP_CLIENT_SECRET;
+    else process.env.GOOGLE_DESKTOP_CLIENT_SECRET = original.clientSecret;
     if (original.jwtSecret === undefined) delete process.env.JWT_SECRET;
     else process.env.JWT_SECRET = original.jwtSecret;
   }

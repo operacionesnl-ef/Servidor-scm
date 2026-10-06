@@ -93,9 +93,15 @@ function getGoogleOAuthErrorCode(error) {
   return typeof code === 'string' && /^[a-z0-9_-]{1,50}$/i.test(code) ? code : 'unknown';
 }
 
+function getGoogleOAuthErrorDescription(error) {
+  const description = error?.response?.data?.error_description;
+  if (typeof description !== 'string') return '';
+  return description.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 160);
+}
+
 const googleDesktopLogin = async (req, res, next) => {
   const { code, codeVerifier, redirectUri } = req.body || {};
-  const { GOOGLE_DESKTOP_CLIENT_ID, JWT_SECRET } = process.env;
+  const { GOOGLE_DESKTOP_CLIENT_ID, GOOGLE_DESKTOP_CLIENT_SECRET, JWT_SECRET } = process.env;
 
   if (
     typeof code !== 'string' || !code.trim() ||
@@ -112,7 +118,11 @@ const googleDesktopLogin = async (req, res, next) => {
   let googleAccessToken;
   let tokens;
   try {
-    const oauthClient = new OAuth2Client(GOOGLE_DESKTOP_CLIENT_ID, undefined, redirectUri);
+    const oauthClient = new OAuth2Client(
+      GOOGLE_DESKTOP_CLIENT_ID,
+      GOOGLE_DESKTOP_CLIENT_SECRET || undefined,
+      redirectUri,
+    );
     ({ tokens } = await oauthClient.getToken({
       code,
       codeVerifier,
@@ -120,9 +130,13 @@ const googleDesktopLogin = async (req, res, next) => {
     }));
   } catch (error) {
     const code = getGoogleOAuthErrorCode(error);
-    logError('Google rechazó el código OAuth de escritorio', new Error(`Google OAuth error: ${code}`));
+    const description = getGoogleOAuthErrorDescription(error);
+    logError(
+      'Google rechazó el código OAuth de escritorio',
+      new Error(`Google OAuth error: ${code}${description ? ` (${description})` : ''}`),
+    );
     return res.status(401).json({
-      message: `Google rechazó el código de autorización (${code}). Cierra la ventana, reinicia el inicio de sesión e inténtalo una sola vez.`,
+      message: `Google rechazó el código de autorización (${code})${description ? `: ${description}` : ''}. Cierra la ventana, reinicia el inicio de sesión e inténtalo una sola vez.`,
     });
   }
 
