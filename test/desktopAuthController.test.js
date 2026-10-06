@@ -105,6 +105,41 @@ test('rejects invalid loopback callback or PKCE values before exchanging a code'
   assert.equal(response.statusCode, 400);
 });
 
+test('reports a safe Google error code when the authorization code exchange is rejected', async () => {
+  const original = {
+    getToken: OAuth2Client.prototype.getToken,
+    clientId: process.env.GOOGLE_DESKTOP_CLIENT_ID,
+    jwtSecret: process.env.JWT_SECRET,
+  };
+  process.env.GOOGLE_DESKTOP_CLIENT_ID = 'desktop.apps.googleusercontent.com';
+  process.env.JWT_SECRET = 'desktop-auth-test-secret';
+  OAuth2Client.prototype.getToken = async () => {
+    const error = new Error('Sensitive request contents must not be returned');
+    error.response = { data: { error: 'invalid_grant', error_description: 'authorization code already used' } };
+    throw error;
+  };
+
+  try {
+    const response = createResponse();
+    await googleDesktopLogin({
+      body: {
+        code: 'one-time-code',
+        codeVerifier: 'A'.repeat(43),
+        redirectUri: 'http://127.0.0.1:43210/',
+      },
+    }, response, (error) => { throw error; });
+    assert.equal(response.statusCode, 401);
+    assert.match(response.body.message, /invalid_grant/);
+    assert.doesNotMatch(response.body.message, /already used|Sensitive/);
+  } finally {
+    OAuth2Client.prototype.getToken = original.getToken;
+    if (original.clientId === undefined) delete process.env.GOOGLE_DESKTOP_CLIENT_ID;
+    else process.env.GOOGLE_DESKTOP_CLIENT_ID = original.clientId;
+    if (original.jwtSecret === undefined) delete process.env.JWT_SECRET;
+    else process.env.JWT_SECRET = original.jwtSecret;
+  }
+});
+
 test('registers POST /api/auth/google/desktop in the auth router', async () => {
   const app = express();
   app.use(express.json());

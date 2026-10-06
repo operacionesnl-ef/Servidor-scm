@@ -2,6 +2,7 @@ const { OAuth2Client } = require('google-auth-library');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { logServerEvent } = require('../utils/serverLogger');
+const { logError } = require('../utils/consoleLogger');
 
 const googleClient = new OAuth2Client();
 
@@ -87,6 +88,11 @@ const googleLogin = async (req, res, next) => {
   return completeGoogleLogin(payload, req, res, next);
 };
 
+function getGoogleOAuthErrorCode(error) {
+  const code = error?.response?.data?.error || error?.code;
+  return typeof code === 'string' && /^[a-z0-9_-]{1,50}$/i.test(code) ? code : 'unknown';
+}
+
 const googleDesktopLogin = async (req, res, next) => {
   const { code, codeVerifier, redirectUri } = req.body || {};
   const { GOOGLE_DESKTOP_CLIENT_ID, JWT_SECRET } = process.env;
@@ -104,24 +110,39 @@ const googleDesktopLogin = async (req, res, next) => {
 
   let payload;
   let googleAccessToken;
+  let tokens;
   try {
     const oauthClient = new OAuth2Client(GOOGLE_DESKTOP_CLIENT_ID, undefined, redirectUri);
-    const { tokens } = await oauthClient.getToken({
+    ({ tokens } = await oauthClient.getToken({
       code,
       codeVerifier,
       redirect_uri: redirectUri,
+    }));
+  } catch (error) {
+    const code = getGoogleOAuthErrorCode(error);
+    logError('Google rechazó el código OAuth de escritorio', new Error(`Google OAuth error: ${code}`));
+    return res.status(401).json({
+      message: `Google rechazó el código de autorización (${code}). Cierra la ventana, reinicia el inicio de sesión e inténtalo una sola vez.`,
     });
-    if (typeof tokens.id_token !== 'string' || typeof tokens.access_token !== 'string') {
-      return res.status(401).json({ message: 'Google did not return the required desktop authorization tokens' });
-    }
+  }
+
+  if (typeof tokens?.id_token !== 'string' || typeof tokens.access_token !== 'string') {
+    return res.status(401).json({ message: 'Google no devolvió los tokens necesarios para completar el inicio de sesión.' });
+  }
+
+  try {
     const ticket = await googleClient.verifyIdToken({
       idToken: tokens.id_token,
       audience: GOOGLE_DESKTOP_CLIENT_ID,
     });
     payload = ticket.getPayload();
     googleAccessToken = tokens.access_token;
-  } catch (err) {
-    return res.status(401).json({ message: 'Google desktop authorization code is invalid or expired' });
+  } catch (error) {
+    const code = getGoogleOAuthErrorCode(error);
+    logError('No se pudo verificar la identidad OAuth de escritorio', new Error(`Google ID token verification error: ${code}`));
+    return res.status(401).json({
+      message: `Google devolvió una identidad que no se pudo verificar (${code}).`,
+    });
   }
 
   return completeGoogleLogin(payload, req, res, next, { googleAccessToken });
