@@ -45,10 +45,12 @@ La consola imprime cada solicitud con usuario, ruta, estado, duración y datos d
 
 Solo los registros normales de actividad (`ActivityLog`) se eliminan al cumplir 14 días. La limpieza se ejecuta al iniciar el servidor y cada 24 horas; el índice TTL de MongoDB también elimina registros vencidos. Los eventos del servidor (`ServerEvent`) y el historial de envíos (`MailLog`) no se borran con esta limpieza, por lo que el dashboard puede calcular el mes completo. Los snapshots facilitan recuperar registros borrados por la aplicación, pero no sustituyen los backups de MongoDB para corrupción, borrados directos en la base o incidentes que afecten también a la auditoría.
 
-## Herramientas developer en desarrollo
-Con `NODE_ENV=development`, las cuentas con rol `developer` pueden usar `GET /api/users`, `POST /api/users`, `PATCH /api/users/:id` y `DELETE /api/users/:id` para consultar y administrar accesos. La eliminación es lógica y cambia `status` a `inactivo`; no se permite desactivar la propia cuenta ni dejar el sistema sin un developer activo.
+## Herramientas developer
+Las cuentas autenticadas con rol `developer` pueden usar `GET /api/users`, `POST /api/users`, `PATCH /api/users/:id` y `DELETE /api/users/:id` para consultar y administrar accesos, también en producción. La eliminación es lógica y cambia `status` a `inactivo`; no se permite desactivar la propia cuenta ni dejar el sistema sin un developer activo.
 
-El visor consulta `GET /api/activity/server?source=activity&limit=50` para paginar auditorías de solicitudes de todos los usuarios; `source=events` selecciona eventos operativos `ServerEvent`. Ambos feeds aceptan `cursor`. Las APIs responden `404` fuera de desarrollo y requieren una sesión válida cuyo usuario tenga rol `developer`. La autorización del servidor es obligatoria aunque el frontend también oculte las rutas.
+El visor consulta `GET /api/activity/server?source=activity&limit=50` para paginar auditorías de solicitudes de todos los usuarios; `source=events` selecciona eventos operativos `ServerEvent`. Ambos feeds aceptan `cursor`. Estas APIs requieren una sesión válida cuyo usuario tenga rol `developer`. La autorización del servidor es obligatoria aunque el frontend también oculte las rutas.
+
+En producción, el frontend consulta cambios de notificaciones cada 10 segundos en lugar de mantener una conexión SSE larga a través del proxy de Netlify, que puede cerrarla con `504`. En desarrollo local se conserva SSE.
 
 La salida de consola presenta solicitudes HTTP con método, estado, duración y usuario; los eventos de workers muestran estado y progreso en barra cuando hay un total conocido. Los colores se activan en terminales interactivas y pueden controlarse con `NO_COLOR` o `FORCE_COLOR`.
 

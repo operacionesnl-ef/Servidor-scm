@@ -32,3 +32,19 @@ test('developers pass the broadcast authorization middleware', () => {
   assert.equal(proceeded, true);
   assert.equal(res.statusCode, 200);
 });
+
+test('developer authorization remains role-based in production', () => {
+  const originalEnvironment = process.env.NODE_ENV;
+  try {
+    process.env.NODE_ENV = 'production';
+    const res = response();
+    let proceeded = false;
+
+    requireDeveloper({ user: { rol: 'developer' } }, res, () => { proceeded = true; });
+
+    assert.equal(proceeded, true);
+    assert.equal(res.statusCode, 200);
+  } finally {
+    process.env.NODE_ENV = originalEnvironment;
+  }
+});

@@ -1,6 +1,6 @@
 const express = require('express');
 const requireAuth = require('../middlewares/requireAuth');
-const requireDeveloperDebug = require('../middlewares/requireDeveloperDebug');
+const requireDeveloper = require('../middlewares/requireDeveloper');
 const { getServerLogs } = require('../controllers/serverLogController');
 const {
 	getActivity,
@@ -13,7 +13,7 @@ const router = express.Router();
 
 router.get('/', requireAuth, getActivity);
 router.get('/system', requireAuth, getSystemActivity);
-router.get('/server', requireAuth, requireDeveloperDebug, getServerLogs);
+router.get('/server', requireAuth, requireDeveloper, getServerLogs);
 router.get('/:id', requireAuth, getActivityById);
 router.post('/:id/restore', requireAuth, restoreActivity);
 

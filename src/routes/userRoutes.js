@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const requireAuth = require('../middlewares/requireAuth');
-const requireDeveloperDebug = require('../middlewares/requireDeveloperDebug');
+const requireDeveloper = require('../middlewares/requireDeveloper');
 const {
 	getUsers,
 	createUser,
@@ -9,7 +9,7 @@ const {
 	deactivateUser,
 } = require('../controllers/userController');
 
-router.use(requireAuth, requireDeveloperDebug);
+router.use(requireAuth, requireDeveloper);
 router.get('/', getUsers);
 router.post('/', createUser);
 router.put('/:id', updateUser);
