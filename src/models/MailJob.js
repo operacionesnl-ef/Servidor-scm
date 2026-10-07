@@ -5,6 +5,8 @@ const jobRecipientSchema = new mongoose.Schema({
   agencyId: { type: String, required: true },
   agencyName: { type: String, required: true },
   correo: { type: String, required: true, lowercase: true, trim: true },
+  cc: { type: [String], default: [] },
+  cco: { type: [String], default: [] },
   attachments: {
     type: [{ code: String, driveId: { type: String, required: true }, nombre: String }],
     default: [],
@@ -15,6 +17,8 @@ const jobResultSchema = new mongoose.Schema({
   agencyId: { type: String, required: true },
   agencyName: { type: String, required: true },
   correo: { type: String, required: true },
+  cc: { type: [String], default: [] },
+  cco: { type: [String], default: [] },
   status: { type: String, enum: ['sent', 'failed', 'cancelled'], required: true },
   gmailMessageId: String,
   error: String,

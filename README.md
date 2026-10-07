@@ -23,6 +23,8 @@ npm start     # Producción
 ## Envíos masivos en segundo plano
 Habilita Gmail API en el mismo proyecto de Google Cloud que usa el front. La cuenta debe autorizar el permiso `https://www.googleapis.com/auth/gmail.send` la primera vez que envía un correo. Si la pantalla de consentimiento está en modo de pruebas, agrega esa cuenta como usuario de prueba.
 
+Las plantillas y cada agencia admiten hasta 20 direcciones CC y 20 CCO; al enviar se combinan ambas configuraciones por agencia, se normalizan y deduplican, y las CCO se transmiten como encabezado Bcc.
+
 El front solicita los permisos `gmail.send` y `drive.readonly`, valida los destinatarios y crea un trabajo en `POST /api/mail-jobs` con la sesión autenticada y el access token temporal de Google. En web, la sesión se envía mediante cookie segura; los clientes de escritorio heredados pueden seguir usando el JWT de bearer. El servidor comprueba que la cuenta Google verificada coincide con la cuenta de sesión y que los permisos necesarios estén concedidos.
 
 Los trabajos y su avance se guardan en MongoDB. `GET /api/mail-jobs/active` recupera el trabajo activo y `GET /api/mail-jobs/:jobId` consulta uno específico; ambas rutas están limitadas al usuario dueño del trabajo. El navegador conserva solo el ID del trabajo para volver a consultar el estado después de recargar. El access token se cifra con AES-256-GCM usando una clave derivada de `JWT_SECRET`, no se devuelve por las rutas ni se escribe en logs, y el registro terminal se elimina después de 30 días.

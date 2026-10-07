@@ -6,6 +6,8 @@ const recipientResultSchema = new mongoose.Schema(
     agencyId:   { type: mongoose.Schema.Types.ObjectId, ref: 'Agency', required: true },
     agencyName: { type: String, required: true, trim: true },
     correo:     { type: String, required: true, trim: true },
+    cc:         { type: [String], default: [] },
+    cco:        { type: [String], default: [] },
     status:     { type: String, enum: ['sent', 'failed'], required: true },
     gmailMessageId: { type: String, trim: true }, // ID devuelto por Gmail API
     error:      { type: String, trim: true },      // mensaje de error si status === 'failed'

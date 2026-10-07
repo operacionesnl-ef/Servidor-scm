@@ -6,6 +6,7 @@ const Template = require('../models/Template');
 const { encryptGoogleToken } = require('../utils/mailJobCrypto');
 const { kickMailJobWorker } = require('../services/mailJobWorker');
 const { logServerEvent } = require('../utils/serverLogger');
+const { mergeEmailLists } = require('../utils/emailList');
 
 const CODE_TO_KEY = { ANX: 'archivo1', FOR: 'archivo2', REP: 'archivo3', REV: 'archivo4' };
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -94,18 +95,32 @@ async function createMailJob(req, res, next) {
       return res.status(403).json({ message: 'Falta el permiso de lectura de Google Drive para descargar los adjuntos.' });
     }
 
-    const recipients = orderedAgencies.map((agency) => ({
-      agencyId: String(agency._id),
-      agencyName: agency.nombre,
-      correo: agency.correo.trim(),
-      attachments: template.archivosIndividuales.map((code) => {
-        const file = agency.archivos?.[CODE_TO_KEY[code]];
-        if (!file?.driveId) {
-          throw new Error(`Falta el archivo ${code} para ${agency.nombre}. No se inició el envío.`);
-        }
-        return { code, driveId: file.driveId, nombre: file.nombre || `${code}.pdf` };
-      }),
-    }));
+    const recipients = [];
+    for (const agency of orderedAgencies) {
+      const errors = {};
+      const primaryEmail = agency.correo.trim().toLowerCase();
+      const cc = mergeEmailLists([template.cc, agency.cc], 'cc', errors)
+        .filter((email) => email !== primaryEmail);
+      const cco = mergeEmailLists([template.cco, agency.cco], 'cco', errors)
+        .filter((email) => email !== primaryEmail && !cc.includes(email));
+      if (Object.keys(errors).length) {
+        return res.status(400).json({ message: `Hay direcciones CC/CCO no válidas para ${agency.nombre}.`, errors });
+      }
+      recipients.push({
+        agencyId: String(agency._id),
+        agencyName: agency.nombre,
+        correo: primaryEmail,
+        cc,
+        cco,
+        attachments: template.archivosIndividuales.map((code) => {
+          const file = agency.archivos?.[CODE_TO_KEY[code]];
+          if (!file?.driveId) {
+            throw new Error(`Falta el archivo ${code} para ${agency.nombre}. No se inició el envío.`);
+          }
+          return { code, driveId: file.driveId, nombre: file.nombre || `${code}.pdf` };
+        }),
+      });
+    }
 
     const job = await MailJob.create({
       owner: req.user._id,

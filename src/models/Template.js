@@ -41,6 +41,9 @@ const templateSchema = new mongoose.Schema(
       // Puede contener {{MES}}, {{AÑO}}, {{SUCURSAL}}
     },
 
+    cc: { type: [String], default: [] },
+    cco: { type: [String], default: [] },
+
     cuerpo: {
       type: String,
       default: '',

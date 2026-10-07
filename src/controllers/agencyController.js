@@ -9,10 +9,13 @@ const { FILE_TYPES } = require('../utils/agencyFileRefreshUtils');
 const { encryptGoogleToken } = require('../utils/mailJobCrypto');
 const { kickAgencyRefreshJobWorker } = require('../services/agencyRefreshJobWorker');
 const { refreshAgencyFromDrive } = require('../services/agencyDriveRefresh');
+const { normalizeEmailList } = require('../utils/emailList');
 
 const ALLOWED_FIELDS = new Set([
   'nombre',
   'correo',
+  'cc',
+  'cco',
   'entidadFederativa',
   'status',
   'archivos',
@@ -119,6 +122,13 @@ const validateAgencyInput = (body, partial) => {
     } else {
       value.correo = correo;
     }
+  }
+
+  for (const field of ['cc', 'cco']) {
+    const emails = normalizeEmailList(body[field], field, errors, {
+      partial: partial || body[field] === undefined,
+    });
+    if (emails !== undefined) value[field] = emails;
   }
 
   if (body.status !== undefined) {
@@ -385,7 +395,7 @@ const updateAgency = async (req, res, next) => {
       }
     }
 
-    for (const field of ['nombre', 'correo', 'entidadFederativa', 'status']) {
+    for (const field of ['nombre', 'correo', 'cc', 'cco', 'entidadFederativa', 'status']) {
       if (value[field] !== undefined) agency.set(field, value[field]);
     }
 
@@ -698,4 +708,5 @@ module.exports = {
   getActiveAgencyIntegrityJob,
   getAgencyMaintenanceHistory,
   getAgencyRefreshJob,
+  validateAgencyInput,
 };

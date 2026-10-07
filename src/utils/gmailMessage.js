@@ -8,10 +8,13 @@ function safeHeader(value) {
   return String(value || '').replace(/[\r\n]+/g, ' ').trim();
 }
 
-function buildRawMessage({ to, subject, text, attachments = [] }) {
+function buildRawMessage({ to, cc = [], bcc = [], cco = [], subject, text, attachments = [] }) {
+  const blindCopies = [...bcc, ...cco];
   const boundary = `scm-${randomBytes(16).toString('hex')}`;
   const parts = [
     `To: ${safeHeader(to)}`,
+    ...(cc.length ? [`Cc: ${cc.map(safeHeader).join(', ')}`] : []),
+    ...(blindCopies.length ? [`Bcc: ${blindCopies.map(safeHeader).join(', ')}`] : []),
     `Subject: =?UTF-8?B?${Buffer.from(safeHeader(subject), 'utf8').toString('base64')}?=`,
     'MIME-Version: 1.0',
     `Content-Type: multipart/mixed; boundary="${boundary}"`,

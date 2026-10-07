@@ -1,5 +1,6 @@
 const Template = require('../models/Template');
 const { logError } = require('../utils/consoleLogger');
+const { normalizeEmailList } = require('../utils/emailList');
 
 const getTemplates = async (req, res) => {
   try {
@@ -42,9 +43,15 @@ const getTemplateByKey = async (req, res) => {
 const createTemplate = async (req, res) => {
   try {
     const { key, nombre, asunto, cuerpo, archivosIndividuales, archivosGlobales, activa } = req.body;
+    const errors = {};
+    const cc = normalizeEmailList(req.body.cc, 'cc', errors);
+    const cco = normalizeEmailList(req.body.cco, 'cco', errors);
 
     if (!key || !nombre) {
       return res.status(400).json({ ok: false, message: 'Los campos key y nombre son obligatorios.' });
+    }
+    if (Object.keys(errors).length) {
+      return res.status(400).json({ ok: false, message: 'Hay direcciones CC/CCO no válidas.', errors });
     }
 
     const exists = await Template.findOne({ key: key.toLowerCase().trim() });
@@ -57,6 +64,8 @@ const createTemplate = async (req, res) => {
       nombre:               nombre.trim(),
       asunto:               asunto  || '',
       cuerpo:               cuerpo  || '',
+      cc,
+      cco,
       archivosIndividuales: archivosIndividuales || [],
       archivosGlobales:     archivosGlobales     || [],
       activa:               activa !== undefined ? activa : true,
@@ -77,15 +86,23 @@ const updateTemplate = async (req, res) => {
     const { nombre, asunto, cuerpo, archivosIndividuales, archivosGlobales, activa } = req.body;
 
     const allowed = {};
+    const errors = {};
     if (nombre               !== undefined) allowed.nombre               = nombre.trim();
     if (asunto               !== undefined) allowed.asunto               = asunto;
     if (cuerpo               !== undefined) allowed.cuerpo               = cuerpo;
     if (archivosIndividuales !== undefined) allowed.archivosIndividuales = archivosIndividuales;
     if (archivosGlobales     !== undefined) allowed.archivosGlobales     = archivosGlobales;
     if (activa               !== undefined) allowed.activa               = activa;
+    for (const field of ['cc', 'cco']) {
+      const emails = normalizeEmailList(req.body[field], field, errors, { partial: true });
+      if (emails !== undefined) allowed[field] = emails;
+    }
 
     if (!Object.keys(allowed).length) {
       return res.status(400).json({ ok: false, message: 'No se enviaron campos para actualizar.' });
+    }
+    if (Object.keys(errors).length) {
+      return res.status(400).json({ ok: false, message: 'Hay direcciones CC/CCO no válidas.', errors });
     }
 
     const template = await Template.findOneAndUpdate(
