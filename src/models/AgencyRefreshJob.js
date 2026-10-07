@@ -1,6 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const { publishNotificationChange } = require('../services/notificationEvents');
 
 const agencyRefreshResultSchema = new mongoose.Schema({
   agencyId: { type: String, required: true },
@@ -41,5 +42,10 @@ const agencyRefreshJobSchema = new mongoose.Schema({
 
 agencyRefreshJobSchema.index({ owner: 1, jobType: 1, status: 1, createdAt: -1 });
 agencyRefreshJobSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+agencyRefreshJobSchema.post('save', publishNotificationChange);
+agencyRefreshJobSchema.post('findOneAndUpdate', publishNotificationChange);
+agencyRefreshJobSchema.post('updateOne', publishNotificationChange);
+agencyRefreshJobSchema.post('updateMany', publishNotificationChange);
 
 module.exports = mongoose.model('AgencyRefreshJob', agencyRefreshJobSchema);

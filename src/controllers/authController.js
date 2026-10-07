@@ -162,4 +162,63 @@ const googleDesktopLogin = async (req, res, next) => {
   return completeGoogleLogin(payload, req, res, next, { googleAccessToken });
 };
 
-module.exports = { googleLogin, googleDesktopLogin, isLoopbackRedirectUri };
+const googleDesktopDriveToken = async (req, res, next) => {
+  const { code, codeVerifier, redirectUri } = req.body || {};
+  const { GOOGLE_DESKTOP_CLIENT_ID, GOOGLE_DESKTOP_CLIENT_SECRET } = process.env;
+
+  if (
+    typeof code !== 'string' || !code.trim() ||
+    typeof codeVerifier !== 'string' || !/^[A-Za-z0-9._~-]{43,128}$/.test(codeVerifier) ||
+    !isLoopbackRedirectUri(redirectUri)
+  ) {
+    return res.status(400).json({ message: 'Desktop Google authorization response is invalid' });
+  }
+  if (!GOOGLE_DESKTOP_CLIENT_ID || !GOOGLE_DESKTOP_CLIENT_SECRET) {
+    return res.status(500).json({ message: 'Desktop Google authentication is not configured on the server' });
+  }
+
+  let tokens;
+  let payload;
+  try {
+    const oauthClient = new OAuth2Client(
+      GOOGLE_DESKTOP_CLIENT_ID,
+      GOOGLE_DESKTOP_CLIENT_SECRET,
+      redirectUri,
+    );
+    ({ tokens } = await oauthClient.getToken({
+      code,
+      codeVerifier,
+      redirect_uri: redirectUri,
+    }));
+    if (typeof tokens?.id_token !== 'string' || typeof tokens.access_token !== 'string') {
+      return res.status(401).json({ message: 'Google no devolvió los tokens necesarios para autorizar Drive.' });
+    }
+    const ticket = await googleClient.verifyIdToken({
+      idToken: tokens.id_token,
+      audience: GOOGLE_DESKTOP_CLIENT_ID,
+    });
+    payload = ticket.getPayload();
+  } catch (error) {
+    const code = getGoogleOAuthErrorCode(error);
+    const description = getGoogleOAuthErrorDescription(error);
+    logError(
+      'Google rechazó la autorización de Drive de escritorio',
+      new Error(`Google OAuth error: ${code}${description ? ` (${description})` : ''}`),
+    );
+    return res.status(401).json({
+      message: `No se pudo autorizar Google Drive (${code})${description ? `: ${description}` : ''}.`,
+    });
+  }
+
+  if (
+    typeof payload?.email !== 'string' ||
+    payload?.email_verified !== true ||
+    payload.email?.toLowerCase() !== req.user.correo.toLowerCase()
+  ) {
+    return res.status(403).json({ message: 'La cuenta de Drive debe coincidir con la cuenta que inició sesión en EFCore.' });
+  }
+
+  return res.json({ googleAccessToken: tokens.access_token });
+};
+
+module.exports = { googleLogin, googleDesktopLogin, googleDesktopDriveToken, isLoopbackRedirectUri };

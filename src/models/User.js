@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { publishNotificationChange } = require('../services/notificationEvents');
 
 const userSchema = new mongoose.Schema(
   {
@@ -19,9 +20,14 @@ const userSchema = new mongoose.Schema(
       passwordHash: { type: String },
       ultimoAcceso: { type: Date },
     },
+    readNotificationIds: { type: [String], default: [] },
+    quickViewHiddenNotifications: { type: [String], default: [] },
     tokenUnico: { type: String, unique: true, sparse: true },
   },
   { timestamps: true }
 );
+
+userSchema.post('findOneAndUpdate', publishNotificationChange);
+userSchema.post('updateOne', publishNotificationChange);
 
 module.exports = mongoose.model('User', userSchema);

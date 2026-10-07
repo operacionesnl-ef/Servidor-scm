@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { publishNotificationChange } = require('../services/notificationEvents');
 
 const jobRecipientSchema = new mongoose.Schema({
   agencyId: { type: String, required: true },
@@ -54,5 +55,10 @@ const mailJobSchema = new mongoose.Schema({
 
 mailJobSchema.index({ status: 1, createdAt: 1 });
 mailJobSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+mailJobSchema.post('save', publishNotificationChange);
+mailJobSchema.post('findOneAndUpdate', publishNotificationChange);
+mailJobSchema.post('updateOne', publishNotificationChange);
+mailJobSchema.post('updateMany', publishNotificationChange);
 
 module.exports = mongoose.model('MailJob', mailJobSchema);

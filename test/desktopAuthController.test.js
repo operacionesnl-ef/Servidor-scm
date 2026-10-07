@@ -5,7 +5,11 @@ const http = require('node:http');
 const { OAuth2Client } = require('google-auth-library');
 const User = require('../src/models/User');
 const ServerEvent = require('../src/models/ServerEvent');
-const { googleDesktopLogin, isLoopbackRedirectUri } = require('../src/controllers/authController');
+const {
+  googleDesktopDriveToken,
+  googleDesktopLogin,
+  isLoopbackRedirectUri,
+} = require('../src/controllers/authController');
 const authRoutes = require('../src/routes/authRoutes');
 
 function createResponse() {
@@ -180,6 +184,57 @@ test('reports a safe Google error code when the authorization code exchange is r
   }
 });
 
+test('exchanges desktop Drive authorization only for the signed-in Google account', async () => {
+  const original = {
+    getToken: OAuth2Client.prototype.getToken,
+    verifyIdToken: OAuth2Client.prototype.verifyIdToken,
+    clientId: process.env.GOOGLE_DESKTOP_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_DESKTOP_CLIENT_SECRET,
+  };
+  process.env.GOOGLE_DESKTOP_CLIENT_ID = 'desktop.apps.googleusercontent.com';
+  process.env.GOOGLE_DESKTOP_CLIENT_SECRET = 'desktop-client-secret-test';
+  OAuth2Client.prototype.getToken = async function getToken(options) {
+    assert.equal(options.code, 'drive-code');
+    assert.equal(options.codeVerifier, 'A'.repeat(43));
+    return { tokens: { id_token: 'verified-id-token', access_token: 'drive-access-token' } };
+  };
+  OAuth2Client.prototype.verifyIdToken = async () => ({
+    getPayload: () => ({ email: 'ana@example.com', email_verified: true }),
+  });
+
+  try {
+    const res = createResponse();
+    await googleDesktopDriveToken({
+      body: {
+        code: 'drive-code',
+        codeVerifier: 'A'.repeat(43),
+        redirectUri: 'http://127.0.0.1:43210',
+      },
+      user: { correo: 'ana@example.com' },
+    }, res, (error) => { throw error; });
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.body, { googleAccessToken: 'drive-access-token' });
+
+    const wrongAccount = createResponse();
+    await googleDesktopDriveToken({
+      body: {
+        code: 'drive-code',
+        codeVerifier: 'A'.repeat(43),
+        redirectUri: 'http://127.0.0.1:43210',
+      },
+      user: { correo: 'other@example.com' },
+    }, wrongAccount, (error) => { throw error; });
+    assert.equal(wrongAccount.statusCode, 403);
+  } finally {
+    OAuth2Client.prototype.getToken = original.getToken;
+    OAuth2Client.prototype.verifyIdToken = original.verifyIdToken;
+    if (original.clientId === undefined) delete process.env.GOOGLE_DESKTOP_CLIENT_ID;
+    else process.env.GOOGLE_DESKTOP_CLIENT_ID = original.clientId;
+    if (original.clientSecret === undefined) delete process.env.GOOGLE_DESKTOP_CLIENT_SECRET;
+    else process.env.GOOGLE_DESKTOP_CLIENT_SECRET = original.clientSecret;
+  }
+});
+
 test('registers POST /api/auth/google/desktop in the auth router', async () => {
   const app = express();
   app.use(express.json());
@@ -198,6 +253,29 @@ test('registers POST /api/auth/google/desktop in the auth router', async () => {
     assert.deepEqual(await response.json(), {
       message: 'Desktop Google authorization response is invalid',
     });
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  }
+});
+
+test('requires an application session before authorizing desktop Drive access', async () => {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/auth', authRoutes);
+  const server = http.createServer(app);
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/auth/google/desktop/drive`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { message: 'Authentication token is required' });
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());

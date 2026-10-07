@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { publishNotificationChange } = require('../services/notificationEvents');
 
 const archivoSchema = new mongoose.Schema(
   {
@@ -57,5 +58,11 @@ const agencySchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+agencySchema.post('save', publishNotificationChange);
+agencySchema.post('findOneAndUpdate', publishNotificationChange);
+agencySchema.post('findOneAndDelete', publishNotificationChange);
+agencySchema.post('updateOne', publishNotificationChange);
+agencySchema.post('deleteOne', publishNotificationChange);
 
 module.exports = mongoose.model('Agency', agencySchema);

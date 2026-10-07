@@ -1,6 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const { publishNotificationChange } = require('../services/notificationEvents');
 
 const notificationSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true, maxlength: 160 },
@@ -17,5 +18,9 @@ const notificationSchema = new mongoose.Schema({
 
 notificationSchema.index({ audience: 1, createdAt: -1 });
 notificationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+notificationSchema.post('save', publishNotificationChange);
+notificationSchema.post('findOneAndUpdate', publishNotificationChange);
+notificationSchema.post('updateMany', publishNotificationChange);
 
 module.exports = mongoose.model('Notification', notificationSchema);

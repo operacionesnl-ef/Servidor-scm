@@ -7,10 +7,16 @@ const Agency = require('../src/models/Agency');
 const AgencyRefreshJob = require('../src/models/AgencyRefreshJob');
 const MailJob = require('../src/models/MailJob');
 const Notification = require('../src/models/Notification');
+const User = require('../src/models/User');
+const { EventEmitter } = require('node:events');
 const {
   getNotifications,
+  hideNotificationFromQuickView,
+  markNotificationRead,
   publishGlobalNotification,
+  streamNotificationEvents,
 } = require('../src/controllers/notificationController');
+const { publishNotificationChange } = require('../src/services/notificationEvents');
 
 function listQuery(items) {
   return {
@@ -104,6 +110,111 @@ test('notification feed exposes administrative process queries only to admin rol
     Notification.find = originalMethods.notificationFind;
     AgencyRefreshJob.find = originalMethods.refreshFind;
     MailJob.find = originalMethods.mailFind;
+  }
+});
+
+test('quick notification feed includes every unread item and only three visible read items', async () => {
+  const originalMethods = {
+    agencyFind: Agency.find,
+    notificationFind: Notification.find,
+    refreshFind: AgencyRefreshJob.find,
+    mailFind: MailJob.find,
+  };
+  const notices = [
+    { _id: '507f1f77bcf86cd799439001', title: 'Unread 1', message: 'One', severity: 'low', readBy: [], createdAt: new Date('2026-10-06T00:00:00Z') },
+    { _id: '507f1f77bcf86cd799439002', title: 'Unread 2', message: 'Two', severity: 'low', readBy: [], createdAt: new Date('2026-10-05T00:00:00Z') },
+    ...Array.from({ length: 4 }, (_, index) => ({
+      _id: `507f1f77bcf86cd79943900${index + 3}`,
+      title: `Read ${index}`,
+      message: 'Read notice',
+      severity: 'low',
+      readBy: ['user-id'],
+      createdAt: new Date(Date.UTC(2026, 9, index + 1)),
+    })),
+  ];
+  Agency.find = () => listQuery([]);
+  Notification.find = () => listQuery(notices);
+  AgencyRefreshJob.find = () => listQuery([]);
+  MailJob.find = () => listQuery([]);
+
+  try {
+    const res = response();
+    await getNotifications({
+      query: { view: 'quick' },
+      user: { _id: 'user-id', rol: 'user', readNotificationIds: [], quickViewHiddenNotifications: ['507f1f77bcf86cd799439001'] },
+    }, res, (error) => { throw error; });
+
+    assert.equal(res.body.items.length, 4);
+    assert.equal(res.body.items.filter((item) => !item.read).length, 1);
+    assert.equal(res.body.items.filter((item) => item.read).length, 3);
+    assert.equal(res.body.items.some((item) => item.id === '507f1f77bcf86cd799439001'), false);
+    assert.equal(res.body.unreadCount, 2);
+  } finally {
+    Agency.find = originalMethods.agencyFind;
+    Notification.find = originalMethods.notificationFind;
+    AgencyRefreshJob.find = originalMethods.refreshFind;
+    MailJob.find = originalMethods.mailFind;
+  }
+});
+
+test('notification SSE sends an initial refresh and broadcasts persisted changes', async () => {
+  const req = new EventEmitter();
+  const res = new EventEmitter();
+  const writes = [];
+  res.destroyed = false;
+  res.status = () => res;
+  res.set = () => res;
+  res.flushHeaders = () => {};
+  res.write = (value) => { writes.push(value); return true; };
+
+  streamNotificationEvents(req, res);
+  assert.equal(writes.some((event) => event.includes('event: change')), true);
+  publishNotificationChange();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(writes.filter((event) => event.includes('event: change')).length, 2);
+  res.destroyed = true;
+  res.emit('close');
+});
+
+test('hiding a quick-view item stores its id only on the authenticated user', async () => {
+  const originalUpdate = User.updateOne;
+  let update;
+  User.updateOne = async (...args) => { update = args; return { modifiedCount: 1 }; };
+
+  try {
+    const res = response();
+    await hideNotificationFromQuickView({
+      params: { id: 'reminder:2026-10:507f1f77bcf86cd799439011' },
+      user: { _id: 'user-id', quickViewHiddenNotifications: [] },
+    }, res, (error) => { throw error; });
+    assert.deepEqual(update, [
+      { _id: 'user-id' },
+      { $addToSet: { quickViewHiddenNotifications: 'reminder:2026-10:507f1f77bcf86cd799439011' } },
+    ]);
+    assert.equal(res.body.success, true);
+  } finally {
+    User.updateOne = originalUpdate;
+  }
+});
+
+test('marking a synthetic reminder as read is stored per user', async () => {
+  const originalUpdate = User.updateOne;
+  let update;
+  User.updateOne = async (...args) => { update = args; return { modifiedCount: 1 }; };
+
+  try {
+    const res = response();
+    await markNotificationRead({
+      params: { id: 'reminder:2026-10:507f1f77bcf86cd799439011' },
+      user: { _id: 'user-id' },
+    }, res, (error) => { throw error; });
+    assert.deepEqual(update, [
+      { _id: 'user-id' },
+      { $addToSet: { readNotificationIds: 'reminder:2026-10:507f1f77bcf86cd799439011' } },
+    ]);
+    assert.equal(res.body.success, true);
+  } finally {
+    User.updateOne = originalUpdate;
   }
 });
 
