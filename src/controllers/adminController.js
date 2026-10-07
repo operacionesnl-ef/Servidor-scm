@@ -6,11 +6,13 @@ const mongoose = require('mongoose');
 const Agency = require('../models/Agency');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
 const MailLog = require('../models/Maillog');
+require('../models/AuthSession');
 
 const FILE_FIELDS = ['archivo1', 'archivo2', 'archivo3', 'archivo4'];
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const SENSITIVE_EXPORT_PATHS = {
   User: ['autenticacion.passwordHash', 'tokenUnico'],
+  AuthSession: ['tokenHash'],
   MailJob: ['encryptedGoogleAccessToken'],
   AgencyRefreshJob: ['encryptedGoogleAccessToken'],
 };

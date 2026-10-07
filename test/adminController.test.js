@@ -7,6 +7,7 @@ const Agency = require('../src/models/Agency');
 const AgencyRefreshJob = require('../src/models/AgencyRefreshJob');
 const MailLog = require('../src/models/Maillog');
 const User = require('../src/models/User');
+const AuthSession = require('../src/models/AuthSession');
 const {
   getDashboard,
   getSystemMetrics,
@@ -165,5 +166,44 @@ test('JSON exports omit password hashes and unique user tokens', async () => {
     assert.match(response.filename, /\.json$/);
   } finally {
     User.collection.find = originalFind;
+  }
+});
+
+test('JSON exports never include authentication session token hashes', async () => {
+  const originalFind = AuthSession.collection.find;
+  let projection;
+  AuthSession.collection.find = (_filter, options) => {
+    projection = options.projection;
+    return {
+      async *[Symbol.asyncIterator]() {
+        yield {
+          userId: 'user-1',
+          tokenHash: 'session-secret-hash',
+        };
+      },
+      close: async () => {},
+    };
+  };
+  const chunks = [];
+  const response = {
+    headersSent: false,
+    attachment() { return this; },
+    type() { return this; },
+    write(chunk) { this.headersSent = true; chunks.push(chunk); return true; },
+    end(chunk = '') { chunks.push(chunk); },
+    destroy(error) { throw error; },
+  };
+
+  try {
+    await exportCollection(
+      { params: { collection: AuthSession.collection.name }, query: { format: 'json' } },
+      response,
+      (error) => { throw error; }
+    );
+    const exported = JSON.parse(chunks.join(''));
+    assert.equal(projection.tokenHash, 0);
+    assert.equal(exported[0].tokenHash, undefined);
+  } finally {
+    AuthSession.collection.find = originalFind;
   }
 });

@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const express = require('express');
 const http = require('node:http');
+const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
 const User = require('../src/models/User');
 const ServerEvent = require('../src/models/ServerEvent');
@@ -16,6 +17,7 @@ function createResponse() {
   return {
     statusCode: 200,
     body: undefined,
+    set() { return this; },
     status(code) { this.statusCode = code; return this; },
     json(body) { this.body = body; return this; },
   };
@@ -87,6 +89,7 @@ test('exchanges a PKCE authorization code, verifies desktop audience, and issues
     assert.equal(response.body.user.correo, 'ana@example.com');
     assert.equal(response.body.googleAccessToken, 'gmail-access-token');
     assert.ok(response.body.token);
+    assert.equal(jwt.decode(response.body.token).client, 'desktop');
   } finally {
     OAuth2Client.prototype.getToken = originals.getToken;
     OAuth2Client.prototype.verifyIdToken = originals.verifyIdToken;
@@ -253,6 +256,29 @@ test('registers POST /api/auth/google/desktop in the auth router', async () => {
     assert.deepEqual(await response.json(), {
       message: 'Desktop Google authorization response is invalid',
     });
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  }
+});
+
+test('protects the new web session login endpoint with an origin check', async () => {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/auth', authRoutes);
+  const server = http.createServer(app);
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/auth/google/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { message: 'Origen de solicitud no autorizado.' });
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
