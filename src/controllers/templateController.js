@@ -2,6 +2,16 @@ const Template = require('../models/Template');
 const { logError } = require('../utils/consoleLogger');
 const { normalizeEmailList } = require('../utils/emailList');
 
+function isValidFileConfiguration(archivosIndividuales, archivosOpcionales) {
+  const validCodes = new Set(Template.CODIGOS_ARCHIVOS);
+  return Array.isArray(archivosIndividuales)
+    && Array.isArray(archivosOpcionales)
+    && archivosIndividuales.every((code) => validCodes.has(code))
+    && archivosOpcionales.every((code) => (
+      validCodes.has(code) && archivosIndividuales.includes(code)
+    ));
+}
+
 const getTemplates = async (req, res) => {
   try {
     const templates = await Template.find()
@@ -42,13 +52,30 @@ const getTemplateByKey = async (req, res) => {
 
 const createTemplate = async (req, res) => {
   try {
-    const { key, nombre, asunto, cuerpo, archivosIndividuales, archivosGlobales, activa } = req.body;
+    const {
+      key,
+      nombre,
+      asunto,
+      cuerpo,
+      archivosIndividuales,
+      archivosOpcionales,
+      archivosGlobales,
+      activa,
+    } = req.body;
     const errors = {};
     const cc = normalizeEmailList(req.body.cc, 'cc', errors);
     const cco = normalizeEmailList(req.body.cco, 'cco', errors);
+    const individualCodes = archivosIndividuales ?? [];
+    const optionalCodes = archivosOpcionales ?? [];
 
     if (!key || !nombre) {
       return res.status(400).json({ ok: false, message: 'Los campos key y nombre son obligatorios.' });
+    }
+    if (!isValidFileConfiguration(individualCodes, optionalCodes)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Los archivos opcionales deben ser archivos individuales incluidos en la plantilla.',
+      });
     }
     if (Object.keys(errors).length) {
       return res.status(400).json({ ok: false, message: 'Hay direcciones CC/CCO no válidas.', errors });
@@ -66,7 +93,8 @@ const createTemplate = async (req, res) => {
       cuerpo:               cuerpo  || '',
       cc,
       cco,
-      archivosIndividuales: archivosIndividuales || [],
+      archivosIndividuales: individualCodes,
+      archivosOpcionales: optionalCodes,
       archivosGlobales:     archivosGlobales     || [],
       activa:               activa !== undefined ? activa : true,
     });
@@ -83,7 +111,15 @@ const createTemplate = async (req, res) => {
 
 const updateTemplate = async (req, res) => {
   try {
-    const { nombre, asunto, cuerpo, archivosIndividuales, archivosGlobales, activa } = req.body;
+    const {
+      nombre,
+      asunto,
+      cuerpo,
+      archivosIndividuales,
+      archivosOpcionales,
+      archivosGlobales,
+      activa,
+    } = req.body;
 
     const allowed = {};
     const errors = {};
@@ -91,6 +127,7 @@ const updateTemplate = async (req, res) => {
     if (asunto               !== undefined) allowed.asunto               = asunto;
     if (cuerpo               !== undefined) allowed.cuerpo               = cuerpo;
     if (archivosIndividuales !== undefined) allowed.archivosIndividuales = archivosIndividuales;
+    if (archivosOpcionales   !== undefined) allowed.archivosOpcionales   = archivosOpcionales;
     if (archivosGlobales     !== undefined) allowed.archivosGlobales     = archivosGlobales;
     if (activa               !== undefined) allowed.activa               = activa;
     for (const field of ['cc', 'cco']) {
@@ -103,6 +140,22 @@ const updateTemplate = async (req, res) => {
     }
     if (Object.keys(errors).length) {
       return res.status(400).json({ ok: false, message: 'Hay direcciones CC/CCO no válidas.', errors });
+    }
+
+    if (allowed.archivosIndividuales !== undefined || allowed.archivosOpcionales !== undefined) {
+      const currentTemplate = await Template.findOne({ key: req.params.key.toLowerCase() })
+        .select('archivosIndividuales archivosOpcionales');
+      if (!currentTemplate) {
+        return res.status(404).json({ ok: false, message: 'Plantilla no encontrada.' });
+      }
+      const nextIndividualCodes = allowed.archivosIndividuales ?? currentTemplate.archivosIndividuales ?? [];
+      const nextOptionalCodes = allowed.archivosOpcionales ?? currentTemplate.archivosOpcionales ?? [];
+      if (!isValidFileConfiguration(nextIndividualCodes, nextOptionalCodes)) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Los archivos opcionales deben ser archivos individuales incluidos en la plantilla.',
+        });
+      }
     }
 
     const template = await Template.findOneAndUpdate(

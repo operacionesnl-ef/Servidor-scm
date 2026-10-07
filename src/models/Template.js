@@ -62,6 +62,14 @@ const templateSchema = new mongoose.Schema(
     },
 
     /*
+     * Subconjunto de archivos individuales que se omiten si una agencia no tiene el archivo.
+     */
+    archivosOpcionales: {
+      type: [{ type: String, enum: CODIGOS_ARCHIVOS }],
+      default: [],
+    },
+
+    /*
      * Archivos fijos que se adjuntan igual a todas las agencias.
      * Se elige desde Drive en el editor de plantillas.
      */

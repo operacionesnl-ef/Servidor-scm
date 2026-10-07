@@ -244,7 +244,7 @@ test('accepts only configured browser origins for login and rejects cross-site m
   }
 });
 
-test('rejects pre-migration bearer tokens while retaining explicitly tagged desktop sessions', async () => {
+test('rejects pre-migration and desktop bearer tokens', async () => {
   const originalSecret = process.env.JWT_SECRET;
   const originalFindById = User.findById;
   process.env.JWT_SECRET = 'session-migration-test-secret';
@@ -265,7 +265,8 @@ test('rejects pre-migration bearer tokens while retaining explicitly tagged desk
       headers: { authorization: `Bearer ${desktopToken}` },
       method: 'GET',
     }, desktopResponse, () => { continued = true; });
-    assert.equal(continued, true);
+    assert.equal(continued, false);
+    assert.equal(desktopResponse.statusCode, 401);
   } finally {
     User.findById = originalFindById;
     if (originalSecret === undefined) delete process.env.JWT_SECRET;

@@ -13,6 +13,22 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const REQUIRED_GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
 const REQUIRED_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 
+function resolveAgencyAttachments(agency, template) {
+  const optionalCodes = new Set(template.archivosOpcionales || []);
+  const attachments = [];
+
+  for (const code of template.archivosIndividuales || []) {
+    const file = agency.archivos?.[CODE_TO_KEY[code]];
+    if (!file?.driveId) {
+      if (optionalCodes.has(code)) continue;
+      throw new Error(`Falta el archivo ${code} para ${agency.nombre}. No se inició el envío.`);
+    }
+    attachments.push({ code, driveId: file.driveId, nombre: file.nombre || `${code}.pdf` });
+  }
+
+  return attachments;
+}
+
 function serializeJob(job) {
   return {
     id: String(job._id),
@@ -90,7 +106,9 @@ async function createMailJob(req, res, next) {
       });
     }
 
-    const needsDrive = template.archivosIndividuales.length > 0 || template.archivosGlobales.length > 0;
+    const needsDrive = template.archivosGlobales.length > 0 || orderedAgencies.some((agency) => (
+      template.archivosIndividuales.some((code) => agency.archivos?.[CODE_TO_KEY[code]]?.driveId)
+    ));
     if (needsDrive && !scopes.includes(REQUIRED_DRIVE_SCOPE)) {
       return res.status(403).json({ message: 'Falta el permiso de lectura de Google Drive para descargar los adjuntos.' });
     }
@@ -112,13 +130,7 @@ async function createMailJob(req, res, next) {
         correo: primaryEmail,
         cc,
         cco,
-        attachments: template.archivosIndividuales.map((code) => {
-          const file = agency.archivos?.[CODE_TO_KEY[code]];
-          if (!file?.driveId) {
-            throw new Error(`Falta el archivo ${code} para ${agency.nombre}. No se inició el envío.`);
-          }
-          return { code, driveId: file.driveId, nombre: file.nombre || `${code}.pdf` };
-        }),
+        attachments: resolveAgencyAttachments(agency, template),
       });
     }
 
@@ -171,4 +183,4 @@ async function getMailJob(req, res, next) {
   }
 }
 
-module.exports = { createMailJob, getActiveMailJob, getMailJob };
+module.exports = { createMailJob, getActiveMailJob, getMailJob, resolveAgencyAttachments };

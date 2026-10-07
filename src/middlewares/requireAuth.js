@@ -61,7 +61,7 @@ const requireAuth = async (req, res, next) => {
     return reject(res, 'Authentication token is invalid or expired');
   }
 
-  if (!claims.sub || !['desktop', 'legacy'].includes(claims.client)) {
+  if (!claims.sub || claims.client !== 'legacy') {
     return reject(res, 'Authentication token is invalid');
   }
 
