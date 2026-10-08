@@ -2,6 +2,8 @@ const express = require('express');
 const requireAuth = require('../middlewares/requireAuth');
 const {
   getAgencyEmails,
+  getAgencySearchPeriod,
+  updateAgencySearchPeriod,
   getAgencies,
   getAgencyById,
   createAgency,
@@ -20,6 +22,8 @@ const {
 const router = express.Router();
 
 router.use(requireAuth);
+router.get('/search-period', getAgencySearchPeriod);
+router.put('/search-period', updateAgencySearchPeriod);
 router.get('/emails', getAgencyEmails);
 router.get('/', getAgencies);
 router.post('/', createAgency);

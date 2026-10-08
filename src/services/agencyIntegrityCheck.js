@@ -133,10 +133,19 @@ async function inspectFile(drive, agency, fileType) {
   };
 }
 
-async function inspectAgencyIntegrity(drive, agency) {
+async function inspectAgencyIntegrity(drive, agency, expectedPeriod) {
   const checks = [];
   for (const fileType of FILE_TYPES) {
-    checks.push(await inspectFile(drive, agency, fileType));
+    const check = await inspectFile(drive, agency, fileType);
+    if (
+      expectedPeriod &&
+      check.period &&
+      (check.period.year !== expectedPeriod.year || check.period.month !== expectedPeriod.month)
+    ) {
+      check.problems.push('La fecha del archivo no coincide con el período seleccionado.');
+      if (check.status === 'ok') check.status = 'warning';
+    }
+    checks.push(check);
   }
 
   const actualPeriods = new Set(

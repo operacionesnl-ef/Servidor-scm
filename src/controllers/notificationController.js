@@ -3,6 +3,7 @@
 const mongoose = require('mongoose');
 const Agency = require('../models/Agency');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
+const GlobalSetting = require('../models/GlobalSetting');
 const MailJob = require('../models/MailJob');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
@@ -58,7 +59,8 @@ async function getNotifications(req, res, next) {
     const userId = req.user._id;
     const isAdmin = ['admin', 'developer'].includes(req.user.rol);
     const now = new Date();
-    const period = getMexicoPeriod(now);
+    const savedPeriod = await GlobalSetting.findById('agency-search-period').lean();
+    const period = savedPeriod || getMexicoPeriod(now);
     const [agencies, announcements, refreshJobs, mailJobs] = await Promise.all([
       Agency.find({ status: 'activa' })
         .select('_id nombre archivos')

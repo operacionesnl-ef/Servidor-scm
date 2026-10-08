@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 const { google } = require('googleapis');
 const Agency = require('../models/Agency');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
+const GlobalSetting = require('../models/GlobalSetting');
+const Notification = require('../models/Notification');
 const SentEmail = require('../models/SentEmail');
 const { success } = require('../utils/response');
 const { updateDrivePattern } = require('../utils/drivePatternUtils');
@@ -10,6 +12,63 @@ const { encryptGoogleToken } = require('../utils/mailJobCrypto');
 const { kickAgencyRefreshJobWorker } = require('../services/agencyRefreshJobWorker');
 const { refreshAgencyFromDrive } = require('../services/agencyDriveRefresh');
 const { normalizeEmailList } = require('../utils/emailList');
+const { getMexicoPeriod } = require('../utils/notificationUtils');
+const { logEvent } = require('../utils/consoleLogger');
+
+const AGENCY_SEARCH_PERIOD_SETTING = 'agency-search-period';
+
+const serializeAgencySearchPeriod = (setting) => ({
+  year: setting.year,
+  month: setting.month,
+});
+
+const getAgencySearchPeriod = async (req, res, next) => {
+  try {
+    const fallbackPeriod = getMexicoPeriod();
+    const setting = await GlobalSetting.findOneAndUpdate(
+      { _id: AGENCY_SEARCH_PERIOD_SETTING },
+      { $setOnInsert: fallbackPeriod },
+      { new: true, upsert: true, setDefaultsOnInsert: true },
+    ).lean();
+    return res.json(serializeAgencySearchPeriod(setting));
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const updateAgencySearchPeriod = async (req, res, next) => {
+  const { year, month } = req.body || {};
+  if (!Number.isInteger(year) || year < 2020 || year > 2040) {
+    return validationFailure(res, { year: 'Must be an integer between 2020 and 2040' });
+  }
+  if (!Number.isInteger(month) || month < 1 || month > 12) {
+    return validationFailure(res, { month: 'Must be an integer between 1 and 12' });
+  }
+
+  try {
+    const previous = await GlobalSetting.findById(AGENCY_SEARCH_PERIOD_SETTING).lean();
+    const setting = await GlobalSetting.findOneAndUpdate(
+      { _id: AGENCY_SEARCH_PERIOD_SETTING },
+      { $set: { year, month, updatedBy: req.user._id } },
+      { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
+    ).lean();
+
+    if (previous?.year !== year || previous?.month !== month) {
+      const label = `${String(month).padStart(2, '0')}/${year}`;
+      await Notification.create({
+        title: 'Período de archivos actualizado',
+        message: `El período compartido para buscar y verificar archivos se cambió a ${label}.`,
+        severity: 'low',
+        audience: 'all',
+        createdBy: req.user._id,
+      });
+    }
+
+    return res.json(serializeAgencySearchPeriod(setting));
+  } catch (error) {
+    return next(error);
+  }
+};
 
 const ALLOWED_FIELDS = new Set([
   'nombre',
@@ -525,6 +584,20 @@ const refreshAgencyFiles = async (req, res, next) => {
     const auth = await validateDriveToken(googleAccessToken.trim());
     const drive = google.drive({ version: 'v3', auth });
     const update = await refreshAgencyFromDrive(agency, drive, year, month, folderId?.trim());
+    try {
+      const foundFiles = update.summary?.found || 0;
+      await Notification.create({
+        title: 'Resultado de actualización de archivos',
+        message: foundFiles
+          ? `Se actualizaron ${foundFiles} de 4 archivos de ${agency.nombre} para ${String(month).padStart(2, '0')}/${year}.`
+          : `No se encontraron archivos actualizables para ${agency.nombre} en ${String(month).padStart(2, '0')}/${year}.`,
+        severity: foundFiles === 4 ? 'low' : 'medium',
+        audience: 'all',
+        createdBy: req.user._id,
+      });
+    } catch (notificationError) {
+      logEvent('agency_notification_failed', { message: notificationError.message });
+    }
 
     return success(res, update, 'Files refreshed');
   } catch (err) {
@@ -694,6 +767,8 @@ const getAgencyRefreshJob = async (req, res, next) => {
 };
 
 module.exports = {
+  getAgencySearchPeriod,
+  updateAgencySearchPeriod,
   getAgencyEmails,
   getAgencies,
   getAgencyById,

@@ -3,6 +3,7 @@
 const { google } = require('googleapis');
 const Agency = require('../models/Agency');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
+const Notification = require('../models/Notification');
 const { decryptGoogleToken } = require('../utils/mailJobCrypto');
 const { FILE_TYPES } = require('../utils/agencyFileRefreshUtils');
 const { refreshAgencyFromDrive } = require('./agencyDriveRefresh');
@@ -69,7 +70,7 @@ async function processJob(job) {
 
     try {
       const update = job.jobType === 'integrity'
-        ? await inspectAgencyIntegrity(drive, agency)
+        ? await inspectAgencyIntegrity(drive, agency, { year: job.year, month: job.month })
         : await refreshAgencyFromDrive(agency, drive, job.year, job.month);
       const missingKeys = job.jobType === 'integrity'
         ? update.missingKeys
@@ -112,6 +113,20 @@ async function processJob(job) {
   job.currentName = '';
   job.expiresAt = hasIssues ? null : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
   await job.save();
+  const period = `${String(job.month).padStart(2, '0')}/${job.year}`;
+  const processTitle = job.jobType === 'integrity' ? 'Verificación de archivos' : 'Actualización de archivos';
+  const outcome = hasIssues ? 'terminó con incidencias' : 'se completó correctamente';
+  try {
+    await Notification.create({
+      title: `${processTitle} ${hasIssues ? 'con incidencias' : 'completada'}`,
+      message: `La ${processTitle.toLocaleLowerCase()} ${outcome} para ${period}: ${job.completed} de ${job.total} agencias procesadas.`,
+      severity: hasIssues ? 'medium' : 'low',
+      audience: 'all',
+      createdBy: job.owner,
+    });
+  } catch (notificationError) {
+    logEvent('agency_notification_failed', { message: notificationError.message, jobId: String(job._id) });
+  }
   await logServerEvent(job.jobType === 'integrity' ? 'agency_integrity_finished' : 'agency_refresh_finished', {
     userId: job.owner,
     jobId: job._id,

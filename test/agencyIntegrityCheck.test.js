@@ -75,6 +75,25 @@ test('does not report a changed Drive filename as an integrity problem', async (
   assert.ok(result.checks.every((check) => check.problems.length === 0));
 });
 
+test('reports files that do not match the selected search period', async () => {
+  const drive = {
+    files: {
+      async get({ fileId }) {
+        const index = Number(fileId.slice(-1));
+        const code = ['ANX', 'FOR', 'REP', 'REV'][index];
+        return { data: { name: `${code}_2026_08.xlsx`, size: '10' } };
+      },
+    },
+  };
+
+  const result = await inspectAgencyIntegrity(drive, agencyWithFiles(), { year: 2026, month: 9 });
+
+  assert.equal(result.status, 'issues');
+  assert.ok(result.checks.every((check) => (
+    check.problems.includes('La fecha del archivo no coincide con el período seleccionado.')
+  )));
+});
+
 test('reports a missing mark, date mismatch, and missing Drive files as integrity issues', async () => {
   const agency = agencyWithFiles({
     archivo1: { nombre: 'ANX_2026_08.xlsx' },

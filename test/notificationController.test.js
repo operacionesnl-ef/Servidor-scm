@@ -7,6 +7,7 @@ const Agency = require('../src/models/Agency');
 const AgencyRefreshJob = require('../src/models/AgencyRefreshJob');
 const MailJob = require('../src/models/MailJob');
 const Notification = require('../src/models/Notification');
+const GlobalSetting = require('../src/models/GlobalSetting');
 const User = require('../src/models/User');
 const { EventEmitter } = require('node:events');
 const {
@@ -40,6 +41,7 @@ test('notification feed limits process visibility to the authenticated user', as
   const userId = new mongoose.Types.ObjectId();
   const originalMethods = {
     agencyFind: Agency.find,
+    globalSettingFindById: GlobalSetting.findById,
     notificationFind: Notification.find,
     refreshFind: AgencyRefreshJob.find,
     mailFind: MailJob.find,
@@ -49,6 +51,7 @@ test('notification feed limits process visibility to the authenticated user', as
   let notificationFilter;
 
   Agency.find = () => listQuery([]);
+  GlobalSetting.findById = () => ({ lean: async () => null });
   Notification.find = (filter) => {
     notificationFilter = filter;
     return listQuery([]);
@@ -72,6 +75,7 @@ test('notification feed limits process visibility to the authenticated user', as
     assert.equal(res.body.unreadCount, 0);
   } finally {
     Agency.find = originalMethods.agencyFind;
+    GlobalSetting.findById = originalMethods.globalSettingFindById;
     Notification.find = originalMethods.notificationFind;
     AgencyRefreshJob.find = originalMethods.refreshFind;
     MailJob.find = originalMethods.mailFind;
@@ -81,6 +85,7 @@ test('notification feed limits process visibility to the authenticated user', as
 test('notification feed exposes administrative process queries only to admin roles', async () => {
   const originalMethods = {
     agencyFind: Agency.find,
+    globalSettingFindById: GlobalSetting.findById,
     notificationFind: Notification.find,
     refreshFind: AgencyRefreshJob.find,
     mailFind: MailJob.find,
@@ -89,6 +94,7 @@ test('notification feed exposes administrative process queries only to admin rol
   let notificationFilter;
 
   Agency.find = () => listQuery([]);
+  GlobalSetting.findById = () => ({ lean: async () => null });
   Notification.find = (filter) => {
     notificationFilter = filter;
     return listQuery([]);
@@ -107,6 +113,7 @@ test('notification feed exposes administrative process queries only to admin rol
     assert.deepEqual(notificationFilter.audience, { $in: ['all', 'admin'] });
   } finally {
     Agency.find = originalMethods.agencyFind;
+    GlobalSetting.findById = originalMethods.globalSettingFindById;
     Notification.find = originalMethods.notificationFind;
     AgencyRefreshJob.find = originalMethods.refreshFind;
     MailJob.find = originalMethods.mailFind;
@@ -116,6 +123,7 @@ test('notification feed exposes administrative process queries only to admin rol
 test('quick notification feed includes every unread item and only three visible read items', async () => {
   const originalMethods = {
     agencyFind: Agency.find,
+    globalSettingFindById: GlobalSetting.findById,
     notificationFind: Notification.find,
     refreshFind: AgencyRefreshJob.find,
     mailFind: MailJob.find,
@@ -133,6 +141,7 @@ test('quick notification feed includes every unread item and only three visible 
     })),
   ];
   Agency.find = () => listQuery([]);
+  GlobalSetting.findById = () => ({ lean: async () => null });
   Notification.find = () => listQuery(notices);
   AgencyRefreshJob.find = () => listQuery([]);
   MailJob.find = () => listQuery([]);
@@ -151,6 +160,7 @@ test('quick notification feed includes every unread item and only three visible 
     assert.equal(res.body.unreadCount, 2);
   } finally {
     Agency.find = originalMethods.agencyFind;
+    GlobalSetting.findById = originalMethods.globalSettingFindById;
     Notification.find = originalMethods.notificationFind;
     AgencyRefreshJob.find = originalMethods.refreshFind;
     MailJob.find = originalMethods.mailFind;
