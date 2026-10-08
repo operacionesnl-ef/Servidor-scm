@@ -26,6 +26,8 @@ test('dashboard summarizes mail, missing agency email, file data, and Drive veri
   const originalAgencyFind = Agency.find;
   const originalMailFind = MailLog.find;
   const originalAggregate = AgencyRefreshJob.aggregate;
+  let mailFilter;
+  let integrityPipeline;
 
   Agency.find = () => ({
     select() {
@@ -37,8 +39,9 @@ test('dashboard summarizes mail, missing agency email, file data, and Drive veri
             correo: 'uno@example.com',
             status: 'activa',
             archivos: {
-              archivo1: { nombre: 'ANX.pdf', ruta: 'drive-1' },
-              archivo2: { nombre: 'FOR.pdf', ruta: 'drive-2' },
+              archivo1: { nombre: 'ANX.pdf', ruta: 'drive-1', periodYear: 2026, periodMonth: 10 },
+              archivo2: { nombre: 'FOR.pdf', ruta: 'drive-2', periodYear: 2026, periodMonth: 9 },
+              archivo3: { nombre: 'REP.pdf', ruta: 'drive-3', pseudoPath: ['2026', 'Octubre'] },
             },
           },
           { _id: 'agency-2', nombre: 'Agencia Dos', correo: '', status: 'inactiva' },
@@ -46,25 +49,31 @@ test('dashboard summarizes mail, missing agency email, file data, and Drive veri
       };
     },
   });
-  MailLog.find = () => ({
-    select() {
-      return {
-        lean: async () => [{
-          totalEnviados: 1,
-          totalFallidos: 1,
-          recipients: [
-            { agencyId: 'agency-1', status: 'sent' },
-            { agencyId: 'agency-1', status: 'failed' },
-          ],
-        }],
-      };
-    },
-  });
-  AgencyRefreshJob.aggregate = async () => [{
-    _id: 'agency-1',
-    checks: [{ status: 'ok' }, { status: 'warning' }],
-    createdAt: new Date('2026-10-03T00:00:00.000Z'),
-  }];
+  MailLog.find = (filter) => {
+    mailFilter = filter;
+    return {
+      select() {
+        return {
+          lean: async () => [{
+            totalEnviados: 1,
+            totalFallidos: 1,
+            recipients: [
+              { agencyId: 'agency-1', status: 'sent' },
+              { agencyId: 'agency-1', status: 'failed' },
+            ],
+          }],
+        };
+      },
+    };
+  };
+  AgencyRefreshJob.aggregate = async (pipeline) => {
+    integrityPipeline = pipeline;
+    return [{
+      _id: 'agency-1',
+      checks: [{ status: 'ok' }, { status: 'warning' }],
+      createdAt: new Date('2026-10-03T00:00:00.000Z'),
+    }];
+  };
 
   try {
     const response = createResponse();
@@ -77,9 +86,26 @@ test('dashboard summarizes mail, missing agency email, file data, and Drive veri
     assert.equal(response.body.agencies.emailed[0].sentCount, 1);
     assert.equal(response.body.mail.sent, 1);
     assert.equal(response.body.mail.failed, 1);
+    assert.equal(response.body.fileDataCompleteness.completeSlots, 2);
+    assert.equal(response.body.fileDataCompleteness.requiredSlots, 4);
     assert.equal(response.body.fileDataCompleteness.percentage, 50);
     assert.equal(response.body.integrityVerification.percentage, 50);
     assert.equal(response.body.integrityVerification.uncheckedActiveAgencies, 0);
+    assert.deepEqual(mailFilter.$or[0], { year: 2026, month: 10 });
+    assert.deepEqual(mailFilter.$or[1], {
+      year: { $exists: false },
+      month: { $exists: false },
+      createdAt: {
+        $gte: new Date('2026-10-01T00:00:00.000Z'),
+        $lt: new Date('2026-11-01T00:00:00.000Z'),
+      },
+    });
+    assert.deepEqual(integrityPipeline[0].$match, {
+      jobType: 'integrity',
+      year: 2026,
+      month: 10,
+      status: { $in: ['completed', 'completed_with_issues'] },
+    });
   } finally {
     Agency.find = originalAgencyFind;
     MailLog.find = originalMailFind;

@@ -186,7 +186,7 @@ function selectRefreshFiles(descendants, year, month) {
 
     const fileType = identifyFileType(file);
     const period = getFilePeriod(file);
-    if (!fileType || !period || periodNumber(period) > requestedPeriod) continue;
+    if (!fileType || !period || periodNumber(period) !== requestedPeriod) continue;
 
     const current = selected[fileType.key];
     const currentPeriod = current ? periodNumber(current.period) : -1;

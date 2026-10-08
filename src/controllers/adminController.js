@@ -6,6 +6,7 @@ const mongoose = require('mongoose');
 const Agency = require('../models/Agency');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
 const MailLog = require('../models/Maillog');
+const { getFilePeriod } = require('../utils/agencyFileRefreshUtils');
 require('../models/AuthSession');
 
 const FILE_FIELDS = ['archivo1', 'archivo2', 'archivo3', 'archivo4'];
@@ -51,13 +52,24 @@ async function getDashboard(req, res, next) {
   try {
     const [agencies, mailLogs, latestIntegrityByAgency] = await Promise.all([
       Agency.find().select('nombre correo status archivos').lean(),
-      MailLog.find({ createdAt: { $gte: period.start, $lt: period.end } })
-        .select('totalEnviados totalFallidos recipients.agencyId recipients.status')
+      MailLog.find({
+        $or: [
+          { year: period.year, month: period.month },
+          {
+            year: { $exists: false },
+            month: { $exists: false },
+            createdAt: { $gte: period.start, $lt: period.end },
+          },
+        ],
+      })
+        .select('year month totalEnviados totalFallidos recipients.agencyId recipients.status')
         .lean(),
       AgencyRefreshJob.aggregate([
         {
           $match: {
             jobType: 'integrity',
+            year: period.year,
+            month: period.month,
             status: { $in: ['completed', 'completed_with_issues'] },
           },
         },
@@ -78,7 +90,14 @@ async function getDashboard(req, res, next) {
       typeof agency.correo !== 'string' || !EMAIL_PATTERN.test(agency.correo.trim())
     ));
     const completeFileSlots = activeAgencies.reduce((total, agency) => (
-      total + FILE_FIELDS.filter((field) => isCompleteFile(agency.archivos?.[field])).length
+      total + FILE_FIELDS.filter((field) => {
+        const file = agency.archivos?.[field];
+        if (!isCompleteFile(file)) return false;
+        const filePeriod = Number.isInteger(file.periodYear) && Number.isInteger(file.periodMonth)
+          ? { year: file.periodYear, month: file.periodMonth }
+          : getFilePeriod({ name: file.nombre, folderPath: file.pseudoPath || [], path: file.path || '' });
+        return filePeriod?.year === period.year && filePeriod?.month === period.month;
+      }).length
     ), 0);
     const requiredFileSlots = activeAgencies.length * FILE_FIELDS.length;
     const emailedByAgency = new Map();
@@ -140,7 +159,7 @@ async function getDashboard(req, res, next) {
         completeSlots: completeFileSlots,
         requiredSlots: requiredFileSlots,
         percentage: requiredFileSlots ? (completeFileSlots / requiredFileSlots) * 100 : 0,
-        basis: 'Campos nombre y ruta presentes en los cuatro archivos de agencias activas.',
+        basis: 'Archivos presentes y asociados al período seleccionado, entre cuatro espacios por agencia activa actual.',
       },
       integrityVerification: {
         checkedAgencies: agenciesWithIntegrityCheck,
@@ -149,7 +168,7 @@ async function getDashboard(req, res, next) {
         checkedFiles,
         percentage: checkedFiles ? (verifiedFiles / checkedFiles) * 100 : 0,
         latestCheckAt,
-        basis: 'Última verificación de integridad completada por agencia; solo estado ok cuenta como verificado.',
+        basis: 'Última verificación completada por agencia para el período seleccionado; solo estado ok cuenta como verificado.',
       },
     });
   } catch (error) {

@@ -49,15 +49,14 @@ function invokeController(handler, req) {
   })).then(() => ({ statusCode, body }));
 }
 
-test('selects the newest recognized period at or before the requested month', () => {
+test('selects files only from the exact requested period', () => {
   const selected = selectRefreshFiles([
     driveFile('ANX', 2025, 6),
     driveFile('ANX', 2025, 7),
     driveFile('ANX', 2025, 9),
   ], 2025, 8);
 
-  assert.equal(selected.archivo1.period.year, 2025);
-  assert.equal(selected.archivo1.period.month, 7);
+  assert.equal(selected.archivo1, null);
 });
 
 test('uses October folder metadata instead of a September date in the filename', () => {
@@ -99,7 +98,7 @@ test('uses the date belonging to a month-only folder across supported date forma
       path: `VERACRUZ/POZA RICA/KIA TAJIN/Septiembre/${name}`,
     };
     assert.deepEqual(getFilePeriod(file), { year: 2026, month: 9 }, name);
-    assert.equal(selectRefreshFiles([file], 2026, 10).archivo1.period.month, 9, name);
+    assert.equal(selectRefreshFiles([file], 2026, 10).archivo1, null, name);
   }
 });
 
@@ -132,7 +131,7 @@ test('does not choose a newer folder containing only irrelevant files', () => {
     irrelevant,
   ], 2025, 8);
 
-  assert.equal(selected.archivo3.period.month, 7);
+  assert.equal(selected.archivo3, null);
   assert.equal(selected.archivo1, null);
 });
 
@@ -158,17 +157,41 @@ test('recognizes a document type from folder names when the filename has no code
   assert.equal(selected.archivo2.file.id, file.id);
 });
 
-test('reports empty slots and keeps the actual period independently for each file', () => {
+test('reports empty slots and ignores recognized files from other periods', () => {
   const selected = selectRefreshFiles([
     driveFile('ANX', 2025, 6),
     driveFile('REP', 2025, 8),
     driveFile('REV', 2025, 7),
   ], 2025, 8);
 
-  assert.equal(selected.archivo1.period.month, 6);
+  assert.equal(selected.archivo1, null);
   assert.equal(selected.archivo2, null);
   assert.equal(selected.archivo3.period.month, 8);
-  assert.equal(selected.archivo4.period.month, 7);
+  assert.equal(selected.archivo4, null);
+});
+
+test('refresh clears missing slots instead of retaining prior-month files', () => {
+  const agency = {
+    archivos: {
+      carpetaPrincipal: 'agency-folder',
+      carpetaBase: 'base-folder',
+      archivo1: { nombre: 'ANX anterior.xlsx', driveId: 'old-anx' },
+      archivo2: { nombre: 'FOR anterior.xlsx', driveId: 'old-for' },
+      archivo3: { nombre: 'REP anterior.xlsx', driveId: 'old-rep' },
+      archivo4: { nombre: 'REV anterior.xlsx', driveId: 'old-rev' },
+    },
+  };
+  const update = buildAgencyRefresh(agency, [
+    driveFile('ANX', 2025, 8),
+    driveFile('FOR', 2025, 7),
+    driveFile('REP', 2025, 8),
+    driveFile('REV', 2025, 7),
+  ], 2025, 8);
+
+  assert.equal(update.archivos.archivo1.driveId, 'ANX-2025-8');
+  assert.equal(update.archivos.archivo2, null);
+  assert.equal(update.archivos.archivo3.driveId, 'REP-2025-8');
+  assert.equal(update.archivos.archivo4, null);
 });
 
 test('refresh results persist files and GET agencies reads their per-file periods from MongoDB', {
@@ -197,28 +220,24 @@ test('refresh results persist files and GET agencies reads their per-file period
     agency.set('archivos', update.archivos);
     await agency.save();
 
-    assert.equal(update.summary.found, 3);
-    assert.equal(update.summary.missing, 1);
+    assert.equal(update.summary.found, 1);
+    assert.equal(update.summary.missing, 3);
     assert.equal(update.summary.year, 2025);
     assert.equal(update.summary.month, 8);
-    assert.equal(update.results.archivo1.periodMonth, 6);
+    assert.equal(update.results.archivo1.status, 'missing');
     assert.equal(update.results.archivo2.status, 'missing');
     assert.equal(update.results.archivo3.periodMonth, 8);
-    assert.equal(update.results.archivo4.periodMonth, 7);
+    assert.equal(update.results.archivo4.status, 'missing');
 
     const stored = await Agency.findById(agency.id).lean();
-    assert.equal(stored.archivos.archivo1.driveId, 'ANX-2025-6');
-    assert.equal(stored.archivos.archivo1.path, '2025/Junio/ANX-documento.xlsx');
-    assert.equal(stored.archivos.archivo1.periodYear, 2025);
-    assert.equal(stored.archivos.archivo1.periodMonth, 6);
-    assert.equal(stored.archivos.archivo1.pseudoPath.join('/'), '2025/Junio');
-    assert.equal(stored.archivos.archivo2.driveId, 'existing-file');
+    assert.equal(stored.archivos.archivo1, null);
+    assert.equal(stored.archivos.archivo2, null);
 
     const getResponse = await invokeController(getAgencies, { query: {} });
     const fetched = getResponse.body.data.find((item) => String(item._id) === agency.id);
     assert.ok(fetched);
     assert.equal(fetched.archivos.archivo3.periodMonth, 8);
-    assert.equal(fetched.archivos.archivo4.periodMonth, 7);
+    assert.equal(fetched.archivos.archivo4, null);
   } finally {
     if (agency) await Agency.deleteOne({ _id: agency._id });
     await mongoose.disconnect();

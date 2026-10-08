@@ -54,11 +54,16 @@ async function listDescendants(drive, rootFolderId) {
 function buildAgencyRefresh(agency, descendants, year, month) {
   const selected = selectRefreshFiles(descendants, year, month);
   const results = {};
-  const archivos = { ...(agency.archivos?.toObject?.() || agency.archivos || {}) };
+  const currentFiles = agency.archivos?.toObject?.() || agency.archivos || {};
+  const archivos = {
+    carpetaPrincipal: currentFiles.carpetaPrincipal,
+    carpetaBase: currentFiles.carpetaBase,
+  };
 
   for (const { key } of FILE_TYPES) {
     const match = selected[key];
     if (!match) {
+      archivos[key] = null;
       results[key] = { status: 'missing' };
       continue;
     }

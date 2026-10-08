@@ -43,7 +43,7 @@ test('lists paginated Drive descendants on the server and retains folder paths',
   assert.equal(requests[1].pageToken, 'next');
 });
 
-test('builds persisted file records while preserving existing slots without a match', () => {
+test('builds persisted file records and clears existing slots without a match', () => {
   const agency = {
     archivos: {
       archivo2: { nombre: 'FOR anterior.xlsx', ruta: 'previous-folder', driveId: 'previous-file' },
@@ -64,7 +64,7 @@ test('builds persisted file records while preserving existing slots without a ma
 
   assert.equal(result.results.archivo1.status, 'found');
   assert.equal(result.archivos.archivo1.driveId, 'anx-file');
-  assert.equal(result.archivos.archivo2.driveId, 'previous-file');
+  assert.equal(result.archivos.archivo2, null);
   assert.equal(result.summary.found, 1);
   assert.equal(result.summary.missing, 3);
   assert.equal(result.scannedFiles, 1);
