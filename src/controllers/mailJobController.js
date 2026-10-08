@@ -7,23 +7,43 @@ const { encryptGoogleToken } = require('../utils/mailJobCrypto');
 const { kickMailJobWorker } = require('../services/mailJobWorker');
 const { logServerEvent } = require('../utils/serverLogger');
 const { mergeEmailLists } = require('../utils/emailList');
+const { getFilePeriod } = require('../utils/agencyFileRefreshUtils');
 
 const CODE_TO_KEY = { ANX: 'archivo1', FOR: 'archivo2', REP: 'archivo3', REV: 'archivo4' };
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const REQUIRED_GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
 const REQUIRED_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 
-function resolveAgencyAttachments(agency, template) {
+function isValidOptionalAttachment(file, year, month) {
+  if (!file?.driveId || !Number.isInteger(year) || !Number.isInteger(month)) return false;
+
+  const period = Number.isInteger(file.periodYear) && Number.isInteger(file.periodMonth)
+    ? { year: file.periodYear, month: file.periodMonth }
+    : getFilePeriod({
+      name: file.nombre,
+      path: file.path,
+      folderPath: file.pseudoPath,
+    });
+  return period?.year === year && period?.month === month;
+}
+
+function resolveAgencyAttachments(agency, template, year, month) {
   const optionalCodes = new Set(template.archivosOpcionales || []);
   const attachments = [];
 
   for (const code of template.archivosIndividuales || []) {
     const file = agency.archivos?.[CODE_TO_KEY[code]];
+    if (optionalCodes.has(code) && !isValidOptionalAttachment(file, year, month)) continue;
     if (!file?.driveId) {
       if (optionalCodes.has(code)) continue;
       throw new Error(`Falta el archivo ${code} para ${agency.nombre}. No se inició el envío.`);
     }
-    attachments.push({ code, driveId: file.driveId, nombre: file.nombre || `${code}.pdf` });
+    attachments.push({
+      code,
+      driveId: file.driveId,
+      nombre: file.nombre || `${code}.pdf`,
+      ...(optionalCodes.has(code) ? { optional: true } : {}),
+    });
   }
 
   return attachments;
@@ -106,13 +126,6 @@ async function createMailJob(req, res, next) {
       });
     }
 
-    const needsDrive = template.archivosGlobales.length > 0 || orderedAgencies.some((agency) => (
-      template.archivosIndividuales.some((code) => agency.archivos?.[CODE_TO_KEY[code]]?.driveId)
-    ));
-    if (needsDrive && !scopes.includes(REQUIRED_DRIVE_SCOPE)) {
-      return res.status(403).json({ message: 'Falta el permiso de lectura de Google Drive para descargar los adjuntos.' });
-    }
-
     const recipients = [];
     for (const agency of orderedAgencies) {
       const errors = {};
@@ -130,8 +143,15 @@ async function createMailJob(req, res, next) {
         correo: primaryEmail,
         cc,
         cco,
-        attachments: resolveAgencyAttachments(agency, template),
+        attachments: resolveAgencyAttachments(agency, template, Number(year), Number(month)),
       });
+    }
+
+    const needsDrive = template.archivosGlobales.length > 0 || recipients.some((recipient) => (
+      recipient.attachments.length > 0
+    ));
+    if (needsDrive && !scopes.includes(REQUIRED_DRIVE_SCOPE)) {
+      return res.status(403).json({ message: 'Falta el permiso de lectura de Google Drive para descargar los adjuntos.' });
     }
 
     const job = await MailJob.create({

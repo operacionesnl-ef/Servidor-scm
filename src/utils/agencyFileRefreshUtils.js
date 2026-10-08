@@ -94,9 +94,9 @@ function periodFromFilenameForFolderMonth(name, folderMonth) {
     })
     .filter(Boolean);
 
-  const sourceDate = dates[0];
-  return sourceDate?.month === folderMonth
-    ? { year: sourceDate.year, month: sourceDate.month }
+  const matchingDate = [...dates].reverse().find((date) => date.month === folderMonth);
+  return matchingDate
+    ? { year: matchingDate.year, month: matchingDate.month }
     : null;
 }
 

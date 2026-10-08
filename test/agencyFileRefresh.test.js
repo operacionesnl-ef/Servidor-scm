@@ -103,6 +103,28 @@ test('uses the date belonging to a month-only folder across supported date forma
   }
 });
 
+test('uses the ending date when a file range starts in the previous month', () => {
+  const files = [
+    ['ANX', 'Copia de ANX-FOT-BYD-CAN-NL-(14-08-26)-(14-09-26).pptx'],
+    ['FOR', 'FOR-AUD-AMB-BYD-CAN-NL-(24-09-26)-(24-10-26).xlsx'],
+    ['REP', 'Copia de REP-INS-BYD-CAN-NL-(14-08-26)-(14-09-26).xlsx'],
+    ['REV', 'REV-EXT-BYD-CAN-NL-(14-08-26)-(14-09-26).xlsx'],
+  ].map(([code, name]) => ({
+    ...driveFile(code, 2026, 9),
+    name,
+    folderPath: ['Agencia', 'Septiembre'],
+    path: `Agencia/Septiembre/${name}`,
+  }));
+
+  const selected = selectRefreshFiles(files, 2026, 9);
+
+  for (const { key, code } of FILE_TYPES) {
+    assert.ok(selected[key], `expected a file for ${key}`);
+    assert.equal(selected[key].file.name, files.find((file) => file.name.startsWith(code) || file.name.startsWith(`Copia de ${code}`)).name);
+    assert.deepEqual(selected[key].period, { year: 2026, month: 9 });
+  }
+});
+
 test('does not choose a newer folder containing only irrelevant files', () => {
   const irrelevant = driveFile('XYZ', 2025, 8);
   const selected = selectRefreshFiles([

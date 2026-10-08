@@ -1,5 +1,6 @@
 const express = require('express');
 const requireAuth = require('../middlewares/requireAuth');
+const requireAdminOrDeveloper = require('../middlewares/requireAdminOrDeveloper');
 const {
   getAgencyEmails,
   getAgencySearchPeriod,
@@ -18,12 +19,26 @@ const {
   getAgencyMaintenanceHistory,
   getAgencyRefreshJob,
 } = require('../controllers/agencyController');
+const {
+  getAgencyPersonalization,
+  getAgencyTags,
+  updateAgencyPersonalization,
+  createAgencyTag,
+  updateAgencyTag,
+  deleteAgencyTag,
+} = require('../controllers/agencyPersonalizationController');
 
 const router = express.Router();
 
 router.use(requireAuth);
 router.get('/search-period', getAgencySearchPeriod);
 router.put('/search-period', updateAgencySearchPeriod);
+router.get('/personalization', getAgencyPersonalization);
+router.get('/tags', requireAdminOrDeveloper, getAgencyTags);
+router.put('/:id/personalization', updateAgencyPersonalization);
+router.post('/tags', requireAdminOrDeveloper, createAgencyTag);
+router.patch('/tags/:tagId', requireAdminOrDeveloper, updateAgencyTag);
+router.delete('/tags/:tagId', requireAdminOrDeveloper, deleteAgencyTag);
 router.get('/emails', getAgencyEmails);
 router.get('/', getAgencies);
 router.post('/', createAgency);

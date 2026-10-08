@@ -42,6 +42,9 @@ const agencySchema = new mongoose.Schema(
       enum: ['activa', 'inactiva', 'suspendida'],
       default: 'activa',
     },
+    favorite: { type: Boolean, default: false },
+    tags: [{ type: mongoose.Schema.Types.ObjectId, ref: 'AgencyTag' }],
+    personalizationMigrated: { type: Boolean, default: false, select: false },
     archivos: {
       carpetaPrincipal: { type: String, trim: true },
       carpetaBase: { type: String, trim: true },

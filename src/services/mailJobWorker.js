@@ -55,13 +55,36 @@ async function readDriveFile(drive, file) {
 }
 
 async function buildAttachments(drive, recipient, globalAttachments) {
-  const files = [...recipient.attachments, ...globalAttachments];
+  const files = [...recipient.attachments, ...globalAttachments]
+    .sort((left, right) => Number(Boolean(left.optional)) - Number(Boolean(right.optional)));
   const attachments = [];
   let totalBytes = 0;
   for (const file of files) {
-    const attachment = await readDriveFile(drive, file);
+    let attachment;
+    try {
+      attachment = await readDriveFile(drive, file);
+    } catch (error) {
+      if (!file.optional) throw error;
+      logEvent('mail_optional_attachment_omitted', {
+        agency: recipient.agencyName,
+        code: file.code,
+        driveId: file.driveId,
+        reason: error.message || 'No se pudo preparar el archivo opcional.',
+      });
+      continue;
+    }
+
+    if (totalBytes + attachment.content.length > MAX_ATTACHMENT_BYTES) {
+      if (!file.optional) throw new Error('Los adjuntos superan el límite total de 40 MB.');
+      logEvent('mail_optional_attachment_omitted', {
+        agency: recipient.agencyName,
+        code: file.code,
+        driveId: file.driveId,
+        reason: 'El tamaño excede el límite total de los adjuntos.',
+      });
+      continue;
+    }
     totalBytes += attachment.content.length;
-    if (totalBytes > MAX_ATTACHMENT_BYTES) throw new Error('Los adjuntos superan el límite total de 40 MB.');
     attachments.push({ ...attachment, code: file.code, driveId: file.driveId });
   }
   return attachments;
@@ -286,4 +309,4 @@ function kickMailJobWorker() {
   processQueuedJobs().catch((error) => logEvent('mail_job_worker_failed', { message: error.message }));
 }
 
-module.exports = { startMailJobWorker, kickMailJobWorker };
+module.exports = { buildAttachments, startMailJobWorker, kickMailJobWorker };

@@ -8,7 +8,12 @@ const jobRecipientSchema = new mongoose.Schema({
   cc: { type: [String], default: [] },
   cco: { type: [String], default: [] },
   attachments: {
-    type: [{ code: String, driveId: { type: String, required: true }, nombre: String }],
+    type: [{
+      code: String,
+      driveId: { type: String, required: true },
+      nombre: String,
+      optional: { type: Boolean, default: false },
+    }],
     default: [],
   },
 }, { _id: false });
