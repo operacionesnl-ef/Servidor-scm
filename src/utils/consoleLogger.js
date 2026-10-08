@@ -14,6 +14,7 @@ const COLORS = {
 const EVENT_LABELS = {
   activity_log_retention_cleanup: 'Limpieza de actividad',
   activity_log_retention_cleanup_failed: 'Falló la limpieza de actividad',
+  agency_email_unique_index_removed: 'Índice único de correo de agencias eliminado',
   agency_integrity_finished: 'Verificación de archivos terminada',
   agency_refresh_failed: 'Falló la actualización de agencias',
   agency_refresh_finished: 'Archivos de agencias actualizados',

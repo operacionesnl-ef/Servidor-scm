@@ -298,7 +298,7 @@ const sendDatabaseError = (err, res, next) => {
     return validationFailure(res, errors);
   }
   if (err.code === 11000) {
-    return res.status(409).json({ success: false, message: 'An agency with this email already exists' });
+    return res.status(409).json({ success: false, message: 'An agency with this information already exists' });
   }
   return next(err);
 };
@@ -427,10 +427,6 @@ const createAgency = async (req, res, next) => {
   if (Object.keys(errors).length) return validationFailure(res, errors);
 
   try {
-    const duplicate = await Agency.exists({ correo: value.correo });
-    if (duplicate) {
-      return res.status(409).json({ success: false, message: 'An agency with this email already exists' });
-    }
     const agency = await Agency.create(value);
     return success(res, agency, 'Agency created', 201);
   } catch (err) {
@@ -447,13 +443,6 @@ const updateAgency = async (req, res, next) => {
   try {
     const agency = await Agency.findById(req.params.id);
     if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
-
-    if (value.correo) {
-      const duplicate = await Agency.exists({ correo: value.correo, _id: { $ne: agency._id } });
-      if (duplicate) {
-        return res.status(409).json({ success: false, message: 'An agency with this email already exists' });
-      }
-    }
 
     for (const field of ['nombre', 'correo', 'cc', 'cco', 'entidadFederativa', 'status']) {
       if (value[field] !== undefined) agency.set(field, value[field]);
