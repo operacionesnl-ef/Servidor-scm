@@ -576,13 +576,15 @@ const refreshAgencyFiles = async (req, res, next) => {
     const drive = google.drive({ version: 'v3', auth });
     const update = await refreshAgencyFromDrive(agency, drive, year, month, folderId?.trim());
     try {
-      const foundFiles = update.summary?.found || 0;
+      const summary = update.summary || {};
+      const period = `${String(month).padStart(2, '0')}/${year}`;
+      const note = update.notices?.[0] || '';
       await Notification.create({
         title: 'Resultado de actualización de archivos',
-        message: foundFiles
-          ? `Se actualizaron ${foundFiles} de 4 archivos de ${agency.nombre} para ${String(month).padStart(2, '0')}/${year}.`
-          : `No se encontraron archivos actualizables para ${agency.nombre} en ${String(month).padStart(2, '0')}/${year}.`,
-        severity: foundFiles === 4 ? 'low' : 'medium',
+        message: summary.missingRequired
+          ? `No se completaron los ${summary.requiredTotal} archivos requeridos para ${agency.nombre} en ${period}.${note ? ` ${note}` : ''}`
+          : `Se localizaron los archivos requeridos de ${agency.nombre} para ${period} (${summary.requiredFound}/${summary.requiredTotal}).${note ? ` ${note}` : ''}`,
+        severity: summary.missingRequired ? 'medium' : 'low',
         audience: 'all',
         createdBy: req.user._id,
       });

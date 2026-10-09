@@ -6,7 +6,14 @@ const { randomUUID } = require('node:crypto');
 const mongoose = require('mongoose');
 const Agency = require('../src/models/Agency');
 const { getAgencies } = require('../src/controllers/agencyController');
-const { FILE_TYPES, getFilePeriod, selectRefreshFiles } = require('../src/utils/agencyFileRefreshUtils');
+const { isVerifiedForPeriod } = require('../src/services/agencyRefreshJobWorker');
+const {
+  FILE_TYPES,
+  getAgencyFileRequirementPolicy,
+  getFilePeriod,
+  identifyFileType,
+  selectRefreshFiles,
+} = require('../src/utils/agencyFileRefreshUtils');
 const { buildAgencyRefresh } = require('../src/services/agencyDriveRefresh');
 
 const MONTH_NAMES = [
@@ -145,6 +152,91 @@ test('recognizes all agency codes when separated by spaces, hyphens, dots, or un
   const selected = selectRefreshFiles(files, 2025, 8);
 
   for (const { key } of FILE_TYPES) assert.equal(selected[key].period.month, 8);
+});
+
+test('recognizes the new report and photographic annex filename variants', () => {
+  const repNames = [
+    'REV-INS-HLP-CDJ-CUU-(22-09-2026).xlsx',
+    'REV-REC-GEE-CUU-CUU-(11-09-2026).xlsx',
+    'INS-REC-ALP-CUU-CUU-(12-09-2026).xlsx',
+    'H.REV-REC-JAC-CUU-CUU-(10-09-2026).xlsx',
+    'INS-HON-MAT-TAM-(18-09-2026)-(18-10-2026).xlsx',
+    'INS-HON- REY-TAM- (10-09-2026)-(10-10-2026)SEP.xlsx',
+  ];
+  const anxNames = [
+    'REV-FOT-TOY-CDJ-CUU-(24-09-2026).pptx',
+    'H.REV-FOT-ALT-DEL-CUU- (18-09-2026).pptx',
+  ];
+
+  for (const name of repNames) {
+    assert.equal(identifyFileType({ name })?.key, 'archivo3', name);
+  }
+  for (const name of anxNames) {
+    assert.equal(identifyFileType({ name })?.key, 'archivo1', name);
+  }
+});
+
+test('does not select a stale date range from inside the requested month folder', () => {
+  const oldAnx = driveFile('ANX', 2026, 10, {
+    name: 'H.REV-FOT-JAC-CUU-CUU-11-05-2026 - 11-06-2026.pptx',
+  });
+
+  assert.equal(selectRefreshFiles([oldAnx], 2026, 10).archivo1, null);
+});
+
+test('ANX is optional and Chihuahua applies its conditional FOR/REP/REV requirements', () => {
+  const files = {
+    archivo2: { nombre: 'FOR.xlsx', ruta: 'folder', driveId: 'for' },
+    archivo3: null,
+    archivo4: null,
+  };
+  const regularPolicy = getAgencyFileRequirementPolicy({ entidadFederativa: 'Nuevo León' }, files);
+  const chihuahuaPolicy = getAgencyFileRequirementPolicy({ entidadFederativa: 'Chihuahua' }, files);
+  const chihuahuaRepOnlyPolicy = getAgencyFileRequirementPolicy(
+    { entidadFederativa: 'Chihuahua' },
+    {
+      archivo1: null,
+      archivo2: null,
+      archivo3: { nombre: 'REP.xlsx', ruta: 'folder', driveId: 'rep' },
+      archivo4: null,
+    }
+  );
+  const emptyChihuahuaPolicy = getAgencyFileRequirementPolicy(
+    { entidadFederativa: 'Chihuahua' },
+    { archivo1: null, archivo2: null, archivo3: null, archivo4: null }
+  );
+
+  assert.deepEqual(regularPolicy.missingKeys, ['archivo3', 'archivo4']);
+  assert.deepEqual(regularPolicy.optionalMissingKeys, ['archivo1']);
+  assert.deepEqual(chihuahuaPolicy.missingKeys, []);
+  assert.deepEqual(chihuahuaPolicy.optionalMissingKeys, ['archivo1', 'archivo3', 'archivo4']);
+  assert.deepEqual(chihuahuaRepOnlyPolicy.missingKeys, ['archivo4']);
+  assert.deepEqual(chihuahuaRepOnlyPolicy.optionalMissingKeys, ['archivo1', 'archivo2']);
+  assert.deepEqual(emptyChihuahuaPolicy.missingKeys, ['archivo2', 'archivo3', 'archivo4']);
+  assert.deepEqual(emptyChihuahuaPolicy.optionalMissingKeys, ['archivo1']);
+});
+
+test('does not repeat verification when only optional files are absent', () => {
+  const agency = {
+    entidadFederativa: 'Nuevo León',
+    archivos: {
+      archivo1: null,
+      archivo2: { nombre: 'FOR.xlsx', ruta: 'folder', driveId: 'for', periodYear: 2026, periodMonth: 10 },
+      archivo3: { nombre: 'REP.xlsx', ruta: 'folder', driveId: 'rep', periodYear: 2026, periodMonth: 10 },
+      archivo4: { nombre: 'REV.xlsx', ruta: 'folder', driveId: 'rev', periodYear: 2026, periodMonth: 10 },
+    },
+  };
+
+  assert.equal(isVerifiedForPeriod(agency, 2026, 10), true);
+  assert.equal(isVerifiedForPeriod({
+    entidadFederativa: 'Chihuahua',
+    archivos: {
+      archivo1: null,
+      archivo2: { nombre: 'FOR.xlsx', ruta: 'folder', driveId: 'for', periodYear: 2026, periodMonth: 10 },
+      archivo3: null,
+      archivo4: null,
+    },
+  }, 2026, 10), true);
 });
 
 test('recognizes a document type from folder names when the filename has no code', () => {

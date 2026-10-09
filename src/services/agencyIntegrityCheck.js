@@ -1,6 +1,14 @@
 'use strict';
 
-const { FILE_TYPES, identifyFileType, getFilePeriod } = require('../utils/agencyFileRefreshUtils');
+const {
+  FILE_TYPES,
+  getAgencyFileRequirementPolicy,
+  getFilePeriod,
+  getFilenameRangePeriod,
+  identifyFileType,
+} = require('../utils/agencyFileRefreshUtils');
+
+const periodNumber = ({ year, month }) => year * 12 + month;
 
 async function getDriveFolderPath(drive, file) {
   const folderPath = [];
@@ -111,6 +119,14 @@ async function inspectFile(drive, agency, fileType) {
   ) {
     problems.push('El período actual del archivo no coincide con el período guardado.');
   }
+  const filenamePeriod = getFilenameRangePeriod(metadata.name);
+  if (
+    filenamePeriod &&
+    expectedPeriod &&
+    periodNumber(expectedPeriod) - periodNumber(filenamePeriod) > 1
+  ) {
+    problems.push('El rango de fechas del nombre corresponde a un período anterior.');
+  }
 
   const sizeBytes = metadata.size === undefined ? null : Number(metadata.size);
   if (sizeBytes === 0) problems.push('Drive reporta que el archivo está vacío.');
@@ -135,8 +151,16 @@ async function inspectFile(drive, agency, fileType) {
 
 async function inspectAgencyIntegrity(drive, agency, expectedPeriod) {
   const checks = [];
+  const policy = getAgencyFileRequirementPolicy(agency);
   for (const fileType of FILE_TYPES) {
     const check = await inspectFile(drive, agency, fileType);
+    const file = agency.archivos?.[fileType.key];
+    const fileIsBlank = !file?.nombre && !file?.ruta && !file?.driveId;
+    if (policy.optionalMissingKeys.includes(fileType.key) && fileIsBlank) {
+      check.status = 'optional';
+      check.optionalReason = policy.optionalMessage;
+      check.problems = [];
+    }
     if (
       expectedPeriod &&
       check.period &&
@@ -161,11 +185,13 @@ async function inspectAgencyIntegrity(drive, agency, expectedPeriod) {
     });
   }
 
-  const issues = checks.filter((check) => check.status !== 'ok').length;
+  const issues = checks.filter((check) => !['ok', 'optional'].includes(check.status)).length;
   return {
     checks,
     status: issues ? 'issues' : 'updated',
-    missingKeys: checks.filter((check) => check.status === 'error').map((check) => check.key),
+    missingKeys: policy.missingKeys,
+    optionalMissingKeys: policy.optionalMissingKeys,
+    notices: policy.optionalMessage ? [policy.optionalMessage] : [],
   };
 }
 

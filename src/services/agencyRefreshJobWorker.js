@@ -5,7 +5,10 @@ const Agency = require('../models/Agency');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
 const Notification = require('../models/Notification');
 const { decryptGoogleToken } = require('../utils/mailJobCrypto');
-const { FILE_TYPES } = require('../utils/agencyFileRefreshUtils');
+const {
+  FILE_TYPES,
+  getAgencyFileRequirementPolicy,
+} = require('../utils/agencyFileRefreshUtils');
 const { refreshAgencyFromDrive } = require('./agencyDriveRefresh');
 const { inspectAgencyIntegrity } = require('./agencyIntegrityCheck');
 const { logServerEvent } = require('../utils/serverLogger');
@@ -15,10 +18,12 @@ let workerPromise = null;
 let pollTimer = null;
 
 function isVerifiedForPeriod(agency, year, month) {
+  const policy = getAgencyFileRequirementPolicy(agency);
+  if (!policy.requirementSatisfied) return false;
   return FILE_TYPES.every(({ key }) => {
     const file = agency.archivos?.[key];
+    if (!file?.driveId) return true;
     return Boolean(
-      file?.driveId &&
       file.periodYear === year &&
       file.periodMonth === month
     );
@@ -72,9 +77,10 @@ async function processJob(job) {
       const update = job.jobType === 'integrity'
         ? await inspectAgencyIntegrity(drive, agency, { year: job.year, month: job.month })
         : await refreshAgencyFromDrive(agency, drive, job.year, job.month);
+      const policy = getAgencyFileRequirementPolicy(agency, update.archivos || agency.archivos);
       const missingKeys = job.jobType === 'integrity'
         ? update.missingKeys
-        : FILE_TYPES.filter(({ key }) => update.results[key].status !== 'found').map(({ key }) => key);
+        : policy.missingKeys;
       job.results.push({
         agencyId: String(agency._id),
         agencyName: agency.nombre,
@@ -83,6 +89,8 @@ async function processJob(job) {
         agencyStatus: agency.status || 'activa',
         status: update.status === 'issues' || missingKeys.length ? 'issues' : 'updated',
         missingKeys,
+        optionalMissingKeys: update.optionalMissingKeys || policy.optionalMissingKeys,
+        notices: update.notices || (policy.optionalMessage ? [policy.optionalMessage] : []),
         files: update.archivos || agency.archivos?.toObject?.() || agency.archivos || {},
         checks: update.checks || [],
       });

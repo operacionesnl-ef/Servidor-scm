@@ -100,6 +100,23 @@ function periodFromFilenameForFolderMonth(name, folderMonth) {
     : null;
 }
 
+function filenameRangePeriod(name) {
+  const dates = [...String(name || '').matchAll(/(?:^|[^\d])(\d{1,2})[-./](\d{1,2})[-./](\d{2,4})(?=$|[^\d])/g)];
+  if (dates.length < 2) return null;
+
+  const match = dates[dates.length - 1];
+  const first = Number(match[1]);
+  const second = Number(match[2]);
+  let year = Number(match[3]);
+  if (year < 100) year += 2000;
+  const month = first > 12 ? second : second > 12 ? first : second;
+  const day = first > 12 ? first : second > 12 ? second : first;
+  if (day < 1 || day > 31 || month < 1 || month > 12) return null;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day) return null;
+  return { year, month };
+}
+
 function getFilePeriod(file) {
   const folderPath = Array.isArray(file.folderPath) ? file.folderPath.flatMap(splitPath) : [];
   const pathValue = String(file.path || '').trim();
@@ -154,6 +171,19 @@ function identifyFileType(file) {
   if (isDriveFolder(file)) return null;
 
   const name = String(file.name || '');
+  const normalizedName = normalize(name);
+  const hasCode = (code) => containsIdentifier(normalizedName, { code, aliases: [] });
+  const isPresentation = /presentation/.test(file.mimeType || '') || /\.(pptx?|ppt)$/i.test(name);
+  const isSpreadsheet = /spreadsheet|excel/.test(file.mimeType || '') || /\.(xlsx?|xls)$/i.test(name);
+
+  if (isPresentation) return FILE_TYPES[0];
+  if (isSpreadsheet) {
+    if (hasCode('REV') && (hasCode('INS') || hasCode('REC'))) return FILE_TYPES[2];
+    if (hasCode('FOR') || (hasCode('REP') && hasCode('MEA'))) return FILE_TYPES[1];
+    if (hasCode('REP') || hasCode('INS')) return FILE_TYPES[2];
+    if (hasCode('REV') || hasCode('EXT')) return FILE_TYPES[3];
+  }
+
   const explicitNameMatches = matchingTypes(name, false);
   if (explicitNameMatches.length === 1) return explicitNameMatches[0];
   if (explicitNameMatches.length > 1) return null;
@@ -174,6 +204,53 @@ function identifyFileType(file) {
   return folderMatches.length === 1 ? folderMatches[0] : null;
 }
 
+function getAgencyFileRequirementPolicy(agency, files = agency?.archivos || {}) {
+  const isChihuahua = normalize(agency?.entidadFederativa).trim() === 'chihuahua';
+  const linkedKeys = FILE_TYPES
+    .filter(({ key }) => {
+      const file = files?.[key];
+      return Boolean(file?.nombre && file?.ruta && file?.driveId);
+    })
+    .map(({ key }) => key);
+  const blankKeys = FILE_TYPES
+    .filter(({ key }) => {
+      const file = files?.[key];
+      return !file?.nombre && !file?.ruta && !file?.driveId;
+    })
+    .map(({ key }) => key);
+
+  const hasFor = linkedKeys.includes('archivo2');
+  const hasAlternate = linkedKeys.some((key) => ['archivo1', 'archivo3', 'archivo4'].includes(key));
+  const optionalKeys = isChihuahua
+    ? hasFor
+      ? ['archivo1', 'archivo3', 'archivo4']
+      : ['archivo1', ...(hasAlternate ? ['archivo2'] : [])]
+    : ['archivo1'];
+  const optionalMissingKeys = blankKeys.filter((key) => optionalKeys.includes(key));
+  const missingKeys = FILE_TYPES
+    .filter(({ key }) => !linkedKeys.includes(key))
+    .map(({ key }) => key)
+    .filter((key) => !optionalKeys.includes(key) || !blankKeys.includes(key));
+  const message = !optionalMissingKeys.length
+    ? ''
+    : isChihuahua
+      ? hasFor
+        ? 'Chihuahua: al contar con FOR, REP, REV y ANX son opcionales.'
+        : hasAlternate
+          ? 'Chihuahua: FOR es opcional si existe REP, REV o ANX; REP y REV siguen siendo requeridos si falta FOR. ANX también es opcional.'
+          : 'Chihuahua: ANX es opcional; debe haber FOR o REP y REV.'
+      : 'ANX es opcional para todas las agencias.';
+
+  return {
+    isChihuahua,
+    linkedKeys,
+    missingKeys,
+    optionalMissingKeys,
+    requirementSatisfied: missingKeys.length === 0,
+    optionalMessage: message,
+  };
+}
+
 const periodNumber = ({ year, month }) => year * 12 + month;
 
 function selectRefreshFiles(descendants, year, month) {
@@ -187,6 +264,8 @@ function selectRefreshFiles(descendants, year, month) {
     const fileType = identifyFileType(file);
     const period = getFilePeriod(file);
     if (!fileType || !period || periodNumber(period) !== requestedPeriod) continue;
+    const filenamePeriod = filenameRangePeriod(file.name);
+    if (filenamePeriod && requestedPeriod - periodNumber(filenamePeriod) > 1) continue;
 
     const current = selected[fileType.key];
     const currentPeriod = current ? periodNumber(current.period) : -1;
@@ -206,4 +285,11 @@ function selectRefreshFiles(descendants, year, month) {
   return selected;
 }
 
-module.exports = { FILE_TYPES, identifyFileType, getFilePeriod, selectRefreshFiles };
+module.exports = {
+  FILE_TYPES,
+  identifyFileType,
+  getFilePeriod,
+  getFilenameRangePeriod: filenameRangePeriod,
+  getAgencyFileRequirementPolicy,
+  selectRefreshFiles,
+};

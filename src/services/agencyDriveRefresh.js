@@ -1,6 +1,10 @@
 'use strict';
 
-const { FILE_TYPES, selectRefreshFiles } = require('../utils/agencyFileRefreshUtils');
+const {
+  FILE_TYPES,
+  getAgencyFileRequirementPolicy,
+  selectRefreshFiles,
+} = require('../utils/agencyFileRefreshUtils');
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const MAX_DESCENDANTS = 5000;
@@ -93,13 +97,26 @@ function buildAgencyRefresh(agency, descendants, year, month) {
     };
   }
 
+  const policy = getAgencyFileRequirementPolicy(agency, archivos);
+  const requiredTotal = policy.isChihuahua ? 1 : 3;
+  const requiredFound = policy.isChihuahua
+    ? Number(policy.requirementSatisfied)
+    : requiredTotal - policy.missingKeys.length;
+
   return {
     archivos,
     results,
     scannedFiles: descendants.length,
+    status: policy.requirementSatisfied ? 'updated' : 'issues',
+    optionalMissingKeys: policy.optionalMissingKeys,
+    notices: policy.optionalMessage ? [policy.optionalMessage] : [],
     summary: {
       found: FILE_TYPES.filter(({ key }) => results[key].status === 'found').length,
       missing: FILE_TYPES.filter(({ key }) => results[key].status === 'missing').length,
+      requiredFound,
+      requiredTotal,
+      missingRequired: !policy.requirementSatisfied,
+      optionalMissingKeys: policy.optionalMissingKeys,
       year,
       month,
     },
