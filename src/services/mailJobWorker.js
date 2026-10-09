@@ -12,7 +12,8 @@ const GOOGLE_EXPORT_TYPES = {
   'application/vnd.google-apps.presentation': 'application/pdf',
   'application/vnd.google-apps.drawing': 'image/png',
 };
-const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+const MAX_ATTACHMENT_MB = 90; // 90MB max archivos por correo
+const MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT_MB * 1024 * 1024;
 
 let workerPromise = null;
 let pollTimer = null;
@@ -43,7 +44,7 @@ async function readDriveFile(drive, file) {
   for await (const chunk of response.data) {
     const buffer = Buffer.from(chunk);
     size += buffer.length;
-    if (size > MAX_ATTACHMENT_BYTES) throw new Error(`El archivo ${metadata.name} supera el límite de 40 MB.`);
+    if (size > MAX_ATTACHMENT_BYTES) throw new Error(`El archivo ${metadata.name} supera el límite de ${MAX_ATTACHMENT_MB} MB.`);
     chunks.push(buffer);
   }
 
@@ -75,7 +76,7 @@ async function buildAttachments(drive, recipient, globalAttachments) {
     }
 
     if (totalBytes + attachment.content.length > MAX_ATTACHMENT_BYTES) {
-      if (!file.optional) throw new Error('Los adjuntos superan el límite total de 40 MB.');
+      if (!file.optional) throw new Error(`Los adjuntos superan el límite total de ${MAX_ATTACHMENT_MB} MB.`);
       logEvent('mail_optional_attachment_omitted', {
         agency: recipient.agencyName,
         code: file.code,

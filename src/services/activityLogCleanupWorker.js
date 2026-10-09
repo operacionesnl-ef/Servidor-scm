@@ -4,7 +4,7 @@ const ActivityLog = require('../models/ActivityLog');
 const { ACTIVITY_LOG_RETENTION_MS } = require('../utils/activityLogRetention');
 const { logEvent } = require('../utils/consoleLogger');
 
-const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 horas
 
 async function cleanupExpiredActivityLogs(now = new Date()) {
   const cutoff = new Date(now.getTime() - ACTIVITY_LOG_RETENTION_MS);
