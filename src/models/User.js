@@ -22,6 +22,7 @@ const userSchema = new mongoose.Schema(
     },
     readNotificationIds: { type: [String], default: [] },
     quickViewHiddenNotifications: { type: [String], default: [] },
+    lastPushReminderPeriod: { type: String, default: '' },
     tokenUnico: { type: String, unique: true, sparse: true },
   },
   { timestamps: true }

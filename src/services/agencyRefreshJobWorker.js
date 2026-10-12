@@ -13,6 +13,7 @@ const { refreshAgencyFromDrive } = require('./agencyDriveRefresh');
 const { inspectAgencyIntegrity } = require('./agencyIntegrityCheck');
 const { logServerEvent } = require('../utils/serverLogger');
 const { logEvent } = require('../utils/consoleLogger');
+const { sendPushToUser } = require('./pushNotificationService');
 
 let workerPromise = null;
 let pollTimer = null;
@@ -125,6 +126,16 @@ async function processJob(job) {
   const processTitle = job.jobType === 'integrity' ? 'Verificación de archivos' : 'Actualización de archivos';
   const outcome = hasIssues ? 'terminó con incidencias' : 'se completó correctamente';
   try {
+    await sendPushToUser(job.owner, {
+      title: `${processTitle} ${hasIssues ? 'con incidencias' : 'completada'}`,
+      body: `La ${processTitle.toLocaleLowerCase()} ${outcome} para ${period}: ${job.completed} de ${job.total} agencias procesadas.`,
+      url: '/dashboard',
+      tag: `agency-job-${job._id}`,
+    });
+  } catch (pushError) {
+    logEvent('agency_job_push_failed', { jobId: String(job._id), message: pushError.message });
+  }
+  try {
     await Notification.create({
       title: `${processTitle} ${hasIssues ? 'con incidencias' : 'completada'}`,
       message: `La ${processTitle.toLocaleLowerCase()} ${outcome} para ${period}: ${job.completed} de ${job.total} agencias procesadas.`,
@@ -150,6 +161,16 @@ async function failJob(job, error) {
   job.currentName = '';
   job.expiresAt = null;
   await job.save();
+  try {
+    await sendPushToUser(job.owner, {
+      title: job.jobType === 'integrity' ? 'Falló la verificación de archivos' : 'Falló la actualización de archivos',
+      body: job.error,
+      url: '/dashboard',
+      tag: `agency-job-${job._id}`,
+    });
+  } catch (pushError) {
+    logEvent('agency_job_push_failed', { jobId: String(job._id), message: pushError.message });
+  }
   await logServerEvent('agency_refresh_failed', {
     userId: job.owner,
     jobId: job._id,
