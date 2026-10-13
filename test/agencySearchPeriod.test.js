@@ -18,23 +18,41 @@ function response() {
   };
 }
 
-test('gets the globally stored agency search period and initializes it once', async () => {
+test('gets the globally stored agency search period without writing to the database', async () => {
+  const originalFindById = GlobalSetting.findById;
   const originalFindOneAndUpdate = GlobalSetting.findOneAndUpdate;
-  let update;
-  GlobalSetting.findOneAndUpdate = (...args) => {
-    update = args;
+  let query;
+  GlobalSetting.findById = (id) => {
+    query = id;
     return { lean: async () => ({ year: 2026, month: 9 }) };
+  };
+  GlobalSetting.findOneAndUpdate = () => {
+    throw new Error('A GET request must not write to the database.');
   };
 
   try {
     const res = response();
     await getAgencySearchPeriod({}, res, (error) => { throw error; });
     assert.deepEqual(res.body, { year: 2026, month: 9 });
-    assert.equal(update[0]._id, 'agency-search-period');
-    assert.ok(update[1].$setOnInsert.year);
-    assert.equal(update[2].upsert, true);
+    assert.equal(query, 'agency-search-period');
   } finally {
+    GlobalSetting.findById = originalFindById;
     GlobalSetting.findOneAndUpdate = originalFindOneAndUpdate;
+  }
+});
+
+test('uses the current Mexico period when no shared value has been saved', async () => {
+  const originalFindById = GlobalSetting.findById;
+  GlobalSetting.findById = () => ({ lean: async () => null });
+
+  try {
+    const res = response();
+    await getAgencySearchPeriod({}, res, (error) => { throw error; });
+    assert.deepEqual(Object.keys(res.body).sort(), ['month', 'year']);
+    assert.ok(Number.isInteger(res.body.year));
+    assert.ok(res.body.month >= 1 && res.body.month <= 12);
+  } finally {
+    GlobalSetting.findById = originalFindById;
   }
 });
 

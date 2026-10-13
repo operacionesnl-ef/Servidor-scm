@@ -73,7 +73,6 @@ function streamNotificationEvents(req, res) {
     if (!res.destroyed) res.write('event: change\ndata: {}\n\n');
   };
   const unsubscribe = subscribeToNotificationChanges(sendChange);
-  sendChange();
   const heartbeat = setInterval(() => {
     if (!res.destroyed) res.write(': keep-alive\n\n');
   }, 20000);

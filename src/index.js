@@ -17,7 +17,7 @@ const { getHealth } = require('./controllers/healthController');
 const { allowedOrigins } = require('./config/security');
 const Subscription = require('./models/Subscription');
 
-// ⚠️ Ajusta esta ruta a donde tengas tu middleware de autenticación JWT
+//  Ajusta esta ruta a donde tengas tu middleware de autenticación JWT
 const authMiddleware = require('./middlewares/requireAuth');
 
 const app = express();

@@ -25,13 +25,8 @@ const serializeAgencySearchPeriod = (setting) => ({
 
 const getAgencySearchPeriod = async (req, res, next) => {
   try {
-    const fallbackPeriod = getMexicoPeriod();
-    const setting = await GlobalSetting.findOneAndUpdate(
-      { _id: AGENCY_SEARCH_PERIOD_SETTING },
-      { $setOnInsert: fallbackPeriod },
-      { new: true, upsert: true, setDefaultsOnInsert: true },
-    ).lean();
-    return res.json(serializeAgencySearchPeriod(setting));
+    const setting = await GlobalSetting.findById(AGENCY_SEARCH_PERIOD_SETTING).lean();
+    return res.json(serializeAgencySearchPeriod(setting || getMexicoPeriod()));
   } catch (error) {
     return next(error);
   }

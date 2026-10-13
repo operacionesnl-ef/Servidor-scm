@@ -169,7 +169,7 @@ test('quick notification feed includes every unread item and only three visible 
   }
 });
 
-test('notification SSE sends an initial refresh and broadcasts persisted changes', async () => {
+test('notification SSE broadcasts persisted changes without an initial redundant refresh', async () => {
   const req = new EventEmitter();
   const res = new EventEmitter();
   const writes = [];
@@ -180,10 +180,10 @@ test('notification SSE sends an initial refresh and broadcasts persisted changes
   res.write = (value) => { writes.push(value); return true; };
 
   streamNotificationEvents(req, res);
-  assert.equal(writes.some((event) => event.includes('event: change')), true);
+  assert.equal(writes.some((event) => event.includes('event: change')), false);
   publishNotificationChange();
   await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.equal(writes.filter((event) => event.includes('event: change')).length, 2);
+  assert.equal(writes.filter((event) => event.includes('event: change')).length, 1);
   res.destroyed = true;
   res.emit('close');
 });
