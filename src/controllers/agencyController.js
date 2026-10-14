@@ -6,6 +6,7 @@ const AgencyRefreshJob = require('../models/AgencyRefreshJob');
 const GlobalSetting = require('../models/GlobalSetting');
 const Notification = require('../models/Notification');
 const SentEmail = require('../models/SentEmail');
+const User = require('../models/User');
 const { success } = require('../utils/response');
 const { updateDrivePattern } = require('../utils/drivePatternUtils');
 const { FILE_TYPES } = require('../utils/agencyFileRefreshUtils');
@@ -74,6 +75,7 @@ const ALLOWED_FIELDS = new Set([
   'entidadFederativa',
   'status',
   'archivos',
+  'consultantId',
 ]);
 const ALLOWED_STATUSES = new Set(['activa', 'inactiva', 'suspendida']);
 const FILE_FIELDS = new Set(['archivo1', 'archivo2', 'archivo3', 'archivo4']);
@@ -166,16 +168,23 @@ const validateAgencyInput = (body, partial) => {
     }
   }
 
-  if (body.correo === undefined && partial) {
-    // Leave omitted email unchanged on partial updates.
-  } else if (typeof body.correo !== 'string' || !body.correo.trim()) {
-    errors.correo = 'This field is required';
-  } else {
+  if (body.correo !== undefined && (typeof body.correo !== 'string' || !body.correo.trim())) {
+    errors.correo = 'Must be a non-empty valid email address when provided';
+  } else if (body.correo !== undefined) {
     const correo = body.correo.trim().toLowerCase();
     if (correo.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) {
       errors.correo = 'Must be a valid email address';
     } else {
       value.correo = correo;
+    }
+  }
+
+  if (body.consultantId !== undefined) {
+    if (body.consultantId === null || body.consultantId === '') value.consultantId = null;
+    else if (!mongoose.isValidObjectId(body.consultantId)) {
+      errors.consultantId = 'Must be a valid consultant ID or null';
+    } else {
+      value.consultantId = body.consultantId;
     }
   }
 
@@ -306,6 +315,12 @@ const validateId = (id, res) => {
   return true;
 };
 
+const isActiveConsultant = async (consultantId) => User.exists({
+  _id: consultantId,
+  rol: 'consultor',
+  status: 'activo',
+});
+
 const getMissingAgencyFields = (agency) => {
   const missingFields = [];
   if (typeof agency.nombre !== 'string' || !agency.nombre.trim()) missingFields.push('nombre');
@@ -420,8 +435,17 @@ const getAgencyById = async (req, res, next) => {
 const createAgency = async (req, res, next) => {
   const { errors, value } = validateAgencyInput(req.body, false);
   if (Object.keys(errors).length) return validationFailure(res, errors);
+  if (value.consultantId !== undefined && !['admin', 'developer'].includes(req.user.rol)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Only administrators can assign the responsible consultant.',
+    });
+  }
 
   try {
+    if (value.consultantId && !await isActiveConsultant(value.consultantId)) {
+      return validationFailure(res, { consultantId: 'Active consultant not found' });
+    }
     const agency = await Agency.create(value);
     return success(res, agency, 'Agency created', 201);
   } catch (err) {
@@ -434,12 +458,23 @@ const updateAgency = async (req, res, next) => {
   const partial = req.method === 'PATCH';
   const { errors, value } = validateAgencyInput(req.body, partial);
   if (Object.keys(errors).length) return validationFailure(res, errors);
+  if (value.consultantId !== undefined && !['admin', 'developer'].includes(req.user.rol)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Only administrators can assign the responsible consultant.',
+    });
+  }
 
   try {
+    if (value.consultantId && !await isActiveConsultant(value.consultantId)) {
+      return validationFailure(res, { consultantId: 'Active consultant not found' });
+    }
     const agency = await Agency.findById(req.params.id);
     if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
 
-    for (const field of ['nombre', 'correo', 'cc', 'cco', 'entidadFederativa', 'status']) {
+    for (const field of [
+      'nombre', 'correo', 'cc', 'cco', 'entidadFederativa', 'status', 'consultantId',
+    ]) {
       if (value[field] !== undefined) agency.set(field, value[field]);
     }
 

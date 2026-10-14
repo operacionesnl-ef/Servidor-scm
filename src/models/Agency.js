@@ -33,7 +33,7 @@ const drivePatternEntrySchema = new mongoose.Schema(
 const agencySchema = new mongoose.Schema(
   {
     nombre:             { type: String, required: true, trim: true },
-    correo:             { type: String, required: true, lowercase: true, trim: true },
+    correo:             { type: String, required: false, lowercase: true, trim: true },
     cc: { type: [String], default: [] },
     cco: { type: [String], default: [] },
     entidadFederativa:  { type: String, required: true, trim: true },
@@ -43,6 +43,7 @@ const agencySchema = new mongoose.Schema(
       default: 'activa',
     },
     favorite: { type: Boolean, default: false },
+    consultantId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     tags: [{ type: mongoose.Schema.Types.ObjectId, ref: 'AgencyTag' }],
     personalizationMigrated: { type: Boolean, default: false, select: false },
     archivos: {

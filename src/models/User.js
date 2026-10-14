@@ -5,9 +5,10 @@ const userSchema = new mongoose.Schema(
   {
     nombre: { type: String, required: true, trim: true },
     correo: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    telefono: { type: String, required: false, unique: true, sparse: true, trim: true },
     rol: {
       type: String,
-      enum: ['developer', 'admin', 'user'],
+      enum: ['developer', 'admin', 'user', 'consultor'],
       default: 'user',
     },
     status: {

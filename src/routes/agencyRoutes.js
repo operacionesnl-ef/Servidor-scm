@@ -27,6 +27,17 @@ const {
   updateAgencyTag,
   deleteAgencyTag,
 } = require('../controllers/agencyPersonalizationController');
+const {
+  appendAgencyNote,
+  deleteAgencyNote,
+  getAgencyNotes,
+} = require('../controllers/agencyNoteController');
+const {
+  getMonthlyInspection,
+  scheduleMonthlyVisit,
+  updateMonthlyAuthorization,
+  updateMonthlyVisitStatus,
+} = require('../controllers/agencyMonthlyInspectionController');
 
 const router = express.Router();
 
@@ -40,6 +51,13 @@ router.post('/tags', requireAdminOrDeveloper, createAgencyTag);
 router.patch('/tags/:tagId', requireAdminOrDeveloper, updateAgencyTag);
 router.delete('/tags/:tagId', requireAdminOrDeveloper, deleteAgencyTag);
 router.get('/emails', getAgencyEmails);
+router.get('/:id/notes', getAgencyNotes);
+router.post('/:id/notes', appendAgencyNote);
+router.delete('/:id/notes/:noteId', requireAdminOrDeveloper, deleteAgencyNote);
+router.get('/:id/monthly-records/:period', getMonthlyInspection);
+router.put('/:id/monthly-records/:period', requireAdminOrDeveloper, updateMonthlyAuthorization);
+router.post('/:id/monthly-records/:period/visit', requireAdminOrDeveloper, scheduleMonthlyVisit);
+router.patch('/:id/monthly-records/:period/visit', requireAdminOrDeveloper, updateMonthlyVisitStatus);
 router.get('/', getAgencies);
 router.post('/', createAgency);
 router.post('/refresh-jobs', createAgencyRefreshJob);
