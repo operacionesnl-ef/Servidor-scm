@@ -69,6 +69,50 @@ async function getMonthlyInspection(req, res, next) {
   }
 }
 
+async function getMonthlyInspectionOverview(req, res, next) {
+  if (!validPeriod(req.params.period, res)) return;
+  try {
+    const agencies = await Agency.find({})
+      .select('_id nombre')
+      .lean();
+    const agencyIds = agencies.map((agency) => agency._id);
+    const records = agencyIds.length
+      ? await AgencyMonthlyInspection.find({ agencyId: { $in: agencyIds }, period: req.params.period })
+        .select('agencyId authorizationStatus visitStatus calendarEventId')
+        .lean()
+      : [];
+    const recordByAgencyId = new Map(records.map((record) => [String(record.agencyId), record]));
+    const eventIds = records.map((record) => record.calendarEventId).filter(Boolean);
+    const linkedEvents = eventIds.length
+      ? await CalendarEvent.find({
+        _id: { $in: eventIds },
+        agencyId: { $in: agencyIds },
+        type: 'agency_visit',
+      }).select('_id agencyId').lean()
+      : [];
+    const linkedEventKeys = new Set(linkedEvents.map((event) => `${event.agencyId}:${event._id}`));
+
+    return success(res, {
+      period: req.params.period,
+      agencies: agencies.map((agency) => {
+        const record = recordByAgencyId.get(String(agency._id));
+        const calendarEventId = record?.calendarEventId ? String(record.calendarEventId) : null;
+        return {
+          agencyId: String(agency._id),
+          agencyName: agency.nombre,
+          authorizationStatus: record?.authorizationStatus || 'pending',
+          visitStatus: record?.visitStatus || 'pending',
+          calendarEventId,
+          calendarEventExists: Boolean(calendarEventId
+            && linkedEventKeys.has(`${agency._id}:${record.calendarEventId}`)),
+        };
+      }),
+    }, 'Monthly inspection overview fetched');
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function updateMonthlyAuthorization(req, res, next) {
   if (!validAgencyId(req.params.id, res) || !validPeriod(req.params.period, res)) return;
   const { authorizationStatus } = req.body || {};
@@ -154,11 +198,28 @@ async function scheduleMonthlyVisit(req, res, next) {
       period: req.params.period,
     });
     let eventId = record.calendarEventId;
+    const linkedEventExists = eventId && await CalendarEvent.exists({
+      _id: eventId,
+      agencyId: agency._id,
+      type: 'agency_visit',
+    });
+    if (eventId && !linkedEventExists) {
+      const reset = await AgencyMonthlyInspection.updateOne(
+        { _id: record._id, calendarEventId: eventId },
+        { $set: { calendarEventId: null, visitStatus: 'scheduled' } },
+      );
+      if (reset.modifiedCount) {
+        eventId = null;
+      } else {
+        const latest = await AgencyMonthlyInspection.findById(record._id).lean();
+        eventId = latest?.calendarEventId || null;
+      }
+    }
     if (!eventId) {
       eventId = new mongoose.Types.ObjectId();
       const reserved = await AgencyMonthlyInspection.updateOne(
-        { _id: record._id, calendarEventId: null, visitStatus: { $ne: 'completed' } },
-        { $set: { calendarEventId: eventId } },
+        { _id: record._id, calendarEventId: null },
+        { $set: { calendarEventId: eventId, visitStatus: 'scheduled' } },
       );
       if (!reserved.modifiedCount) {
         const latest = await AgencyMonthlyInspection.findById(record._id).lean();
@@ -236,6 +297,7 @@ async function updateMonthlyVisitStatus(req, res, next) {
 
 module.exports = {
   getMonthlyInspection,
+  getMonthlyInspectionOverview,
   scheduleMonthlyVisit,
   updateMonthlyAuthorization,
   updateMonthlyVisitStatus,

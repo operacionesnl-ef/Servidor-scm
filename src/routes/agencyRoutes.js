@@ -34,6 +34,7 @@ const {
 } = require('../controllers/agencyNoteController');
 const {
   getMonthlyInspection,
+  getMonthlyInspectionOverview,
   scheduleMonthlyVisit,
   updateMonthlyAuthorization,
   updateMonthlyVisitStatus,
@@ -55,6 +56,7 @@ router.get('/:id/notes', getAgencyNotes);
 router.post('/:id/notes', appendAgencyNote);
 router.delete('/:id/notes/:noteId', requireAdminOrDeveloper, deleteAgencyNote);
 router.get('/:id/monthly-records/:period', getMonthlyInspection);
+router.get('/monthly-records/:period/overview', getMonthlyInspectionOverview);
 router.put('/:id/monthly-records/:period', requireAdminOrDeveloper, updateMonthlyAuthorization);
 router.post('/:id/monthly-records/:period/visit', requireAdminOrDeveloper, scheduleMonthlyVisit);
 router.patch('/:id/monthly-records/:period/visit', requireAdminOrDeveloper, updateMonthlyVisitStatus);

@@ -1,8 +1,11 @@
 const mongoose = require('mongoose');
 const { google } = require('googleapis');
 const Agency = require('../models/Agency');
+const AgencyMonthlyInspection = require('../models/AgencyMonthlyInspection');
+const AgencyNote = require('../models/AgencyNote');
 const AgencyPersonalization = require('../models/AgencyPersonalization');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
+const CalendarEvent = require('../models/CalendarEvent');
 const GlobalSetting = require('../models/GlobalSetting');
 const Notification = require('../models/Notification');
 const SentEmail = require('../models/SentEmail');
@@ -524,8 +527,13 @@ const deleteAgency = async (req, res, next) => {
     }
 
     req.auditRecovery = { entity: 'Agency', snapshot: agency.toObject({ depopulate: true }) };
+    await Promise.all([
+      CalendarEvent.deleteMany({ agencyId: agency._id }),
+      AgencyMonthlyInspection.deleteMany({ agencyId: agency._id }),
+      AgencyNote.deleteMany({ agencyId: agency._id }),
+      AgencyPersonalization.deleteMany({ agencyId: agency._id }),
+    ]);
     await agency.deleteOne();
-    await AgencyPersonalization.deleteMany({ agencyId: agency._id });
     return success(res, { id: agency._id }, 'Agency deleted');
   } catch (err) {
     return next(err);
