@@ -70,6 +70,9 @@ const updateAgencySearchPeriod = async (req, res, next) => {
 const ALLOWED_FIELDS = new Set([
   'nombre',
   'correo',
+  'gerente',
+  'telefonoGerente',
+  'seguimiento',
   'cc',
   'cco',
   'entidadFederativa',
@@ -176,6 +179,17 @@ const validateAgencyInput = (body, partial) => {
       errors.correo = 'Must be a valid email address';
     } else {
       value.correo = correo;
+    }
+  }
+
+  for (const [field, maximum] of [['gerente', 120], ['telefonoGerente', 40], ['seguimiento', 4000]]) {
+    if (body[field] === undefined) continue;
+    if (typeof body[field] !== 'string') {
+      errors[field] = 'Must be a string';
+    } else if (body[field].trim().length > maximum) {
+      errors[field] = `Must not exceed ${maximum} characters`;
+    } else {
+      value[field] = body[field].trim();
     }
   }
 
@@ -473,7 +487,8 @@ const updateAgency = async (req, res, next) => {
     if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
 
     for (const field of [
-      'nombre', 'correo', 'cc', 'cco', 'entidadFederativa', 'status', 'consultantId',
+      'nombre', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
+      'cc', 'cco', 'entidadFederativa', 'status', 'consultantId',
     ]) {
       if (value[field] !== undefined) agency.set(field, value[field]);
     }

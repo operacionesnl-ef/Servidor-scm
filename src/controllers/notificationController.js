@@ -3,7 +3,6 @@
 const mongoose = require('mongoose');
 const Agency = require('../models/Agency');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
-const GlobalSetting = require('../models/GlobalSetting');
 const MailJob = require('../models/MailJob');
 const Notification = require('../models/Notification');
 const Subscription = require('../models/Subscription');
@@ -93,8 +92,7 @@ async function getNotifications(req, res, next) {
     const userId = req.user._id;
     const isAdmin = ['admin', 'developer'].includes(req.user.rol);
     const now = new Date();
-    const savedPeriod = await GlobalSetting.findById('agency-search-period').lean();
-    const period = savedPeriod || getMexicoPeriod(now);
+    const period = getMexicoPeriod(now);
     const [agencies, announcements, refreshJobs, mailJobs] = await Promise.all([
       Agency.find({ status: 'activa' })
         .select('_id nombre status archivos')
@@ -128,6 +126,7 @@ async function getNotifications(req, res, next) {
       mailJobs,
       userId,
       period,
+      now,
     });
     pushMonthlyReminderOnce(userId, period, feed.counts.reminders)
       .catch((error) => console.error('[Push] No se pudo enviar el recordatorio mensual:', error.message));

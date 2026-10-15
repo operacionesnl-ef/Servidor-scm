@@ -19,6 +19,7 @@ const {
   publishGlobalNotification,
   streamNotificationEvents,
 } = require('../src/controllers/notificationController');
+const { getMexicoPeriod } = require('../src/utils/notificationUtils');
 const { publishNotificationChange } = require('../src/services/notificationEvents');
 
 function listQuery(items) {
@@ -53,7 +54,7 @@ test('notification feed limits process visibility to the authenticated user', as
   let notificationFilter;
 
   Agency.find = () => listQuery([]);
-  GlobalSetting.findById = () => ({ lean: async () => null });
+  GlobalSetting.findById = () => ({ lean: async () => ({ year: 2026, month: 8 }) });
   Notification.find = (filter) => {
     notificationFilter = filter;
     return listQuery([]);
@@ -75,6 +76,11 @@ test('notification feed limits process visibility to the authenticated user', as
     assert.deepEqual(mailFilter.owner, userId);
     assert.equal(notificationFilter.audience, 'all');
     assert.equal(res.body.unreadCount, 0);
+    const expectedPeriod = getMexicoPeriod(new Date());
+    assert.deepEqual(
+      { year: res.body.period.year, month: res.body.period.month },
+      expectedPeriod,
+    );
   } finally {
     Agency.find = originalMethods.agencyFind;
     GlobalSetting.findById = originalMethods.globalSettingFindById;

@@ -34,6 +34,9 @@ const agencySchema = new mongoose.Schema(
   {
     nombre:             { type: String, required: true, trim: true },
     correo:             { type: String, required: false, lowercase: true, trim: true },
+    gerente: { type: String, trim: true, maxlength: 120 },
+    telefonoGerente: { type: String, trim: true, maxlength: 40 },
+    seguimiento: { type: String, trim: true, maxlength: 4000 },
     cc: { type: [String], default: [] },
     cco: { type: [String], default: [] },
     entidadFederativa:  { type: String, required: true, trim: true },

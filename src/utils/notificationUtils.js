@@ -33,14 +33,14 @@ function agencyHasCurrentReports(agency, year, month) {
   });
 }
 
-function createAgencyReminder(agency, year, month) {
+function createAgencyReminder(agency, year, month, createdAt = new Date()) {
   const period = `${String(month).padStart(2, '0')}/${year}`;
   return {
     id: `reminder:${year}-${String(month).padStart(2, '0')}:${String(agency._id)}`,
     category: 'reminder',
     title: 'Falta actualizar reportes',
     summary: `${agency.nombre}: faltan reportes del período ${period}.`,
-    createdAt: new Date(Date.UTC(year, month - 1, 1)).toISOString(),
+    createdAt: createdAt.toISOString(),
     severity: 'medium',
     read: false,
     persistent: true,
@@ -94,10 +94,10 @@ function serializeJob(job, category, title) {
   };
 }
 
-function buildNotificationFeed({ agencies, announcements, refreshJobs, mailJobs, userId, period }) {
+function buildNotificationFeed({ agencies, announcements, refreshJobs, mailJobs, userId, period, now = new Date() }) {
   const reminders = agencies
     .filter((agency) => agency.status === 'activa' && !agencyHasCurrentReports(agency, period.year, period.month))
-    .map((agency) => createAgencyReminder(agency, period.year, period.month));
+    .map((agency) => createAgencyReminder(agency, period.year, period.month, now));
   const announcementItems = announcements.map((notification) => serializeAnnouncement(notification, userId));
   const jobs = [
     ...refreshJobs.map((job) => serializeJob(

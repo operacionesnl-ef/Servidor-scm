@@ -23,6 +23,7 @@ function agency(id, status, filePeriod) {
 }
 
 test('monthly reminders only include active agencies missing current-period reports', () => {
+  const now = new Date('2026-10-15T15:48:00.000Z');
   const feed = buildNotificationFeed({
     agencies: [
       agency('pending', 'activa', { year: 2026, month: 9 }),
@@ -35,12 +36,14 @@ test('monthly reminders only include active agencies missing current-period repo
     mailJobs: [],
     userId: 'user-id',
     period: { year: 2026, month: 10 },
+    now,
   });
 
   assert.equal(feed.counts.reminders, 1);
   assert.equal(feed.unreadCount, 1);
   assert.equal(feed.items[0].agencyId, 'pending');
   assert.equal(feed.items[0].period.label, '10/2026');
+  assert.equal(feed.items[0].createdAt, now.toISOString());
 });
 
 test('all four files must exist and match the selected reporting period', () => {
