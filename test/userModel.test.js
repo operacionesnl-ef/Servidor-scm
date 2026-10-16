@@ -7,6 +7,6 @@ test('user role defaults to user and only accepts supported roles', () => {
   assert.equal(user.rol, 'user');
 
   const rolePath = User.schema.path('rol');
-  assert.deepEqual(rolePath.enumValues, ['developer', 'admin', 'user']);
+  assert.deepEqual(rolePath.enumValues, ['developer', 'admin', 'user', 'consultor']);
   assert.equal(new User({ rol: 'owner' }).validateSync().errors.rol.kind, 'enum');
 });

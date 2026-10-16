@@ -7,8 +7,10 @@ const Agency = require('../src/models/Agency');
 const AgencyRefreshJob = require('../src/models/AgencyRefreshJob');
 const MailJob = require('../src/models/MailJob');
 const Notification = require('../src/models/Notification');
+const Subscription = require('../src/models/Subscription');
 const GlobalSetting = require('../src/models/GlobalSetting');
 const User = require('../src/models/User');
+const webpush = require('web-push');
 const { EventEmitter } = require('node:events');
 const {
   getNotifications,
@@ -17,6 +19,7 @@ const {
   publishGlobalNotification,
   streamNotificationEvents,
 } = require('../src/controllers/notificationController');
+const { getMexicoPeriod } = require('../src/utils/notificationUtils');
 const { publishNotificationChange } = require('../src/services/notificationEvents');
 
 function listQuery(items) {
@@ -51,7 +54,7 @@ test('notification feed limits process visibility to the authenticated user', as
   let notificationFilter;
 
   Agency.find = () => listQuery([]);
-  GlobalSetting.findById = () => ({ lean: async () => null });
+  GlobalSetting.findById = () => ({ lean: async () => ({ year: 2026, month: 8 }) });
   Notification.find = (filter) => {
     notificationFilter = filter;
     return listQuery([]);
@@ -73,6 +76,11 @@ test('notification feed limits process visibility to the authenticated user', as
     assert.deepEqual(mailFilter.owner, userId);
     assert.equal(notificationFilter.audience, 'all');
     assert.equal(res.body.unreadCount, 0);
+    const expectedPeriod = getMexicoPeriod(new Date());
+    assert.deepEqual(
+      { year: res.body.period.year, month: res.body.period.month },
+      expectedPeriod,
+    );
   } finally {
     Agency.find = originalMethods.agencyFind;
     GlobalSetting.findById = originalMethods.globalSettingFindById;
@@ -167,7 +175,7 @@ test('quick notification feed includes every unread item and only three visible 
   }
 });
 
-test('notification SSE sends an initial refresh and broadcasts persisted changes', async () => {
+test('notification SSE broadcasts persisted changes without an initial redundant refresh', async () => {
   const req = new EventEmitter();
   const res = new EventEmitter();
   const writes = [];
@@ -178,10 +186,10 @@ test('notification SSE sends an initial refresh and broadcasts persisted changes
   res.write = (value) => { writes.push(value); return true; };
 
   streamNotificationEvents(req, res);
-  assert.equal(writes.some((event) => event.includes('event: change')), true);
+  assert.equal(writes.some((event) => event.includes('event: change')), false);
   publishNotificationChange();
   await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.equal(writes.filter((event) => event.includes('event: change')).length, 2);
+  assert.equal(writes.filter((event) => event.includes('event: change')).length, 1);
   res.destroyed = true;
   res.emit('close');
 });
@@ -230,7 +238,13 @@ test('marking a synthetic reminder as read is stored per user', async () => {
 
 test('global announcement endpoint validates and persists developer notices', async () => {
   const originalCreate = Notification.create;
+  const originalUserFind = User.find;
+  const originalSubscriptionFind = Subscription.find;
+  const originalSendNotification = webpush.sendNotification;
   let savedNotice;
+  let recipientFilter;
+  let subscriptionFilter;
+  const deliveries = [];
   Notification.create = async (payload) => {
     savedNotice = payload;
     return {
@@ -238,6 +252,22 @@ test('global announcement endpoint validates and persists developer notices', as
       _id: 'notice-id',
       createdAt: new Date('2026-10-05T12:00:00Z'),
     };
+  };
+  User.find = (filter) => {
+    recipientFilter = filter;
+    return listQuery([{ _id: 'active-user-id' }]);
+  };
+  Subscription.find = (filter) => {
+    subscriptionFilter = filter;
+    return listQuery([{
+      _id: 'device-id',
+      endpoint: 'https://push.example/device',
+      expirationTime: null,
+      keys: { p256dh: 'public-key', auth: 'auth-key' },
+    }]);
+  };
+  webpush.sendNotification = async (subscription, payload) => {
+    deliveries.push({ subscription, payload: JSON.parse(payload) });
   };
 
   try {
@@ -251,6 +281,26 @@ test('global announcement endpoint validates and persists developer notices', as
     assert.equal(savedNotice.title, 'Mantenimiento');
     assert.equal(savedNotice.message, 'Hoy a las 22:00');
     assert.equal(savedNotice.createdBy, 'developer-id');
+    assert.deepEqual(recipientFilter, { status: 'activo' });
+    assert.deepEqual(subscriptionFilter, { userId: { $in: ['active-user-id'] } });
+    assert.equal(res.body.push.sent, 1);
+    assert.equal(res.body.push.total, 1);
+    assert.deepEqual(deliveries[0].payload, {
+      title: 'Mantenimiento',
+      body: 'Hoy a las 22:00',
+      url: '/notificaciones',
+      tag: 'announcement-notice-id',
+    });
+
+    const adminNotice = response();
+    await publishGlobalNotification({
+      user: { _id: 'developer-id' },
+      body: { title: 'Solo admins', message: 'Mensaje interno.', severity: 'low', audience: 'admin' },
+    }, adminNotice, (error) => { throw error; });
+    assert.deepEqual(recipientFilter, {
+      status: 'activo',
+      rol: { $in: ['admin', 'developer'] },
+    });
 
     const invalid = response();
     await publishGlobalNotification({
@@ -260,5 +310,8 @@ test('global announcement endpoint validates and persists developer notices', as
     assert.equal(invalid.statusCode, 400);
   } finally {
     Notification.create = originalCreate;
+    User.find = originalUserFind;
+    Subscription.find = originalSubscriptionFind;
+    webpush.sendNotification = originalSendNotification;
   }
 });

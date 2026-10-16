@@ -13,6 +13,7 @@ const { refreshAgencyFromDrive } = require('./agencyDriveRefresh');
 const { inspectAgencyIntegrity } = require('./agencyIntegrityCheck');
 const { logServerEvent } = require('../utils/serverLogger');
 const { logEvent } = require('../utils/consoleLogger');
+const { sendPushToUser } = require('./pushNotificationService');
 
 let workerPromise = null;
 let pollTimer = null;
@@ -35,9 +36,21 @@ async function processJob(job) {
   const auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID);
   auth.setCredentials({ access_token: accessToken });
   const drive = google.drive({ version: 'v3', auth });
+  const processName = job.jobType === 'integrity' ? 'Verificación' : 'Actualización';
 
   for (const agencyId of job.agencyIds.slice(job.completed)) {
     const agency = await Agency.findById(agencyId);
+    const agencyName = agency?.nombre || agencyId;
+    logEvent('agency_job_agency_started', {
+      jobId: String(job._id),
+      ownerEmail: job.ownerEmail,
+      agency: agencyName,
+      completed: job.completed,
+      total: job.total,
+      status: 'processing',
+      message: `${processName} de archivos`,
+    });
+
     if (!agency) {
       job.results.push({
         agencyId,
@@ -50,6 +63,15 @@ async function processJob(job) {
       });
       job.completed += 1;
       await job.save();
+      logEvent('agency_job_progress', {
+        jobId: String(job._id),
+        ownerEmail: job.ownerEmail,
+        agency: agencyName,
+        completed: job.completed,
+        total: job.total,
+        status: 'failed',
+        message: 'La agencia ya no existe.',
+      });
       continue;
     }
 
@@ -67,6 +89,14 @@ async function processJob(job) {
       });
       job.completed += 1;
       await job.save();
+      logEvent('agency_job_progress', {
+        jobId: String(job._id),
+        ownerEmail: job.ownerEmail,
+        agency: agency.nombre,
+        completed: job.completed,
+        total: job.total,
+        status: 'skipped',
+      });
       continue;
     }
 
@@ -114,6 +144,16 @@ async function processJob(job) {
 
     job.completed += 1;
     await job.save();
+    const result = job.results[job.results.length - 1];
+    logEvent('agency_job_progress', {
+      jobId: String(job._id),
+      ownerEmail: job.ownerEmail,
+      agency: agency.nombre,
+      completed: job.completed,
+      total: job.total,
+      status: result.status,
+      ...(result.error ? { error: result.error } : {}),
+    });
   }
 
   const hasIssues = job.results.some((result) => ['issues', 'failed'].includes(result.status));
@@ -124,6 +164,16 @@ async function processJob(job) {
   const period = `${String(job.month).padStart(2, '0')}/${job.year}`;
   const processTitle = job.jobType === 'integrity' ? 'Verificación de archivos' : 'Actualización de archivos';
   const outcome = hasIssues ? 'terminó con incidencias' : 'se completó correctamente';
+  try {
+    await sendPushToUser(job.owner, {
+      title: `${processTitle} ${hasIssues ? 'con incidencias' : 'completada'}`,
+      body: `La ${processTitle.toLocaleLowerCase()} ${outcome} para ${period}: ${job.completed} de ${job.total} agencias procesadas.`,
+      url: '/dashboard',
+      tag: `agency-job-${job._id}`,
+    });
+  } catch (pushError) {
+    logEvent('agency_job_push_failed', { jobId: String(job._id), message: pushError.message });
+  }
   try {
     await Notification.create({
       title: `${processTitle} ${hasIssues ? 'con incidencias' : 'completada'}`,
@@ -150,6 +200,16 @@ async function failJob(job, error) {
   job.currentName = '';
   job.expiresAt = null;
   await job.save();
+  try {
+    await sendPushToUser(job.owner, {
+      title: job.jobType === 'integrity' ? 'Falló la verificación de archivos' : 'Falló la actualización de archivos',
+      body: job.error,
+      url: '/dashboard',
+      tag: `agency-job-${job._id}`,
+    });
+  } catch (pushError) {
+    logEvent('agency_job_push_failed', { jobId: String(job._id), message: pushError.message });
+  }
   await logServerEvent('agency_refresh_failed', {
     userId: job.owner,
     jobId: job._id,
@@ -170,6 +230,12 @@ async function processQueuedJobs() {
         { sort: { createdAt: 1 }, new: true }
       ).select('+encryptedGoogleAccessToken');
       if (!job) break;
+      await logServerEvent('agency_job_started', {
+        userId: job.owner,
+        jobId: job._id,
+        status: job.status,
+        total: job.total,
+      });
       try {
         await processJob(job);
       } catch (error) {

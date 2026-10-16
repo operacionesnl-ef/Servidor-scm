@@ -19,6 +19,23 @@ test('renders job progress and status as a readable console event', () => {
   assert.match(output, /agencia: Agencia Norte/);
 });
 
+test('renders agency job progress with current agency and outcome', () => {
+  const output = formatEvent('agency_job_progress', {
+    timestamp: '2026-10-06T15:00:00.000Z',
+    completed: 2,
+    total: 4,
+    agency: 'Agencia Norte',
+    status: 'updated',
+    jobId: 'job-123',
+  }, false);
+
+  assert.match(output, /Avance de proceso de agencias/);
+  assert.match(output, /\[█████████░░░░░░░░░\] 50%/);
+  assert.match(output, /estado: updated/);
+  assert.match(output, /trabajo: job-123/);
+  assert.match(output, /agencia: Agencia Norte/);
+});
+
 test('formats HTTP logs without ANSI escapes and safely flattens terminal controls', () => {
   const output = formatRequest({
     timestamp: '2026-10-06T15:00:00.000Z',

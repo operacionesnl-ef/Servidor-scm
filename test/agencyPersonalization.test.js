@@ -1,17 +1,22 @@
 'use strict';
 
-const test = require('node:test');
+const { test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
 const Agency = require('../src/models/Agency');
 const AgencyTag = require('../src/models/AgencyTag');
 const AgencyPersonalization = require('../src/models/AgencyPersonalization');
+const AgencyHistory = require('../src/models/AgencyHistory');
 const { validateTagInput } = require('../src/controllers/agencyPersonalizationController');
 const {
   migrateLegacyPersonalizations,
   updateAgencyPersonalization,
 } = require('../src/controllers/agencyPersonalizationController');
 const { AGENCY_TAG_COLORS } = require('../src/models/AgencyTag');
+
+const originalAgencyHistoryCreate = AgencyHistory.create;
+beforeEach(() => { AgencyHistory.create = async (entry) => entry; });
+afterEach(() => { AgencyHistory.create = originalAgencyHistoryCreate; });
 
 function response() {
   return {

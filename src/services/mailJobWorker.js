@@ -5,6 +5,7 @@ const { decryptGoogleToken } = require('../utils/mailJobCrypto');
 const { buildRawMessage } = require('../utils/gmailMessage');
 const { logConsoleEvent, logServerEvent } = require('../utils/serverLogger');
 const { logEvent } = require('../utils/consoleLogger');
+const { sendPushToUser } = require('./pushNotificationService');
 
 const GOOGLE_EXPORT_TYPES = {
   'application/vnd.google-apps.document': 'application/pdf',
@@ -151,6 +152,16 @@ async function finishJob(job, status, error = '', event = 'job_finished') {
   job.completed = job.recipients.length;
   job.expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
   await job.save();
+  try {
+    await sendPushToUser(job.owner, {
+      title: status === 'completed' ? 'Envío de correos completado' : 'El envío de correos tuvo un problema',
+      body: `${job.completed} de ${job.total} correos procesados${error ? `: ${error}` : '.'}`,
+      url: '/historial-correos',
+      tag: `mail-job-${job._id}`,
+    });
+  } catch (pushError) {
+    logEvent('mail_job_push_failed', { jobId: String(job._id), message: pushError.message });
+  }
   await logServerEvent(event, {
     userId: job.owner,
     jobId: job._id,

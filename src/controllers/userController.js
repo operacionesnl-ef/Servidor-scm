@@ -2,8 +2,8 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const { success } = require('../utils/response');
 
-const ALLOWED_FIELDS = new Set(['nombre', 'correo', 'rol', 'status']);
-const ALLOWED_ROLES = new Set(['developer', 'admin', 'user']);
+const ALLOWED_FIELDS = new Set(['nombre', 'correo', 'telefono', 'rol', 'status']);
+const ALLOWED_ROLES = new Set(['developer', 'admin', 'user', 'consultor']);
 const ALLOWED_STATUSES = new Set(['activo', 'inactivo', 'suspendido']);
 
 const validateUserInput = (body, partial) => {
@@ -40,6 +40,22 @@ const validateUserInput = (body, partial) => {
     }
   }
 
+  if (body.telefono !== undefined) {
+    if (body.telefono === null || (typeof body.telefono === 'string' && !body.telefono.trim())) {
+      if (partial) value.telefono = undefined;
+    } else if (typeof body.telefono !== 'string') {
+      errors.telefono = 'Must be a valid phone number';
+    } else {
+      const telefono = body.telefono.trim();
+      const digits = telefono.replace(/\D/g, '');
+      if (!/^\+?[\d\s().-]+$/.test(telefono) || digits.length < 7 || digits.length > 15) {
+        errors.telefono = 'Must be a valid phone number';
+      } else {
+        value.telefono = telefono;
+      }
+    }
+  }
+
   if (body.rol !== undefined) {
     if (!ALLOWED_ROLES.has(body.rol)) errors.rol = `Must be one of: ${[...ALLOWED_ROLES].join(', ')}`;
     else value.rol = body.rol;
@@ -56,6 +72,7 @@ const publicUser = (user) => ({
   _id: user._id,
   nombre: user.nombre,
   correo: user.correo,
+  telefono: user.telefono,
   rol: user.rol,
   status: user.status,
   autenticacion: {
@@ -83,7 +100,11 @@ const sendDatabaseError = (err, res, next) => {
     return sendValidationFailure(res, errors);
   }
   if (err.code === 11000) {
-    return res.status(409).json({ success: false, message: 'A user with this email already exists' });
+    const duplicateField = Object.keys(err.keyPattern || err.keyValue || {})[0];
+    const message = duplicateField === 'telefono'
+      ? 'A user with this phone number already exists'
+      : 'A user with this email already exists';
+    return res.status(409).json({ success: false, message });
   }
   return next(err);
 };
@@ -97,7 +118,7 @@ const isLastActiveDeveloper = async (user, nextRole, nextStatus) => {
 const getUsers = async (req, res, next) => {
   try {
     const users = await User.find()
-      .select('nombre correo rol status autenticacion.proveedor autenticacion.ultimoAcceso createdAt updatedAt')
+      .select('nombre correo telefono rol status autenticacion.proveedor autenticacion.ultimoAcceso createdAt updatedAt')
       .sort({ nombre: 1 });
     return success(res, users, 'Users fetched');
   } catch (err) {

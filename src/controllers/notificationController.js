@@ -3,11 +3,12 @@
 const mongoose = require('mongoose');
 const Agency = require('../models/Agency');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
-const GlobalSetting = require('../models/GlobalSetting');
 const MailJob = require('../models/MailJob');
 const Notification = require('../models/Notification');
+const Subscription = require('../models/Subscription');
 const User = require('../models/User');
 const { subscribeToNotificationChanges } = require('../services/notificationEvents');
+const { sendPushToAudience, sendPushToUser } = require('../services/pushNotificationService');
 const {
   buildNotificationFeed,
   getMexicoPeriod,
@@ -21,6 +22,39 @@ const JOB_ID_PATTERN = /^job:(refresh|integrity|mail):[a-f\d]{24}$/i;
 
 function isQuickViewNotificationId(id) {
   return mongoose.isValidObjectId(id) || REMINDER_ID_PATTERN.test(id) || JOB_ID_PATTERN.test(id);
+}
+
+async function pushMonthlyReminderOnce(userId, period, count) {
+  if (!count || !await Subscription.exists({ userId })) return;
+
+  const periodKey = `${period.year}-${String(period.month).padStart(2, '0')}`;
+  const claimed = await User.findOneAndUpdate(
+    { _id: userId, lastPushReminderPeriod: { $ne: periodKey } },
+    { $set: { lastPushReminderPeriod: periodKey } },
+    { new: true },
+  );
+  if (!claimed) return;
+
+  try {
+    const result = await sendPushToUser(userId, {
+      title: 'Recordatorio de reportes pendientes',
+      body: `Hay ${count} agencia${count === 1 ? '' : 's'} con reportes pendientes para ${String(period.month).padStart(2, '0')}/${period.year}.`,
+      url: '/agencias',
+      tag: `agency-reminder-${periodKey}`,
+    });
+    if (!result.sent) {
+      await User.updateOne(
+        { _id: userId, lastPushReminderPeriod: periodKey },
+        { $unset: { lastPushReminderPeriod: 1 } },
+      );
+    }
+  } catch (error) {
+    await User.updateOne(
+      { _id: userId, lastPushReminderPeriod: periodKey },
+      { $unset: { lastPushReminderPeriod: 1 } },
+    );
+    throw error;
+  }
 }
 
 function streamNotificationEvents(req, res) {
@@ -38,7 +72,6 @@ function streamNotificationEvents(req, res) {
     if (!res.destroyed) res.write('event: change\ndata: {}\n\n');
   };
   const unsubscribe = subscribeToNotificationChanges(sendChange);
-  sendChange();
   const heartbeat = setInterval(() => {
     if (!res.destroyed) res.write(': keep-alive\n\n');
   }, 20000);
@@ -59,11 +92,10 @@ async function getNotifications(req, res, next) {
     const userId = req.user._id;
     const isAdmin = ['admin', 'developer'].includes(req.user.rol);
     const now = new Date();
-    const savedPeriod = await GlobalSetting.findById('agency-search-period').lean();
-    const period = savedPeriod || getMexicoPeriod(now);
+    const period = getMexicoPeriod(now);
     const [agencies, announcements, refreshJobs, mailJobs] = await Promise.all([
       Agency.find({ status: 'activa' })
-        .select('_id nombre archivos')
+        .select('_id nombre status archivos')
         .lean(),
       Notification.find({
         expiresAt: { $gt: now },
@@ -94,7 +126,10 @@ async function getNotifications(req, res, next) {
       mailJobs,
       userId,
       period,
+      now,
     });
+    pushMonthlyReminderOnce(userId, period, feed.counts.reminders)
+      .catch((error) => console.error('[Push] No se pudo enviar el recordatorio mensual:', error.message));
     const readIds = new Set(req.user.readNotificationIds || []);
     const hiddenIds = new Set(req.user.quickViewHiddenNotifications || []);
     const items = feed.items.map((item) => (
@@ -207,6 +242,17 @@ async function publishGlobalNotification(req, res, next) {
       audience,
       createdBy: req.user._id,
     });
+    let push = { total: 0, sent: 0 };
+    try {
+      push = await sendPushToAudience(notification.audience, {
+        title: notification.title,
+        body: notification.message,
+        url: '/notificaciones',
+        tag: `announcement-${notification._id}`,
+      });
+    } catch (error) {
+      console.error('[Push] No se pudo distribuir el aviso global:', error.message);
+    }
     return res.status(201).json({
       id: String(notification._id),
       title: notification.title,
@@ -214,6 +260,7 @@ async function publishGlobalNotification(req, res, next) {
       severity: notification.severity,
       audience: notification.audience,
       createdAt: notification.createdAt,
+      push,
     });
   } catch (error) {
     return next(error);

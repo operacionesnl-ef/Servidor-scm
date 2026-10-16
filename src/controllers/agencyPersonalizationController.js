@@ -6,6 +6,7 @@ const AgencyPersonalization = require('../models/AgencyPersonalization');
 const AgencyTag = require('../models/AgencyTag');
 const { AGENCY_TAG_COLORS } = require('../models/AgencyTag');
 const { success } = require('../utils/response');
+const { recordAgencyHistory } = require('../services/agencyHistory');
 
 const ROLES = new Set(['developer', 'admin', 'user']);
 
@@ -143,8 +144,10 @@ const updateAgencyPersonalization = async (req, res, next) => {
 
   try {
     await migrateLegacyPersonalizations();
-    const agency = await Agency.findById(id).select('_id favorite tags');
+    const agency = await Agency.findById(id).select('_id nombre favorite tags');
     if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
+    const previousFavorite = agency.favorite;
+    const previousTagIds = (agency.tags || []).map(String).sort();
     if (body.tagIds !== undefined) {
       const tagIds = [...new Set(body.tagIds)];
       const matchingTags = tagIds.length
@@ -163,6 +166,19 @@ const updateAgencyPersonalization = async (req, res, next) => {
     if (body.favorite !== undefined) agency.favorite = body.favorite;
     agency.personalizationMigrated = true;
     await agency.save();
+    const nextTagIds = agency.tags.map(String).sort();
+    if (previousFavorite !== agency.favorite || JSON.stringify(previousTagIds) !== JSON.stringify(nextTagIds)) {
+      await recordAgencyHistory({
+        agencyId: agency._id,
+        actor: req.user,
+        action: 'agency_personalization_updated',
+        summary: 'Se actualizaron las etiquetas o preferencias de la sucursal',
+        details: {
+          favoriteChanged: previousFavorite !== agency.favorite,
+          tagsChanged: JSON.stringify(previousTagIds) !== JSON.stringify(nextTagIds),
+        },
+      });
+    }
     return success(res, {
       agencyId: String(agency._id),
       favorite: agency.favorite,

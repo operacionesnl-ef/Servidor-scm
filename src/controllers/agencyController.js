@@ -1,11 +1,15 @@
 const mongoose = require('mongoose');
 const { google } = require('googleapis');
 const Agency = require('../models/Agency');
+const AgencyMonthlyInspection = require('../models/AgencyMonthlyInspection');
+const AgencyNote = require('../models/AgencyNote');
 const AgencyPersonalization = require('../models/AgencyPersonalization');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
+const CalendarEvent = require('../models/CalendarEvent');
 const GlobalSetting = require('../models/GlobalSetting');
 const Notification = require('../models/Notification');
 const SentEmail = require('../models/SentEmail');
+const User = require('../models/User');
 const { success } = require('../utils/response');
 const { updateDrivePattern } = require('../utils/drivePatternUtils');
 const { FILE_TYPES } = require('../utils/agencyFileRefreshUtils');
@@ -15,6 +19,7 @@ const { refreshAgencyFromDrive } = require('../services/agencyDriveRefresh');
 const { normalizeEmailList } = require('../utils/emailList');
 const { getMexicoPeriod } = require('../utils/notificationUtils');
 const { logEvent } = require('../utils/consoleLogger');
+const { recordAgencyHistory } = require('../services/agencyHistory');
 
 const AGENCY_SEARCH_PERIOD_SETTING = 'agency-search-period';
 
@@ -25,13 +30,8 @@ const serializeAgencySearchPeriod = (setting) => ({
 
 const getAgencySearchPeriod = async (req, res, next) => {
   try {
-    const fallbackPeriod = getMexicoPeriod();
-    const setting = await GlobalSetting.findOneAndUpdate(
-      { _id: AGENCY_SEARCH_PERIOD_SETTING },
-      { $setOnInsert: fallbackPeriod },
-      { new: true, upsert: true, setDefaultsOnInsert: true },
-    ).lean();
-    return res.json(serializeAgencySearchPeriod(setting));
+    const setting = await GlobalSetting.findById(AGENCY_SEARCH_PERIOD_SETTING).lean();
+    return res.json(serializeAgencySearchPeriod(setting || getMexicoPeriod()));
   } catch (error) {
     return next(error);
   }
@@ -73,18 +73,48 @@ const updateAgencySearchPeriod = async (req, res, next) => {
 
 const ALLOWED_FIELDS = new Set([
   'nombre',
+  'nombreEmpresa',
+  'direccion',
   'correo',
+  'gerente',
+  'telefonoGerente',
+  'seguimiento',
   'cc',
   'cco',
   'entidadFederativa',
   'status',
   'archivos',
+  'consultantId',
 ]);
 const ALLOWED_STATUSES = new Set(['activa', 'inactiva', 'suspendida']);
 const FILE_FIELDS = new Set(['archivo1', 'archivo2', 'archivo3', 'archivo4']);
 const FILE_CODES = { archivo1: 'ANX', archivo2: 'FOR', archivo3: 'REP', archivo4: 'REV' };
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const REQUIRED_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+const AGENCY_HISTORY_FIELD_LABELS = {
+  nombre: 'Nombre',
+  nombreEmpresa: 'Empresa',
+  direccion: 'Dirección',
+  correo: 'Correo',
+  gerente: 'Gerente',
+  telefonoGerente: 'Teléfono del gerente',
+  seguimiento: 'Seguimiento',
+  cc: 'CC',
+  cco: 'CCO',
+  entidadFederativa: 'Entidad federativa',
+  status: 'Estado',
+  consultantId: 'Consultor responsable',
+  archivos: 'Archivos asociados',
+};
+
+function historyValue(value) {
+  if (value && typeof value.toObject === 'function') value = value.toObject();
+  return value === undefined ? null : JSON.parse(JSON.stringify(value));
+}
+
+function getAgencyField(agency, field) {
+  return typeof agency.get === 'function' ? agency.get(field) : agency[field];
+}
 
 async function validateDriveToken(token) {
   const oauthClient = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID);
@@ -171,16 +201,34 @@ const validateAgencyInput = (body, partial) => {
     }
   }
 
-  if (body.correo === undefined && partial) {
-    // Leave omitted email unchanged on partial updates.
-  } else if (typeof body.correo !== 'string' || !body.correo.trim()) {
-    errors.correo = 'This field is required';
-  } else {
+  if (body.correo !== undefined && (typeof body.correo !== 'string' || !body.correo.trim())) {
+    errors.correo = 'Must be a non-empty valid email address when provided';
+  } else if (body.correo !== undefined) {
     const correo = body.correo.trim().toLowerCase();
     if (correo.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) {
       errors.correo = 'Must be a valid email address';
     } else {
       value.correo = correo;
+    }
+  }
+
+  for (const [field, maximum] of [['gerente', 120], ['telefonoGerente', 40], ['seguimiento', 4000]]) {
+    if (body[field] === undefined) continue;
+    if (typeof body[field] !== 'string') {
+      errors[field] = 'Must be a string';
+    } else if (body[field].trim().length > maximum) {
+      errors[field] = `Must not exceed ${maximum} characters`;
+    } else {
+      value[field] = body[field].trim();
+    }
+  }
+
+  if (body.consultantId !== undefined) {
+    if (body.consultantId === null || body.consultantId === '') value.consultantId = null;
+    else if (!mongoose.isValidObjectId(body.consultantId)) {
+      errors.consultantId = 'Must be a valid consultant ID or null';
+    } else {
+      value.consultantId = body.consultantId;
     }
   }
 
@@ -311,6 +359,12 @@ const validateId = (id, res) => {
   return true;
 };
 
+const isActiveConsultant = async (consultantId) => User.exists({
+  _id: consultantId,
+  rol: 'consultor',
+  status: 'activo',
+});
+
 const getMissingAgencyFields = (agency) => {
   const missingFields = [];
   if (typeof agency.nombre !== 'string' || !agency.nombre.trim()) missingFields.push('nombre');
@@ -425,9 +479,25 @@ const getAgencyById = async (req, res, next) => {
 const createAgency = async (req, res, next) => {
   const { errors, value } = validateAgencyInput(req.body, false);
   if (Object.keys(errors).length) return validationFailure(res, errors);
+  if (value.consultantId !== undefined && !['admin', 'developer'].includes(req.user.rol)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Only administrators can assign the responsible consultant.',
+    });
+  }
 
   try {
+    if (value.consultantId && !await isActiveConsultant(value.consultantId)) {
+      return validationFailure(res, { consultantId: 'Active consultant not found' });
+    }
     const agency = await Agency.create(value);
+    await recordAgencyHistory({
+      agencyId: agency._id,
+      actor: req.user,
+      action: 'agency_created',
+      summary: 'Sucursal creada',
+      details: { name: agency.nombre },
+    });
     return success(res, agency, 'Agency created', 201);
   } catch (err) {
     return sendDatabaseError(err, res, next);
@@ -439,12 +509,31 @@ const updateAgency = async (req, res, next) => {
   const partial = req.method === 'PATCH';
   const { errors, value } = validateAgencyInput(req.body, partial);
   if (Object.keys(errors).length) return validationFailure(res, errors);
+  if (value.consultantId !== undefined && !['admin', 'developer'].includes(req.user.rol)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Only administrators can assign the responsible consultant.',
+    });
+  }
 
   try {
+    if (value.consultantId && !await isActiveConsultant(value.consultantId)) {
+      return validationFailure(res, { consultantId: 'Active consultant not found' });
+    }
     const agency = await Agency.findById(req.params.id);
     if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
 
-    for (const field of ['nombre', 'correo', 'cc', 'cco', 'entidadFederativa', 'status']) {
+    const historyFields = [
+      'nombre', 'nombreEmpresa', 'direccion', 'correo', 'gerente', 'telefonoGerente',
+      'seguimiento', 'cc', 'cco', 'entidadFederativa', 'status', 'consultantId', 'archivos',
+    ];
+    const previousValues = Object.fromEntries(
+      historyFields.map((field) => [field, historyValue(getAgencyField(agency, field))]),
+    );
+    for (const field of [
+      'nombre','nombreEmpresa','direccion', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
+      'cc', 'cco', 'entidadFederativa', 'status', 'consultantId',
+    ]) {
       if (value[field] !== undefined) agency.set(field, value[field]);
     }
 
@@ -458,6 +547,22 @@ const updateAgency = async (req, res, next) => {
     }
 
     await agency.save();
+    const changes = historyFields.flatMap((field) => {
+      const from = previousValues[field];
+      const to = historyValue(getAgencyField(agency, field));
+      return JSON.stringify(from) === JSON.stringify(to)
+        ? []
+        : [{ field, label: AGENCY_HISTORY_FIELD_LABELS[field], from, to }];
+    });
+    if (changes.length) {
+      await recordAgencyHistory({
+        agencyId: agency._id,
+        actor: req.user,
+        action: 'agency_updated',
+        summary: `Se actualizaron ${changes.map(({ label }) => label.toLocaleLowerCase()).join(', ')}`,
+        details: { changes },
+      });
+    }
     return success(res, agency, 'Agency updated');
   } catch (err) {
     return sendDatabaseError(err, res, next);
@@ -478,9 +583,21 @@ const deleteAgency = async (req, res, next) => {
       });
     }
 
+    await recordAgencyHistory({
+      agencyId: agency._id,
+      actor: req.user,
+      action: 'agency_deleted',
+      summary: 'Sucursal eliminada',
+      details: { name: agency.nombre },
+    });
     req.auditRecovery = { entity: 'Agency', snapshot: agency.toObject({ depopulate: true }) };
+    await Promise.all([
+      CalendarEvent.deleteMany({ agencyId: agency._id }),
+      AgencyMonthlyInspection.deleteMany({ agencyId: agency._id }),
+      AgencyNote.deleteMany({ agencyId: agency._id }),
+      AgencyPersonalization.deleteMany({ agencyId: agency._id }),
+    ]);
     await agency.deleteOne();
-    await AgencyPersonalization.deleteMany({ agencyId: agency._id });
     return success(res, { id: agency._id }, 'Agency deleted');
   } catch (err) {
     return next(err);
