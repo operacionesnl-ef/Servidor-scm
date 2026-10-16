@@ -14,12 +14,19 @@ const reminderSchema = new mongoose.Schema({
   },
 }, { _id: false });
 
+const recurrenceSchema = new mongoose.Schema({
+  frequency: { type: String, enum: ['daily', 'weekly', 'monthly'], required: true },
+  interval: { type: Number, min: 1, max: 365, required: true },
+  daysOfWeek: { type: [{ type: Number, min: 0, max: 6 }], default: [] },
+  endDate: { type: String, match: /^\d{4}-\d{2}-\d{2}$/, required: true },
+}, { _id: false });
+
 const calendarEventSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true, maxlength: 160 },
   type: {
     type: String,
     required: true,
-    enum: ['agency_visit', 'document_deadline', 'file_review', 'personal_admin'],
+    enum: ['agency_visit', 'document_deadline', 'file_review', 'personal_admin', 'impuestos_verdes'],
   },
   startAt: { type: Date, required: true },
   endAt: {
@@ -37,6 +44,8 @@ const calendarEventSchema = new mongoose.Schema({
   notes: { type: String, trim: true, maxlength: 4000, default: '' },
   authorized: { type: Boolean, default: true },
   reminders: { type: reminderSchema, default: () => ({}) },
+  recurrenceSeriesId: { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
+  recurrence: { type: recurrenceSchema, default: null },
   reminderDispatchKeys: { type: [String], default: [], select: false },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },

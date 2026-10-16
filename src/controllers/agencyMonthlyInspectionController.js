@@ -5,6 +5,7 @@ const Agency = require('../models/Agency');
 const AgencyMonthlyInspection = require('../models/AgencyMonthlyInspection');
 const CalendarEvent = require('../models/CalendarEvent');
 const { success } = require('../utils/response');
+const { recordAgencyHistory } = require('../services/agencyHistory');
 
 const AUTHORIZATION_STATUSES = new Set(['pending', 'authorized', 'unauthorized']);
 
@@ -125,12 +126,30 @@ async function updateMonthlyAuthorization(req, res, next) {
     });
   }
   try {
-    if (!await findAgencyOr404(req.params.id, res)) return;
+    const agency = await findAgencyOr404(req.params.id, res);
+    if (!agency) return;
+    const previous = await AgencyMonthlyInspection.findOne({
+      agencyId: req.params.id,
+      period: req.params.period,
+    }).select('authorizationStatus').lean();
     const record = await AgencyMonthlyInspection.findOneAndUpdate(
       { agencyId: req.params.id, period: req.params.period },
       { $set: { authorizationStatus }, $setOnInsert: { visitStatus: 'scheduled' } },
       { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
     );
+    if ((previous?.authorizationStatus || 'pending') !== authorizationStatus) {
+      await recordAgencyHistory({
+        agencyId: agency._id,
+        actor: req.user,
+        action: 'monthly_authorization_updated',
+        summary: `Autorización mensual ${authorizationStatus === 'unauthorized' ? 'no autorizada' : authorizationStatus === 'authorized' ? 'autorizada' : 'pendiente'}`,
+        details: {
+          period: req.params.period,
+          from: previous?.authorizationStatus || 'pending',
+          to: authorizationStatus,
+        },
+      });
+    }
     return success(res, serializeRecord(record), 'Monthly authorization updated');
   } catch (error) {
     if (error.code === 11000) {
@@ -187,6 +206,17 @@ async function scheduleMonthlyVisit(req, res, next) {
     if (!agency) return;
     if (!agency.consultantId) {
       return validationFailure(res, { consultantId: 'Agency has no responsible consultant assigned' });
+    }
+    const existingRecord = await AgencyMonthlyInspection.findOne({
+      agencyId: agency._id,
+      period: req.params.period,
+    });
+    if (existingRecord?.authorizationStatus !== 'authorized') {
+      return res.status(409).json({
+        success: false,
+        message: 'No se puede programar la visita mensual hasta que la autorización del período esté autorizada.',
+        code: 'MONTHLY_AUTHORIZATION_REQUIRED',
+      });
     }
     await AgencyMonthlyInspection.updateOne(
       { agencyId: agency._id, period: req.params.period },
@@ -247,6 +277,17 @@ async function scheduleMonthlyVisit(req, res, next) {
       createdBy: req.user._id,
       updatedBy: req.user._id,
     });
+    await recordAgencyHistory({
+      agencyId: agency._id,
+      actor: req.user,
+      action: 'monthly_visit_scheduled',
+      summary: 'Visita mensual programada',
+      details: {
+        period: req.params.period,
+        startAt: event.startAt,
+        endAt: event.endAt,
+      },
+    });
     return success(res, {
       record: serializeRecord(await AgencyMonthlyInspection.findById(record._id).lean()),
       calendarEvent: {
@@ -289,6 +330,13 @@ async function updateMonthlyVisitStatus(req, res, next) {
     }
     record.visitStatus = 'completed';
     await record.save();
+    await recordAgencyHistory({
+      agencyId: record.agencyId,
+      actor: req.user,
+      action: 'monthly_visit_completed',
+      summary: 'Visita mensual marcada como realizada',
+      details: { period: req.params.period },
+    });
     return success(res, serializeRecord(record), 'Monthly visit marked completed');
   } catch (error) {
     return next(error);

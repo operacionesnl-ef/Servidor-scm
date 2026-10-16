@@ -19,6 +19,7 @@ const { refreshAgencyFromDrive } = require('../services/agencyDriveRefresh');
 const { normalizeEmailList } = require('../utils/emailList');
 const { getMexicoPeriod } = require('../utils/notificationUtils');
 const { logEvent } = require('../utils/consoleLogger');
+const { recordAgencyHistory } = require('../services/agencyHistory');
 
 const AGENCY_SEARCH_PERIOD_SETTING = 'agency-search-period';
 
@@ -72,6 +73,8 @@ const updateAgencySearchPeriod = async (req, res, next) => {
 
 const ALLOWED_FIELDS = new Set([
   'nombre',
+  'nombreEmpresa',
+  'direccion',
   'correo',
   'gerente',
   'telefonoGerente',
@@ -88,6 +91,30 @@ const FILE_FIELDS = new Set(['archivo1', 'archivo2', 'archivo3', 'archivo4']);
 const FILE_CODES = { archivo1: 'ANX', archivo2: 'FOR', archivo3: 'REP', archivo4: 'REV' };
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const REQUIRED_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+const AGENCY_HISTORY_FIELD_LABELS = {
+  nombre: 'Nombre',
+  nombreEmpresa: 'Empresa',
+  direccion: 'Dirección',
+  correo: 'Correo',
+  gerente: 'Gerente',
+  telefonoGerente: 'Teléfono del gerente',
+  seguimiento: 'Seguimiento',
+  cc: 'CC',
+  cco: 'CCO',
+  entidadFederativa: 'Entidad federativa',
+  status: 'Estado',
+  consultantId: 'Consultor responsable',
+  archivos: 'Archivos asociados',
+};
+
+function historyValue(value) {
+  if (value && typeof value.toObject === 'function') value = value.toObject();
+  return value === undefined ? null : JSON.parse(JSON.stringify(value));
+}
+
+function getAgencyField(agency, field) {
+  return typeof agency.get === 'function' ? agency.get(field) : agency[field];
+}
 
 async function validateDriveToken(token) {
   const oauthClient = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID);
@@ -464,6 +491,13 @@ const createAgency = async (req, res, next) => {
       return validationFailure(res, { consultantId: 'Active consultant not found' });
     }
     const agency = await Agency.create(value);
+    await recordAgencyHistory({
+      agencyId: agency._id,
+      actor: req.user,
+      action: 'agency_created',
+      summary: 'Sucursal creada',
+      details: { name: agency.nombre },
+    });
     return success(res, agency, 'Agency created', 201);
   } catch (err) {
     return sendDatabaseError(err, res, next);
@@ -489,8 +523,15 @@ const updateAgency = async (req, res, next) => {
     const agency = await Agency.findById(req.params.id);
     if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
 
+    const historyFields = [
+      'nombre', 'nombreEmpresa', 'direccion', 'correo', 'gerente', 'telefonoGerente',
+      'seguimiento', 'cc', 'cco', 'entidadFederativa', 'status', 'consultantId', 'archivos',
+    ];
+    const previousValues = Object.fromEntries(
+      historyFields.map((field) => [field, historyValue(getAgencyField(agency, field))]),
+    );
     for (const field of [
-      'nombre', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
+      'nombre','nombreEmpresa','direccion', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
       'cc', 'cco', 'entidadFederativa', 'status', 'consultantId',
     ]) {
       if (value[field] !== undefined) agency.set(field, value[field]);
@@ -506,6 +547,22 @@ const updateAgency = async (req, res, next) => {
     }
 
     await agency.save();
+    const changes = historyFields.flatMap((field) => {
+      const from = previousValues[field];
+      const to = historyValue(getAgencyField(agency, field));
+      return JSON.stringify(from) === JSON.stringify(to)
+        ? []
+        : [{ field, label: AGENCY_HISTORY_FIELD_LABELS[field], from, to }];
+    });
+    if (changes.length) {
+      await recordAgencyHistory({
+        agencyId: agency._id,
+        actor: req.user,
+        action: 'agency_updated',
+        summary: `Se actualizaron ${changes.map(({ label }) => label.toLocaleLowerCase()).join(', ')}`,
+        details: { changes },
+      });
+    }
     return success(res, agency, 'Agency updated');
   } catch (err) {
     return sendDatabaseError(err, res, next);
@@ -526,6 +583,13 @@ const deleteAgency = async (req, res, next) => {
       });
     }
 
+    await recordAgencyHistory({
+      agencyId: agency._id,
+      actor: req.user,
+      action: 'agency_deleted',
+      summary: 'Sucursal eliminada',
+      details: { name: agency.nombre },
+    });
     req.auditRecovery = { entity: 'Agency', snapshot: agency.toObject({ depopulate: true }) };
     await Promise.all([
       CalendarEvent.deleteMany({ agencyId: agency._id }),

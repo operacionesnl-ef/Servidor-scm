@@ -5,8 +5,11 @@ const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
 const CalendarEvent = require('../src/models/CalendarEvent');
 const CalendarEventModel = require('../src/models/CalendarEvent');
+const Agency = require('../src/models/Agency');
 const {
+  createCalendarEventSeries,
   getCalendarEvents,
+  validateEventSeriesInput,
   validateEventInput,
 } = require('../src/controllers/calendarController');
 const requireAdminOrDeveloper = require('../src/middlewares/requireAdminOrDeveloper');
@@ -60,6 +63,76 @@ test('calendar input validation accepts the API contract and rejects malformed r
     endAt: '2026-10-14T10:00:00Z',
   }, false);
   assert.ok(invalid.errors.startAt);
+});
+
+test('calendar series validation requires a bounded recurrence and consistent occurrences', () => {
+  const input = {
+    event: {
+      title: 'Revisar expedientes',
+      type: 'file_review',
+      startAt: '2026-10-14T10:00:00Z',
+      endAt: '2026-10-14T11:00:00Z',
+      agencyId: null,
+    },
+    recurrence: {
+      frequency: 'weekly',
+      interval: 2,
+      daysOfWeek: [1, 3],
+      endDate: '2026-11-30',
+    },
+    occurrences: [
+      { startAt: '2026-10-14T10:00:00Z', endAt: '2026-10-14T11:00:00Z' },
+      { startAt: '2026-10-28T10:00:00Z', endAt: '2026-10-28T11:00:00Z' },
+    ],
+  };
+  assert.deepEqual(validateEventSeriesInput(input).errors, {});
+
+  const invalid = validateEventSeriesInput({
+    ...input,
+    recurrence: { ...input.recurrence, interval: 0 },
+    occurrences: [input.occurrences[0]],
+  });
+  assert.ok(invalid.errors['recurrence.interval']);
+  assert.ok(invalid.errors.occurrences);
+});
+
+test('creates a recurrence series with one shared series ID and returns its size', async () => {
+  const originals = {
+    insertMany: CalendarEventModel.insertMany,
+  };
+  const inserted = [];
+  CalendarEventModel.insertMany = async (documents) => {
+    inserted.push(...documents);
+    return documents;
+  };
+  const actorId = new mongoose.Types.ObjectId();
+  try {
+    const res = response();
+    await createCalendarEventSeries({
+      user: { _id: actorId, nombre: 'Admin' },
+      body: {
+        event: {
+          title: 'Revisar expedientes',
+          type: 'file_review',
+          startAt: '2026-10-14T10:00:00Z',
+          endAt: '2026-10-14T11:00:00Z',
+          agencyId: null,
+        },
+        recurrence: { frequency: 'daily', interval: 1, daysOfWeek: [], endDate: '2026-10-15' },
+        occurrences: [
+          { startAt: '2026-10-14T10:00:00Z', endAt: '2026-10-14T11:00:00Z' },
+          { startAt: '2026-10-15T10:00:00Z', endAt: '2026-10-15T11:00:00Z' },
+        ],
+      },
+    }, res, (error) => { throw error; });
+    assert.equal(res.statusCode, 201);
+    assert.equal(res.body.data.count, 2);
+    assert.equal(inserted.length, 2);
+    assert.equal(String(inserted[0].recurrenceSeriesId), String(inserted[1].recurrenceSeriesId));
+    assert.equal(inserted[0].recurrence.frequency, 'daily');
+  } finally {
+    CalendarEventModel.insertMany = originals.insertMany;
+  }
 });
 
 test('calendar listing overlaps date ranges, scopes non-admins to authorized events and supports mine', async () => {

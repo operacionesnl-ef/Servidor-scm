@@ -5,6 +5,7 @@ const requireAuth = require('../middlewares/requireAuth');
 const requireAdminOrDeveloper = require('../middlewares/requireAdminOrDeveloper');
 const {
   createCalendarEvent,
+  createCalendarEventSeries,
   deleteCalendarEvent,
   getCalendarConsultants,
   getCalendarEvents,
@@ -16,6 +17,7 @@ const router = express.Router();
 router.use(requireAuth);
 router.get('/consultants', getCalendarConsultants);
 router.get('/events', getCalendarEvents);
+router.post('/events/series', requireAdminOrDeveloper, createCalendarEventSeries);
 router.post('/events', requireAdminOrDeveloper, createCalendarEvent);
 router.patch('/events/:id', requireAdminOrDeveloper, updateCalendarEvent);
 router.delete('/events/:id', requireAdminOrDeveloper, deleteCalendarEvent);

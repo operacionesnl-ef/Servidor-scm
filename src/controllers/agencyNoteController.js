@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const Agency = require('../models/Agency');
 const AgencyNote = require('../models/AgencyNote');
 const { success } = require('../utils/response');
+const { recordAgencyHistory } = require('../services/agencyHistory');
 
 function validObjectId(id, res, label) {
   if (mongoose.isValidObjectId(id)) return true;
@@ -58,6 +59,13 @@ async function appendAgencyNote(req, res, next) {
       authorId: req.user._id,
       text: text.trim(),
     });
+    await recordAgencyHistory({
+      agencyId: req.params.id,
+      actor: req.user,
+      action: 'agency_note_added',
+      summary: 'Se agregó una nota al expediente',
+      details: { noteId: String(note._id) },
+    });
     return success(res, {
       id: String(note._id),
       text: note.text,
@@ -78,6 +86,13 @@ async function deleteAgencyNote(req, res, next) {
       agencyId: req.params.id,
     });
     if (!note) return res.status(404).json({ success: false, message: 'Agency note not found' });
+    await recordAgencyHistory({
+      agencyId: req.params.id,
+      actor: req.user,
+      action: 'agency_note_deleted',
+      summary: 'Se eliminó una nota del expediente',
+      details: { noteId: String(note._id) },
+    });
     return success(res, { id: String(note._id) }, 'Agency note deleted');
   } catch (error) {
     return next(error);

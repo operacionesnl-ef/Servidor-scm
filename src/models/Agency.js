@@ -4,7 +4,7 @@ const { publishNotificationChange } = require('../services/notificationEvents');
 const archivoSchema = new mongoose.Schema(
   {
     nombre: { type: String, trim: true },
-    ruta:   { type: String, trim: true },
+    ruta: { type: String, trim: true },
     driveId: { type: String, trim: true },
     pseudoPath: { type: [String], default: undefined },
     path: { type: String, trim: true, maxlength: 4096 },
@@ -32,14 +32,16 @@ const drivePatternEntrySchema = new mongoose.Schema(
 
 const agencySchema = new mongoose.Schema(
   {
-    nombre:             { type: String, required: true, trim: true },
-    correo:             { type: String, required: false, lowercase: true, trim: true },
+    nombre: { type: String, required: true, trim: true },
+    nombreEmpresa: { type: String, trim: true },
+    direccion: { type: String, trim: true },
+    correo: { type: String, required: false, lowercase: true, trim: true },
     gerente: { type: String, trim: true, maxlength: 120 },
     telefonoGerente: { type: String, trim: true, maxlength: 40 },
     seguimiento: { type: String, trim: true, maxlength: 4000 },
     cc: { type: [String], default: [] },
     cco: { type: [String], default: [] },
-    entidadFederativa:  { type: String, required: true, trim: true },
+    entidadFederativa: { type: String, required: true, trim: true },
     status: {
       type: String,
       enum: ['activa', 'inactiva', 'suspendida'],

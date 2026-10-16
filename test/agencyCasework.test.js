@@ -1,6 +1,6 @@
 'use strict';
 
-const test = require('node:test');
+const { test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
 const Agency = require('../src/models/Agency');
@@ -10,6 +10,7 @@ const AgencyPersonalization = require('../src/models/AgencyPersonalization');
 const CalendarEvent = require('../src/models/CalendarEvent');
 const SentEmail = require('../src/models/SentEmail');
 const User = require('../src/models/User');
+const AgencyHistory = require('../src/models/AgencyHistory');
 const { deleteAgency } = require('../src/controllers/agencyController');
 const {
   scheduleMonthlyVisit,
@@ -20,6 +21,10 @@ const { appendAgencyNote } = require('../src/controllers/agencyNoteController');
 const { createAgency, validateAgencyInput } = require('../src/controllers/agencyController');
 const pushNotificationService = require('../src/services/pushNotificationService');
 const { dispatchMonthlyInspectionReminders } = require('../src/services/agencyMonthlyInspectionReminders');
+
+const originalAgencyHistoryCreate = AgencyHistory.create;
+beforeEach(() => { AgencyHistory.create = async (entry) => entry; });
+afterEach(() => { AgencyHistory.create = originalAgencyHistoryCreate; });
 
 function response() {
   return {
@@ -147,7 +152,7 @@ test('monthly visit uses agency consultant relation and creates exactly one cale
     _id: recordId,
     agencyId,
     period: '2026-10',
-    authorizationStatus: 'pending',
+    authorizationStatus: 'authorized',
     visitStatus: 'scheduled',
     calendarEventId: null,
     createdAt: new Date(),
@@ -158,7 +163,7 @@ test('monthly visit uses agency consultant relation and creates exactly one cale
       _id: recordId,
       agencyId,
       period: '2026-10',
-      authorizationStatus: 'pending',
+      authorizationStatus: 'authorized',
       visitStatus: 'scheduled',
       calendarEventId: createdEvent?._id,
     }),
@@ -210,7 +215,7 @@ test('rescheduling a completed inspection with a stale event link reopens its mo
     _id: recordId,
     agencyId,
     period: '2026-10',
-    authorizationStatus: 'pending',
+    authorizationStatus: 'authorized',
     visitStatus: 'completed',
     calendarEventId: staleEventId,
     createdAt: new Date(),
@@ -266,6 +271,40 @@ test('rescheduling a completed inspection with a stale event link reopens its mo
   }
 });
 
+test('monthly visit cannot be scheduled before the monthly authorization is approved', async () => {
+  const originalAgencyFindById = Agency.findById;
+  const originalInspectionFindOne = AgencyMonthlyInspection.findOne;
+  const agencyId = new mongoose.Types.ObjectId();
+  Agency.findById = () => ({
+    select: async () => ({
+      _id: agencyId,
+      nombre: 'Agencia Norte',
+      consultantId: new mongoose.Types.ObjectId(),
+    }),
+  });
+  AgencyMonthlyInspection.findOne = async () => ({
+    authorizationStatus: 'unauthorized',
+  });
+
+  try {
+    const res = response();
+    await scheduleMonthlyVisit({
+      params: { id: String(agencyId), period: '2026-10' },
+      user: { _id: new mongoose.Types.ObjectId() },
+      body: {
+        startAt: '2026-10-20T10:00:00-06:00',
+        endAt: '2026-10-20T11:00:00-06:00',
+      },
+    }, res, (error) => { throw error; });
+    assert.equal(res.statusCode, 409);
+    assert.equal(res.body.code, 'MONTHLY_AUTHORIZATION_REQUIRED');
+    assert.match(res.body.message, /autorización.*autorizada/i);
+  } finally {
+    Agency.findById = originalAgencyFindById;
+    AgencyMonthlyInspection.findOne = originalInspectionFindOne;
+  }
+});
+
 test('monthly visit cannot be marked complete without a linked calendar event', async () => {
   const originalFindOne = AgencyMonthlyInspection.findOne;
   AgencyMonthlyInspection.findOne = async () => ({
@@ -275,6 +314,7 @@ test('monthly visit cannot be marked complete without a linked calendar event', 
     const res = response();
     await updateMonthlyVisitStatus({
       params: { id: new mongoose.Types.ObjectId().toString(), period: '2026-10' },
+      user: { _id: new mongoose.Types.ObjectId() },
       body: { status: 'completed' },
     }, res, (error) => { throw error; });
     assert.equal(res.statusCode, 400);
@@ -292,6 +332,7 @@ test('monthly visit completion is persisted only against its linked calendar eve
   const eventId = new mongoose.Types.ObjectId();
   let saved = false;
   const record = {
+    agencyId: new mongoose.Types.ObjectId(),
     calendarEventId: eventId,
     visitStatus: 'scheduled',
     save: async function save() { saved = true; },
@@ -302,6 +343,7 @@ test('monthly visit completion is persisted only against its linked calendar eve
     const res = response();
     await updateMonthlyVisitStatus({
       params: { id: new mongoose.Types.ObjectId().toString(), period: '2026-10' },
+      user: { _id: new mongoose.Types.ObjectId() },
       body: { status: 'completed' },
     }, res, (error) => { throw error; });
     assert.equal(saved, true);
@@ -422,6 +464,7 @@ test('deleting an agency also removes its calendar and monthly inspection record
     const res = response();
     await deleteAgency({
       params: { id: String(agencyId) },
+      user: { _id: new mongoose.Types.ObjectId() },
     }, res, (error) => { throw error; });
     assert.equal(res.statusCode, 200);
     assert.deepEqual(new Set(deleted), new Set(['events', 'inspections', 'notes', 'personalization', 'agency']));

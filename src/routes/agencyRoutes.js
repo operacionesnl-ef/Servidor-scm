@@ -19,6 +19,7 @@ const {
   getAgencyMaintenanceHistory,
   getAgencyRefreshJob,
 } = require('../controllers/agencyController');
+const { getAgencyHistory } = require('../controllers/agencyHistoryController');
 const {
   getAgencyPersonalization,
   getAgencyTags,
@@ -52,7 +53,9 @@ router.post('/tags', requireAdminOrDeveloper, createAgencyTag);
 router.patch('/tags/:tagId', requireAdminOrDeveloper, updateAgencyTag);
 router.delete('/tags/:tagId', requireAdminOrDeveloper, deleteAgencyTag);
 router.get('/emails', getAgencyEmails);
+router.get('/maintenance/history', getAgencyMaintenanceHistory);
 router.get('/:id/notes', getAgencyNotes);
+router.get('/:id/history', getAgencyHistory);
 router.post('/:id/notes', appendAgencyNote);
 router.delete('/:id/notes/:noteId', requireAdminOrDeveloper, deleteAgencyNote);
 router.get('/:id/monthly-records/:period', getMonthlyInspection);
@@ -64,7 +67,6 @@ router.get('/', getAgencies);
 router.post('/', createAgency);
 router.post('/refresh-jobs', createAgencyRefreshJob);
 router.get('/refresh-jobs/active', getActiveAgencyRefreshJob);
-router.get('/maintenance/history', getAgencyMaintenanceHistory);
 router.post('/integrity-jobs', createAgencyIntegrityJob);
 router.get('/integrity-jobs/active', getActiveAgencyIntegrityJob);
 router.get('/refresh-jobs/:jobId', getAgencyRefreshJob);
@@ -72,7 +74,7 @@ router.get('/integrity-jobs/:jobId', getAgencyRefreshJob);
 router.get('/:id', getAgencyById);
 router.put('/:id', updateAgency);
 router.patch('/:id', updateAgency);
-router.delete('/:id', deleteAgency);
+router.delete('/:id', requireAdminOrDeveloper, deleteAgency);
 router.post('/:id/learn-pattern', learnAgencyPattern);
 router.post('/:id/refresh-files', refreshAgencyFiles);
 

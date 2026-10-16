@@ -5,17 +5,21 @@ const CalendarEvent = require('../models/CalendarEvent');
 const Agency = require('../models/Agency');
 const User = require('../models/User');
 const { success } = require('../utils/response');
+const { recordAgencyHistory } = require('../services/agencyHistory');
 
 const EVENT_TYPES = new Set([
   'agency_visit',
   'document_deadline',
   'file_review',
   'personal_admin',
+  'impuestos_verdes',
 ]);
 const EVENT_FIELDS = new Set([
   'title', 'type', 'startAt', 'endAt', 'agencyId', 'consultantId',
   'notes', 'authorized', 'status', 'reminders',
 ]);
+const RECURRENCE_FREQUENCIES = new Set(['daily', 'weekly', 'monthly']);
+const MAX_SERIES_OCCURRENCES = 500;
 const POPULATES = [
   { path: 'agencyId', select: 'nombre' },
   { path: 'consultantId', select: 'nombre correo rol' },
@@ -140,6 +144,8 @@ function serializeEvent(event) {
     authorized,
     status: authorized ? 'authorized' : 'pending',
     reminders: event.reminders || { enabled: false, minutesBefore: [] },
+    recurrenceSeriesId: event.recurrenceSeriesId ? String(event.recurrenceSeriesId) : null,
+    recurrence: event.recurrence || null,
     createdBy: String(event.createdBy),
     updatedBy: String(event.updatedBy),
     createdAt: event.createdAt,
@@ -149,6 +155,109 @@ function serializeEvent(event) {
 
 function validId(value) {
   return mongoose.isValidObjectId(value);
+}
+
+function validateEventSeriesInput(body) {
+  const errors = {};
+  if (!isObject(body)) return { errors: { body: 'A JSON object is required' } };
+  for (const key of Object.keys(body)) {
+    if (!['event', 'recurrence', 'occurrences'].includes(key)) errors[key] = 'Unknown field';
+  }
+
+  const baseResult = validateEventInput(body.event, false);
+  if (Object.keys(baseResult.errors).length) errors.event = baseResult.errors;
+
+  const recurrence = body.recurrence;
+  if (!isObject(recurrence)) {
+    errors.recurrence = 'A recurrence rule is required';
+  } else {
+    for (const key of Object.keys(recurrence)) {
+      if (!['frequency', 'interval', 'daysOfWeek', 'endDate'].includes(key)) {
+        errors[`recurrence.${key}`] = 'Unknown field';
+      }
+    }
+    if (!RECURRENCE_FREQUENCIES.has(recurrence.frequency)) {
+      errors['recurrence.frequency'] = `Must be one of: ${[...RECURRENCE_FREQUENCIES].join(', ')}`;
+    }
+    if (!Number.isInteger(recurrence.interval) || recurrence.interval < 1 || recurrence.interval > 365) {
+      errors['recurrence.interval'] = 'Must be an integer from 1 to 365';
+    }
+    const endDate = typeof recurrence.endDate === 'string'
+      ? new Date(`${recurrence.endDate}T00:00:00Z`)
+      : null;
+    if (typeof recurrence.endDate !== 'string'
+      || !/^\d{4}-\d{2}-\d{2}$/.test(recurrence.endDate)
+      || Number.isNaN(endDate?.getTime())
+      || endDate.toISOString().slice(0, 10) !== recurrence.endDate) {
+      errors['recurrence.endDate'] = 'Must be a valid date in YYYY-MM-DD format';
+    }
+    const days = recurrence.daysOfWeek;
+    if (recurrence.frequency === 'weekly') {
+      if (!Array.isArray(days) || !days.length || days.length > 7
+        || days.some((day) => !Number.isInteger(day) || day < 0 || day > 6)
+        || new Set(days).size !== days.length) {
+        errors['recurrence.daysOfWeek'] = 'Must contain one to seven unique weekdays from 0 to 6';
+      }
+    } else if (days !== undefined && (!Array.isArray(days) || days.length)) {
+      errors['recurrence.daysOfWeek'] = 'Weekdays can only be selected for weekly recurrence';
+    }
+  }
+
+  const occurrences = body.occurrences;
+  if (!Array.isArray(occurrences) || occurrences.length < 2
+    || occurrences.length > MAX_SERIES_OCCURRENCES) {
+    errors.occurrences = `Must contain between 2 and ${MAX_SERIES_OCCURRENCES} occurrences`;
+  } else {
+    let previousStart = null;
+    let duration = null;
+    const starts = new Set();
+    occurrences.forEach((occurrence, index) => {
+      const field = `occurrences.${index}`;
+      if (!isObject(occurrence) || Object.keys(occurrence).some((key) => !['startAt', 'endAt'].includes(key))) {
+        errors[field] = 'Must contain only startAt and endAt';
+        return;
+      }
+      const startAt = parseDate(occurrence.startAt);
+      const endAt = parseDate(occurrence.endAt);
+      if (!startAt) errors[`${field}.startAt`] = 'Must be an ISO 8601 date-time with timezone';
+      if (!endAt) errors[`${field}.endAt`] = 'Must be an ISO 8601 date-time with timezone';
+      if (!startAt || !endAt) return;
+      if (endAt <= startAt) errors[`${field}.endAt`] = 'Must be later than startAt';
+      if (starts.has(startAt.getTime()) || (previousStart && startAt <= previousStart)) {
+        errors[field] = 'Occurrences must have unique, increasing start times';
+      }
+      starts.add(startAt.getTime());
+      previousStart = startAt;
+      const currentDuration = endAt.getTime() - startAt.getTime();
+      if (duration !== null && duration !== currentDuration) {
+        errors[field] = 'All occurrences must have the same duration';
+      }
+      duration = currentDuration;
+    });
+    if (!baseResult.errors.startAt && occurrences.length
+      && parseDate(occurrences[0]?.startAt)?.getTime() !== baseResult.value.startAt?.getTime()) {
+      errors.occurrences = 'The first occurrence must match the activity start time';
+    }
+    if (!baseResult.errors.startAt && !baseResult.errors.endAt && occurrences.length
+      && (parseDate(occurrences[0]?.endAt)?.getTime() - parseDate(occurrences[0]?.startAt)?.getTime())
+        !== (baseResult.value.endAt.getTime() - baseResult.value.startAt.getTime())) {
+      errors.occurrences = 'Occurrences must use the activity duration';
+    }
+  }
+
+  return {
+    errors,
+    value: {
+      event: baseResult.value,
+      recurrence,
+      occurrences,
+    },
+  };
+}
+
+function eventAgencyId(event) {
+  const value = event.agencyId?._id || event.agencyId;
+  return value ? String(value) : null;
 }
 
 async function getCalendarEvents(req, res, next) {
@@ -256,7 +365,69 @@ async function createCalendarEvent(req, res, next) {
       updatedBy: req.user._id,
     });
     await event.populate(POPULATES);
+    if (event.agencyId) {
+      await recordAgencyHistory({
+        agencyId: event.agencyId,
+        actor: req.user,
+        action: 'calendar_event_created',
+        summary: `Se programó una actividad: ${event.title}`,
+        details: { eventId: String(event._id), type: event.type, startAt: event.startAt, endAt: event.endAt },
+      });
+    }
     return success(res, serializeEvent(event), 'Calendar event created', 201);
+  } catch (error) {
+    if (error.name === 'ValidationError') {
+      return validationFailure(res, Object.fromEntries(
+        Object.entries(error.errors).map(([field, detail]) => [field, detail.message]),
+      ));
+    }
+    return next(error);
+  }
+}
+
+async function createCalendarEventSeries(req, res, next) {
+  const { errors, value } = validateEventSeriesInput(req.body);
+  if (Object.keys(errors).length) return validationFailure(res, errors);
+  try {
+    if (!await validateRelations(value.event, res)) return;
+    const recurrenceSeriesId = new mongoose.Types.ObjectId();
+    const recurrence = {
+      frequency: value.recurrence.frequency,
+      interval: value.recurrence.interval,
+      daysOfWeek: value.recurrence.frequency === 'weekly' ? value.recurrence.daysOfWeek : [],
+      endDate: value.recurrence.endDate,
+    };
+    const documents = value.occurrences.map((occurrence) => new CalendarEvent({
+      ...value.event,
+      startAt: parseDate(occurrence.startAt),
+      endAt: parseDate(occurrence.endAt),
+      recurrenceSeriesId,
+      recurrence,
+      createdBy: req.user._id,
+      updatedBy: req.user._id,
+    }));
+    await Promise.all(documents.map((event) => event.validate()));
+    const createdEvents = await CalendarEvent.insertMany(documents, { ordered: true });
+    if (value.event.agencyId) {
+      const ruleLabel = recurrence.frequency === 'daily'
+        ? `${recurrence.interval} día(s)`
+        : recurrence.frequency === 'weekly'
+          ? `${recurrence.interval} semana(s)`
+          : `${recurrence.interval} mes(es)`;
+      await recordAgencyHistory({
+        agencyId: value.event.agencyId,
+        actor: req.user,
+        action: 'calendar_event_series_created',
+        summary: `Se programó una serie de ${createdEvents.length} actividades: ${value.event.title}`,
+        details: { recurrenceSeriesId: String(recurrenceSeriesId), frequency: ruleLabel, endDate: recurrence.endDate },
+      });
+    }
+    return success(res, {
+      recurrenceSeriesId: String(recurrenceSeriesId),
+      count: createdEvents.length,
+      firstStartAt: createdEvents[0]?.startAt || null,
+      lastStartAt: createdEvents.at(-1)?.startAt || null,
+    }, 'Calendar event series created', 201);
   } catch (error) {
     if (error.name === 'ValidationError') {
       return validationFailure(res, Object.fromEntries(
@@ -281,9 +452,20 @@ async function updateCalendarEvent(req, res, next) {
       return validationFailure(res, { endAt: 'Must be later than startAt' });
     }
     if (!await validateRelations(value, res)) return;
+    const previousAgencyId = eventAgencyId(event);
+    const previousTitle = event.title;
     Object.assign(event, value, { updatedBy: req.user._id });
     await event.save();
     await event.populate(POPULATES);
+    const nextAgencyId = eventAgencyId(event);
+    const historyAgencyIds = [...new Set([previousAgencyId, nextAgencyId].filter(Boolean))];
+    await Promise.all(historyAgencyIds.map((agencyId) => recordAgencyHistory({
+      agencyId,
+      actor: req.user,
+      action: 'calendar_event_updated',
+      summary: `Se actualizó una actividad: ${event.title || previousTitle}`,
+      details: { eventId: String(event._id), type: event.type, agencyChanged: previousAgencyId !== nextAgencyId },
+    })));
     return success(res, serializeEvent(event), 'Calendar event updated');
   } catch (error) {
     if (error.name === 'ValidationError') {
@@ -300,6 +482,15 @@ async function deleteCalendarEvent(req, res, next) {
   try {
     const event = await CalendarEvent.findByIdAndDelete(req.params.id);
     if (!event) return res.status(404).json({ success: false, message: 'Calendar event not found' });
+    if (event.agencyId) {
+      await recordAgencyHistory({
+        agencyId: event.agencyId,
+        actor: req.user,
+        action: 'calendar_event_deleted',
+        summary: `Se eliminó una actividad: ${event.title}`,
+        details: { eventId: String(event._id), type: event.type, startAt: event.startAt, endAt: event.endAt },
+      });
+    }
     return success(res, { id: String(event._id) }, 'Calendar event deleted');
   } catch (error) {
     return next(error);
@@ -308,10 +499,12 @@ async function deleteCalendarEvent(req, res, next) {
 
 module.exports = {
   createCalendarEvent,
+  createCalendarEventSeries,
   deleteCalendarEvent,
   getCalendarConsultants,
   getCalendarEvents,
   serializeEvent,
+  validateEventSeriesInput,
   updateCalendarEvent,
   validateEventInput,
 };
