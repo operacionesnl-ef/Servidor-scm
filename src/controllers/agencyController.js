@@ -75,6 +75,8 @@ const ALLOWED_FIELDS = new Set([
   'nombre',
   'nombreEmpresa',
   'direccion',
+  'longitud',
+  'latitud',
   'correo',
   'gerente',
   'telefonoGerente',
@@ -95,6 +97,8 @@ const AGENCY_HISTORY_FIELD_LABELS = {
   nombre: 'Nombre',
   nombreEmpresa: 'Empresa',
   direccion: 'Dirección',
+  longitud: 'Longitud',
+  latitud: 'Latitud',
   correo: 'Correo',
   gerente: 'Gerente',
   telefonoGerente: 'Teléfono del gerente',
@@ -220,6 +224,31 @@ const validateAgencyInput = (body, partial) => {
       errors[field] = `Must not exceed ${maximum} characters`;
     } else {
       value[field] = body[field].trim();
+    }
+  }
+
+  for (const field of ['nombreEmpresa', 'direccion']) {
+    if (body[field] === undefined) continue;
+    if (typeof body[field] !== 'string') {
+      errors[field] = 'Must be a string';
+    } else {
+      value[field] = body[field].trim();
+    }
+  }
+
+  for (const [field, minimum, maximum] of [
+    ['longitud', -180, 180],
+    ['latitud', -90, 90],
+  ]) {
+    if (body[field] === undefined) continue;
+    if (body[field] === null) {
+      value[field] = null;
+    } else if (typeof body[field] !== 'number' || !Number.isFinite(body[field])) {
+      errors[field] = 'Must be a number or null';
+    } else if (body[field] < minimum || body[field] > maximum) {
+      errors[field] = `Must be between ${minimum} and ${maximum}`;
+    } else {
+      value[field] = body[field];
     }
   }
 
@@ -509,6 +538,15 @@ const updateAgency = async (req, res, next) => {
   const partial = req.method === 'PATCH';
   const { errors, value } = validateAgencyInput(req.body, partial);
   if (Object.keys(errors).length) return validationFailure(res, errors);
+  if (
+    ['longitud', 'latitud'].some((field) => Object.hasOwn(req.body || {}, field))
+    && req.user?.rol !== 'developer'
+  ) {
+    return res.status(403).json({
+      success: false,
+      message: 'Solo un developer puede editar las coordenadas de la agencia.',
+    });
+  }
   if (value.consultantId !== undefined && !['admin', 'developer'].includes(req.user.rol)) {
     return res.status(403).json({
       success: false,
@@ -524,14 +562,14 @@ const updateAgency = async (req, res, next) => {
     if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
 
     const historyFields = [
-      'nombre', 'nombreEmpresa', 'direccion', 'correo', 'gerente', 'telefonoGerente',
+      'nombre', 'nombreEmpresa', 'direccion', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente',
       'seguimiento', 'cc', 'cco', 'entidadFederativa', 'status', 'consultantId', 'archivos',
     ];
     const previousValues = Object.fromEntries(
       historyFields.map((field) => [field, historyValue(getAgencyField(agency, field))]),
     );
     for (const field of [
-      'nombre','nombreEmpresa','direccion', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
+      'nombre','nombreEmpresa','direccion', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
       'cc', 'cco', 'entidadFederativa', 'status', 'consultantId',
     ]) {
       if (value[field] !== undefined) agency.set(field, value[field]);

@@ -35,6 +35,8 @@ const agencySchema = new mongoose.Schema(
     nombre: { type: String, required: true, trim: true },
     nombreEmpresa: { type: String, trim: true },
     direccion: { type: String, trim: true },
+    longitud: { type: Number, min: -180, max: 180 },
+    latitud: { type: Number, min: -90, max: 90 },
     correo: { type: String, required: false, lowercase: true, trim: true },
     gerente: { type: String, trim: true, maxlength: 120 },
     telefonoGerente: { type: String, trim: true, maxlength: 40 },
