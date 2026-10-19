@@ -73,7 +73,9 @@ async function getMonthlyInspection(req, res, next) {
 async function getMonthlyInspectionOverview(req, res, next) {
   if (!validPeriod(req.params.period, res)) return;
   try {
-    const agencies = await Agency.find({}).select('_id nombre').lean();
+    const agencies = await Agency.find({
+      ...(req.user.rol === 'consultor' ? { consultantId: req.user._id } : {}),
+    }).select('_id nombre').lean();
     const agencyIds = agencies.map((agency) => agency._id);
     const records = agencyIds.length
       ? await AgencyMonthlyInspection.find({ agencyId: { $in: agencyIds }, period: req.params.period })

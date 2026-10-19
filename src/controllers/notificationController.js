@@ -91,10 +91,14 @@ async function getNotifications(req, res, next) {
   try {
     const userId = req.user._id;
     const isAdmin = ['admin', 'developer'].includes(req.user.rol);
+    const isConsultant = req.user.rol === 'consultor';
     const now = new Date();
     const period = getMexicoPeriod(now);
     const [agencies, announcements, refreshJobs, mailJobs] = await Promise.all([
-      Agency.find({ status: 'activa' })
+      Agency.find({
+        status: 'activa',
+        ...(isConsultant ? { consultantId: userId } : {}),
+      })
         .select('_id nombre status archivos')
         .lean(),
       Notification.find({
@@ -122,8 +126,8 @@ async function getNotifications(req, res, next) {
     const feed = buildNotificationFeed({
       agencies,
       announcements,
-      refreshJobs,
-      mailJobs,
+      refreshJobs: isConsultant ? [] : refreshJobs,
+      mailJobs: isConsultant ? [] : mailJobs,
       userId,
       period,
       now,

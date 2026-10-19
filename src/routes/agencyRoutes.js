@@ -1,4 +1,6 @@
 const express = require('express');
+const mongoose = require('mongoose');
+const Agency = require('../models/Agency');
 const requireAuth = require('../middlewares/requireAuth');
 const requireAdminOrDeveloper = require('../middlewares/requireAdminOrDeveloper');
 const {
@@ -44,6 +46,37 @@ const {
 const router = express.Router();
 
 router.use(requireAuth);
+router.use(async (req, res, next) => {
+  if (req.user.rol !== 'consultor') return next();
+  const allowedReadPaths = [
+    /^\/$/,
+    /^\/search-period$/,
+    /^\/personalization$/,
+    /^\/monthly-records\/[^/]+\/overview$/,
+    /^\/[a-f\d]{24}$/,
+    /^\/[a-f\d]{24}\/(?:history|notes)$/,
+    /^\/[a-f\d]{24}\/monthly-records\/[^/]+$/,
+  ];
+  if (req.method !== 'GET' || !allowedReadPaths.some((pattern) => pattern.test(req.path))) {
+    return res.status(403).json({ success: false, message: 'Los consultores solo tienen acceso de lectura a sus agencias asignadas.' });
+  }
+  const agencyId = req.path.match(/^\/([a-f\d]{24})(?:\/|$)/)?.[1];
+  if (agencyId) {
+    if (!mongoose.isValidObjectId(agencyId)) {
+      return res.status(404).json({ success: false, message: 'Agency not found' });
+    }
+    try {
+      const assigned = await Agency.exists({
+        _id: agencyId,
+        consultantId: req.user._id,
+      });
+      if (!assigned) return res.status(404).json({ success: false, message: 'Agency not found' });
+    } catch (error) {
+      return next(error);
+    }
+  }
+  return next();
+});
 router.get('/search-period', getAgencySearchPeriod);
 router.put('/search-period', updateAgencySearchPeriod);
 router.get('/personalization', getAgencyPersonalization);

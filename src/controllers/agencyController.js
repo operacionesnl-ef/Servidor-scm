@@ -486,7 +486,10 @@ const getAgencies = async (req, res, next) => {
     if (req.query.status && !ALLOWED_STATUSES.has(req.query.status)) {
       return validationFailure(res, { status: `Must be one of: ${[...ALLOWED_STATUSES].join(', ')}` });
     }
-    const filter = req.query.status ? { status: req.query.status } : {};
+    const filter = {
+      ...(req.query.status ? { status: req.query.status } : {}),
+      ...(req.user.rol === 'consultor' ? { consultantId: req.user._id } : {}),
+    };
     const agencies = await Agency.find(filter).sort({ createdAt: -1 });
     return success(res, agencies, 'Agencies fetched');
   } catch (err) {

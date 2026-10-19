@@ -278,8 +278,15 @@ async function getCalendarEvents(req, res, next) {
     endAt: { $gt: rangeStart },
     ...(isAdmin(req.user) ? {} : { authorized: true }),
   };
+  if (req.user.rol === 'consultor') {
+    const assignedAgencyIds = await Agency.find({ consultantId: req.user._id }).distinct('_id');
+    filter.agencyId = { $in: assignedAgencyIds };
+  }
   if (req.query.agencyId !== undefined) {
     if (!validId(req.query.agencyId)) return validationFailure(res, { agencyId: 'Must be a valid ID' });
+    if (req.user.rol === 'consultor' && !filter.agencyId.$in.some((id) => String(id) === req.query.agencyId)) {
+      return res.status(404).json({ success: false, message: 'Agency not found' });
+    }
     filter.agencyId = req.query.agencyId;
   }
   if (req.query.consultantId !== undefined) {
@@ -312,6 +319,16 @@ async function getCalendarEvents(req, res, next) {
 
 async function getCalendarConsultants(req, res, next) {
   try {
+    if (req.user.rol === 'consultor') {
+      return success(res, {
+        consultants: [{
+          id: String(req.user._id),
+          name: req.user.nombre,
+          email: req.user.correo,
+          role: req.user.rol,
+        }],
+      }, 'Calendar consultants fetched');
+    }
     const consultants = await User.find({ rol: { $in: ['consultor', 'user'] }, status: 'activo' })
       .select('nombre correo rol')
       .sort({ nombre: 1 })
