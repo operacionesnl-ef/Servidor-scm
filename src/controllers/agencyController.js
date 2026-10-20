@@ -738,6 +738,7 @@ const refreshAgencyFiles = async (req, res, next) => {
       const period = `${String(month).padStart(2, '0')}/${year}`;
       const note = update.notices?.[0] || '';
       await Notification.create({
+        agencyId: agency._id,
         title: 'Resultado de actualización de archivos',
         message: summary.missingRequired
           ? `No se completaron los ${summary.requiredTotal} archivos requeridos para ${agency.nombre} en ${period}.${note ? ` ${note}` : ''}`

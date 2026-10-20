@@ -125,7 +125,10 @@ async function getNotifications(req, res, next) {
 
     const feed = buildNotificationFeed({
       agencies,
-      announcements,
+      announcements: isConsultant
+        ? announcements.filter((item) => item.agencyId
+          && agencies.some((agency) => String(agency._id) === String(item.agencyId)))
+        : announcements,
       refreshJobs: isConsultant ? [] : refreshJobs,
       mailJobs: isConsultant ? [] : mailJobs,
       userId,

@@ -89,7 +89,10 @@ const getAgencyPersonalization = async (req, res, next) => {
     await migrateLegacyPersonalizations();
     const [tags, preferences] = await Promise.all([
       AgencyTag.find().sort({ name: 1 }).lean(),
-      Agency.find({ $or: [{ favorite: true }, { tags: { $exists: true, $ne: [] } }] })
+      Agency.find({
+        ...(req.user.rol === 'consultor' ? { consultantId: req.user._id } : {}),
+        $or: [{ favorite: true }, { tags: { $exists: true, $ne: [] } }],
+      })
         .select('_id favorite tags')
         .lean(),
     ]);

@@ -57,7 +57,12 @@ router.use(async (req, res, next) => {
     /^\/[a-f\d]{24}\/(?:history|notes)$/,
     /^\/[a-f\d]{24}\/monthly-records\/[^/]+$/,
   ];
-  if (req.method !== 'GET' || !allowedReadPaths.some((pattern) => pattern.test(req.path))) {
+  const isVisitCompletion = req.method === 'PATCH'
+    && /^\/[a-f\d]{24}\/monthly-records\/[^/]+\/visit$/.test(req.path)
+    && req.body?.status === 'completed'
+    && Object.keys(req.body || {}).length === 1;
+  if ((!isVisitCompletion && req.method !== 'GET')
+    || (!isVisitCompletion && !allowedReadPaths.some((pattern) => pattern.test(req.path)))) {
     return res.status(403).json({ success: false, message: 'Los consultores solo tienen acceso de lectura a sus agencias asignadas.' });
   }
   const agencyId = req.path.match(/^\/([a-f\d]{24})(?:\/|$)/)?.[1];
@@ -95,7 +100,7 @@ router.get('/:id/monthly-records/:period', getMonthlyInspection);
 router.get('/monthly-records/:period/overview', getMonthlyInspectionOverview);
 router.put('/:id/monthly-records/:period', requireAdminOrDeveloper, updateMonthlyAuthorization);
 router.post('/:id/monthly-records/:period/visit', requireAdminOrDeveloper, scheduleMonthlyVisit);
-router.patch('/:id/monthly-records/:period/visit', requireAdminOrDeveloper, updateMonthlyVisitStatus);
+router.patch('/:id/monthly-records/:period/visit', updateMonthlyVisitStatus);
 router.get('/', getAgencies);
 router.post('/', createAgency);
 router.post('/refresh-jobs', createAgencyRefreshJob);

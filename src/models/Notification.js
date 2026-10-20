@@ -8,6 +8,7 @@ const notificationSchema = new mongoose.Schema({
   message: { type: String, required: true, trim: true, maxlength: 2000 },
   severity: { type: String, enum: ['low', 'medium', 'high'], default: 'low' },
   audience: { type: String, enum: ['all', 'admin'], default: 'all' },
+  agencyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Agency', default: null },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   readBy: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], default: [] },
   expiresAt: {

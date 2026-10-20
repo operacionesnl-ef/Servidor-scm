@@ -314,7 +314,7 @@ test('monthly visit cannot be marked complete without a linked calendar event', 
     const res = response();
     await updateMonthlyVisitStatus({
       params: { id: new mongoose.Types.ObjectId().toString(), period: '2026-10' },
-      user: { _id: new mongoose.Types.ObjectId() },
+      user: { _id: new mongoose.Types.ObjectId(), rol: 'admin' },
       body: { status: 'completed' },
     }, res, (error) => { throw error; });
     assert.equal(res.statusCode, 400);
@@ -343,7 +343,7 @@ test('monthly visit completion is persisted only against its linked calendar eve
     const res = response();
     await updateMonthlyVisitStatus({
       params: { id: new mongoose.Types.ObjectId().toString(), period: '2026-10' },
-      user: { _id: new mongoose.Types.ObjectId() },
+      user: { _id: new mongoose.Types.ObjectId(), rol: 'admin' },
       body: { status: 'completed' },
     }, res, (error) => { throw error; });
     assert.equal(saved, true);

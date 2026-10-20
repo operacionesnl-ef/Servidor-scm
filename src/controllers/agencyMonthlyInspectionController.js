@@ -74,7 +74,7 @@ async function getMonthlyInspectionOverview(req, res, next) {
   if (!validPeriod(req.params.period, res)) return;
   try {
     const agencies = await Agency.find({
-      ...(req.user.rol === 'consultor' ? { consultantId: req.user._id } : {}),
+      ...(req.user?.rol === 'consultor' ? { consultantId: req.user._id } : {}),
     }).select('_id nombre').lean();
     const agencyIds = agencies.map((agency) => agency._id);
     const records = agencyIds.length
@@ -350,17 +350,31 @@ async function scheduleMonthlyVisit(req, res, next) {
 
 async function updateMonthlyVisitStatus(req, res, next) {
   if (!validAgencyId(req.params.id, res) || !validPeriod(req.params.period, res)) return;
+  if (!['admin', 'developer', 'consultor'].includes(req.user?.rol)) {
+    return res.status(403).json({ success: false, message: 'You are not authorized to mark visits as completed.' });
+  }
   if (Object.keys(req.body || {}).some((field) => field !== 'status')
     || req.body?.status !== 'completed') {
     return validationFailure(res, { status: 'Must be completed; create a calendar visit to schedule it' });
   }
   try {
+    if (req.user?.rol === 'consultor'
+      && !await Agency.exists({ _id: req.params.id, consultantId: req.user._id })) {
+      return res.status(404).json({ success: false, message: 'Agency not found' });
+    }
     const record = await AgencyMonthlyInspection.findOne({
       agencyId: req.params.id,
       period: req.params.period,
     });
     if (!record) return res.status(404).json({ success: false, message: 'Monthly inspection not found' });
-    if (!record.calendarEventId || !await CalendarEvent.exists({ _id: record.calendarEventId })) {
+    if (record.visitStatus !== 'scheduled') {
+      return res.status(409).json({ success: false, message: 'Only a scheduled visit can be marked as completed.' });
+    }
+    if (!record.calendarEventId || !await CalendarEvent.exists({
+      _id: record.calendarEventId,
+      agencyId: req.params.id,
+      type: 'agency_visit',
+    })) {
       return validationFailure(res, { status: 'A linked calendar visit is required before completion' });
     }
     record.visitStatus = 'completed';
