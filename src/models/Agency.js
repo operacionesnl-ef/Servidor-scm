@@ -1,19 +1,6 @@
 const mongoose = require('mongoose');
 const { publishNotificationChange } = require('../services/notificationEvents');
 
-const archivoSchema = new mongoose.Schema(
-  {
-    nombre: { type: String, trim: true },
-    ruta: { type: String, trim: true },
-    driveId: { type: String, trim: true },
-    pseudoPath: { type: [String], default: undefined },
-    path: { type: String, trim: true, maxlength: 4096 },
-    periodYear: { type: Number, min: 1900, max: 2100 },
-    periodMonth: { type: Number, min: 1, max: 12 },
-  },
-  { _id: false }
-);
-
 // Patrón aprendido por archivo: guarda la ruta relativa tokenizada
 const drivePatternEntrySchema = new mongoose.Schema(
   {
@@ -56,10 +43,6 @@ const agencySchema = new mongoose.Schema(
     archivos: {
       carpetaPrincipal: { type: String, trim: true },
       carpetaBase: { type: String, trim: true },
-      archivo1: archivoSchema, //ANX
-      archivo2: archivoSchema, //FOR
-      archivo3: archivoSchema, //REP
-      archivo4: archivoSchema, //REV
     },
     // Mapa aprendido: una entrada por cada archivoN
     drivePattern: {

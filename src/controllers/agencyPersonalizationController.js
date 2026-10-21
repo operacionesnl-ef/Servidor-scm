@@ -86,15 +86,21 @@ function validateTagInput(body, partial = false) {
 
 const getAgencyPersonalization = async (req, res, next) => {
   try {
-    await migrateLegacyPersonalizations();
+    const isConsultant = req.user.rol === 'consultor';
+    if (!isConsultant) await migrateLegacyPersonalizations();
     const [tags, preferences] = await Promise.all([
       AgencyTag.find().sort({ name: 1 }).lean(),
-      Agency.find({
-        ...(req.user.rol === 'consultor' ? { consultantId: req.user._id } : {}),
-        $or: [{ favorite: true }, { tags: { $exists: true, $ne: [] } }],
-      })
-        .select('_id favorite tags')
-        .lean(),
+      isConsultant
+        ? AgencyPersonalization.find({
+          userId: req.user._id,
+          favorite: true,
+          agencyId: { $in: await Agency.find({ consultantId: req.user._id }).distinct('_id') },
+        }).select('agencyId favorite tags').lean()
+        : Agency.find({
+          $or: [{ favorite: true }, { tags: { $exists: true, $ne: [] } }],
+        })
+          .select('_id favorite tags')
+          .lean(),
     ]);
     return success(res, {
       tags: tags.map(({ _id, name, color, allowedRoles }) => ({
@@ -102,10 +108,10 @@ const getAgencyPersonalization = async (req, res, next) => {
         name,
         color,
         allowedRoles,
-        assignable: allowedRoles.includes(req.user.rol),
+        assignable: !isConsultant && allowedRoles.includes(req.user.rol),
       })),
-      preferences: preferences.map(({ _id, favorite, tags: assignedTags }) => ({
-        agencyId: String(_id),
+      preferences: preferences.map(({ _id, agencyId, favorite, tags: assignedTags }) => ({
+        agencyId: String(agencyId || _id),
         favorite: Boolean(favorite),
         tagIds: (assignedTags || []).map(String),
       })),
@@ -146,6 +152,27 @@ const updateAgencyPersonalization = async (req, res, next) => {
   if (Object.keys(errors).length) return validationFailure(res, errors);
 
   try {
+    if (req.user.rol === 'consultor') {
+      if (body.tagIds !== undefined) {
+        return res.status(403).json({
+          success: false,
+          message: 'Los consultores solo pueden actualizar sus favoritos personales.',
+        });
+      }
+      const agency = await Agency.findOne({ _id: id, consultantId: req.user._id }).select('_id');
+      if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
+      const preference = await AgencyPersonalization.findOneAndUpdate(
+        { userId: req.user._id, agencyId: agency._id },
+        { $set: { favorite: body.favorite } },
+        { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
+      );
+      return success(res, {
+        agencyId: String(agency._id),
+        favorite: Boolean(preference.favorite),
+        tagIds: [],
+      }, 'Personal favorite updated');
+    }
+
     await migrateLegacyPersonalizations();
     const agency = await Agency.findById(id).select('_id nombre favorite tags');
     if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });

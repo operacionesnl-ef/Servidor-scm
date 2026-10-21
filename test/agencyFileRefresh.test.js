@@ -309,7 +309,9 @@ test('refresh results persist files and GET agencies reads their per-file period
       driveFile('REV', 2025, 7),
       driveFile('XYZ', 2025, 8),
     ], 2025, 8);
-    agency.set('archivos', update.archivos);
+    agency.set('archivos', Object.fromEntries(
+      Object.entries(update.archivos).filter(([, file]) => file !== null),
+    ));
     await agency.save();
 
     assert.equal(update.summary.found, 1);
@@ -322,14 +324,14 @@ test('refresh results persist files and GET agencies reads their per-file period
     assert.equal(update.results.archivo4.status, 'missing');
 
     const stored = await Agency.findById(agency.id).lean();
-    assert.equal(stored.archivos.archivo1, null);
-    assert.equal(stored.archivos.archivo2, null);
+    assert.equal(stored.archivos.archivo1, undefined);
+    assert.equal(stored.archivos.archivo2, undefined);
 
     const getResponse = await invokeController(getAgencies, { query: {} });
     const fetched = getResponse.body.data.find((item) => String(item._id) === agency.id);
     assert.ok(fetched);
     assert.equal(fetched.archivos.archivo3.periodMonth, 8);
-    assert.equal(fetched.archivos.archivo4, null);
+    assert.equal(fetched.archivos.archivo4, undefined);
   } finally {
     if (agency) await Agency.deleteOne({ _id: agency._id });
     await mongoose.disconnect();

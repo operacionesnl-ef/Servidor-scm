@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const { google } = require('googleapis');
 const Agency = require('../models/Agency');
+const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
 const MailJob = require('../models/MailJob');
 const Template = require('../models/Template');
 const { encryptGoogleToken } = require('../utils/mailJobCrypto');
@@ -118,7 +119,19 @@ async function createMailJob(req, res, next) {
       return res.status(400).json({ message: 'Una o más agencias seleccionadas ya no existen. Actualiza la lista e inténtalo de nuevo.' });
     }
 
-    const orderedAgencies = selectedIds.map((id) => agenciesById.get(id));
+    const period = `${Number(year)}-${String(Number(month)).padStart(2, '0')}`;
+    const monthlyRecords = await AgencyMonthlyFiles.find({
+      agencyId: { $in: selectedIds },
+      period,
+    }).select('agencyId archivos').lean();
+    const filesByAgency = new Map(monthlyRecords.map((record) => [
+      String(record.agencyId),
+      record.archivos || {},
+    ]));
+    const orderedAgencies = selectedIds.map((id) => ({
+      ...agenciesById.get(id).toObject(),
+      archivos: filesByAgency.get(id) || {},
+    }));
     const withoutEmail = orderedAgencies.filter((agency) => !EMAIL_PATTERN.test(String(agency.correo || '').trim()));
     if (withoutEmail.length) {
       return res.status(400).json({

@@ -2,6 +2,7 @@
 
 const mongoose = require('mongoose');
 const Agency = require('../models/Agency');
+const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
 const MailJob = require('../models/MailJob');
 const Notification = require('../models/Notification');
@@ -94,13 +95,16 @@ async function getNotifications(req, res, next) {
     const isConsultant = req.user.rol === 'consultor';
     const now = new Date();
     const period = getMexicoPeriod(now);
-    const [agencies, announcements, refreshJobs, mailJobs] = await Promise.all([
+    const [agencies, monthlyRecords, announcements, refreshJobs, mailJobs] = await Promise.all([
       Agency.find({
         status: 'activa',
         ...(isConsultant ? { consultantId: userId } : {}),
       })
         .select('_id nombre status archivos')
         .lean(),
+      AgencyMonthlyFiles.find({
+        period: `${period.year}-${String(period.month).padStart(2, '0')}`,
+      }).select('agencyId archivos').lean(),
       Notification.find({
         expiresAt: { $gt: now },
         audience: isAdmin ? { $in: ['all', 'admin'] } : 'all',
@@ -123,8 +127,15 @@ async function getNotifications(req, res, next) {
         .sort({ updatedAt: -1 }).limit(30).lean(),
     ]);
 
+    const filesByAgency = new Map(monthlyRecords.map((record) => [
+      String(record.agencyId),
+      record.archivos || {},
+    ]));
     const feed = buildNotificationFeed({
-      agencies,
+      agencies: agencies.map((agency) => ({
+        ...agency,
+        archivos: filesByAgency.get(String(agency._id)) || {},
+      })),
       announcements: isConsultant
         ? announcements.filter((item) => item.agencyId
           && agencies.some((agency) => String(agency._id) === String(item.agencyId)))

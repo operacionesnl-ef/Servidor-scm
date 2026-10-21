@@ -154,6 +154,45 @@ test('stores favorite changes directly on the shared agency record', async () =>
   }
 });
 
+test('stores consultant favorites per user without changing the agency', async () => {
+  const originalMethods = {
+    findOne: Agency.findOne,
+    findOneAndUpdate: AgencyPersonalization.findOneAndUpdate,
+  };
+  const agencyId = new mongoose.Types.ObjectId();
+  const userId = new mongoose.Types.ObjectId();
+  let savedPreference;
+  Agency.findOne = () => ({
+    select: async () => ({ _id: agencyId }),
+  });
+  AgencyPersonalization.findOneAndUpdate = async (filter, update, options) => {
+    savedPreference = { filter, update, options };
+    return { favorite: true };
+  };
+
+  try {
+    const res = response();
+    await updateAgencyPersonalization({
+      params: { id: String(agencyId) },
+      user: { _id: userId, rol: 'consultor' },
+      body: { favorite: true },
+    }, res, (error) => { throw error; });
+
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(savedPreference.filter, { userId, agencyId });
+    assert.deepEqual(savedPreference.update, { $set: { favorite: true } });
+    assert.equal(savedPreference.options.upsert, true);
+    assert.deepEqual(res.body.data, {
+      agencyId: String(agencyId),
+      favorite: true,
+      tagIds: [],
+    });
+  } finally {
+    Agency.findOne = originalMethods.findOne;
+    AgencyPersonalization.findOneAndUpdate = originalMethods.findOneAndUpdate;
+  }
+});
+
 test('merges legacy user preferences into one shared agency preference exactly once', async () => {
   const originalMethods = {
     find: Agency.find,

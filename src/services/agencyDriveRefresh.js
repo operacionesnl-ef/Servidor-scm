@@ -5,6 +5,7 @@ const {
   getAgencyFileRequirementPolicy,
   selectRefreshFiles,
 } = require('../utils/agencyFileRefreshUtils');
+const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const MAX_DESCENDANTS = 5000;
@@ -56,13 +57,10 @@ async function listDescendants(drive, rootFolderId) {
 }
 
 function buildAgencyRefresh(agency, descendants, year, month) {
+  const detectedPeriod = { year, month };
   const selected = selectRefreshFiles(descendants, year, month);
   const results = {};
-  const currentFiles = agency.archivos?.toObject?.() || agency.archivos || {};
-  const archivos = {
-    carpetaPrincipal: currentFiles.carpetaPrincipal,
-    carpetaBase: currentFiles.carpetaBase,
-  };
+  const archivos = {};
 
   for (const { key } of FILE_TYPES) {
     const match = selected[key];
@@ -84,6 +82,9 @@ function buildAgencyRefresh(agency, descendants, year, month) {
       path: typeof file.path === 'string' && file.path.trim()
         ? file.path.trim()
         : [...folderPath, file.name.trim()].join(' / '),
+      sizeBytes: file.size === undefined ? null : Number(file.size),
+      mimeType: file.mimeType || '',
+      modifiedTime: file.modifiedTime || null,
       periodYear: match.period.year,
       periodMonth: match.period.month,
     };
@@ -117,9 +118,10 @@ function buildAgencyRefresh(agency, descendants, year, month) {
       requiredTotal,
       missingRequired: !policy.requirementSatisfied,
       optionalMissingKeys: policy.optionalMissingKeys,
-      year,
-      month,
+      year: detectedPeriod.year,
+      month: detectedPeriod.month,
     },
+    period: detectedPeriod,
   };
 }
 
@@ -133,8 +135,19 @@ async function refreshAgencyFromDrive(agency, drive, year, month, folderId) {
 
   const descendants = await listDescendants(drive, rootFolderId);
   const update = buildAgencyRefresh(agency, descendants, year, month);
-  agency.set('archivos', update.archivos);
-  await agency.save();
+  const detectedPeriod = update.period;
+  const period = `${detectedPeriod.year}-${String(detectedPeriod.month).padStart(2, '0')}`;
+  await AgencyMonthlyFiles.findOneAndUpdate(
+    { agencyId: agency._id, period },
+    {
+      $set: {
+        archivos: Object.fromEntries(FILE_TYPES
+          .filter(({ key }) => update.archivos[key])
+          .map(({ key }) => [key, update.archivos[key]])),
+      },
+    },
+    { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
+  );
   return update;
 }
 

@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
 const Agency = require('../src/models/Agency');
 const AgencyMonthlyInspection = require('../src/models/AgencyMonthlyInspection');
+const AgencyMonthlyFiles = require('../src/models/AgencyMonthlyFiles');
 const AgencyNote = require('../src/models/AgencyNote');
 const AgencyPersonalization = require('../src/models/AgencyPersonalization');
 const CalendarEvent = require('../src/models/CalendarEvent');
@@ -35,7 +36,7 @@ function response() {
   };
 }
 
-test('agency creation accepts the requested minimum and retains optional legacy fields', () => {
+test('agency input keeps folder references but rejects file slots outside monthly records', () => {
   const minimal = validateAgencyInput({
     nombre: 'Agencia Nueva',
     entidadFederativa: 'Nuevo León',
@@ -66,11 +67,24 @@ test('agency creation accepts the requested minimum and retains optional legacy 
     entidadFederativa: 'Nuevo León',
     correo: 'LEGACY@example.com',
     archivos: {
-      archivo1: { nombre: 'ANX.pdf', ruta: 'drive-file-id' },
+      carpetaPrincipal: 'drive-root',
+      carpetaBase: 'drive-base',
     },
   }, false);
   assert.deepEqual(legacy.errors, {});
   assert.equal(legacy.value.correo, 'legacy@example.com');
+  assert.deepEqual(legacy.value.archivos, {
+    carpetaPrincipal: 'drive-root',
+    carpetaBase: 'drive-base',
+  });
+  const fileSlot = validateAgencyInput({
+    nombre: 'Agencia Legacy',
+    entidadFederativa: 'Nuevo León',
+    archivos: { archivo1: { nombre: 'ANX.pdf', ruta: 'drive-file-id' } },
+  }, false);
+  assert.ok(fileSlot.errors['archivos.archivo1']);
+  assert.equal(Agency.schema.path('archivos.archivo1'), undefined);
+  assert.equal(AgencyMonthlyFiles.schema.path('archivos.archivo1'), undefined);
   assert.equal(Agency.schema.path('consultantId').options.ref, 'User');
   assert.equal(Agency.schema.path('correo').isRequired, false);
 });
@@ -440,6 +454,7 @@ test('deleting an agency also removes its calendar and monthly inspection record
     sentEmailExists: SentEmail.exists,
     eventDeleteMany: CalendarEvent.deleteMany,
     inspectionDeleteMany: AgencyMonthlyInspection.deleteMany,
+    monthlyFilesDeleteMany: AgencyMonthlyFiles.deleteMany,
     noteDeleteMany: AgencyNote.deleteMany,
     personalizationDeleteMany: AgencyPersonalization.deleteMany,
   };
@@ -457,6 +472,7 @@ test('deleting an agency also removes its calendar and monthly inspection record
     assert.equal(String(query.agencyId), String(agencyId));
   };
   AgencyMonthlyInspection.deleteMany = async () => { deleted.push('inspections'); };
+  AgencyMonthlyFiles.deleteMany = async () => { deleted.push('monthly-files'); };
   AgencyNote.deleteMany = async () => { deleted.push('notes'); };
   AgencyPersonalization.deleteMany = async () => { deleted.push('personalization'); };
 
@@ -467,12 +483,13 @@ test('deleting an agency also removes its calendar and monthly inspection record
       user: { _id: new mongoose.Types.ObjectId() },
     }, res, (error) => { throw error; });
     assert.equal(res.statusCode, 200);
-    assert.deepEqual(new Set(deleted), new Set(['events', 'inspections', 'notes', 'personalization', 'agency']));
+    assert.deepEqual(new Set(deleted), new Set(['events', 'inspections', 'monthly-files', 'notes', 'personalization', 'agency']));
   } finally {
     Agency.findById = originals.agencyFindById;
     SentEmail.exists = originals.sentEmailExists;
     CalendarEvent.deleteMany = originals.eventDeleteMany;
     AgencyMonthlyInspection.deleteMany = originals.inspectionDeleteMany;
+    AgencyMonthlyFiles.deleteMany = originals.monthlyFilesDeleteMany;
     AgencyNote.deleteMany = originals.noteDeleteMany;
     AgencyPersonalization.deleteMany = originals.personalizationDeleteMany;
   }

@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const { google } = require('googleapis');
 const Agency = require('../models/Agency');
 const AgencyMonthlyInspection = require('../models/AgencyMonthlyInspection');
+const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
 const AgencyNote = require('../models/AgencyNote');
 const AgencyPersonalization = require('../models/AgencyPersonalization');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
@@ -162,11 +163,15 @@ function serializeAgencyRefreshJob(job) {
           correo: result.correo,
           entidadFederativa: result.entidadFederativa,
           status: result.agencyStatus,
-          archivos: result.files || {},
+          archivos: {
+            ...(result.files || {}),
+            ...(result.carpetaPrincipal ? { carpetaPrincipal: result.carpetaPrincipal } : {}),
+          },
         },
         missingKeys: result.missingKeys,
         files: result.files || {},
         selectedFiles: {},
+        period: result.period || '',
         error: result.error,
         missingRoot: result.missingRoot,
         checks: result.checks || [],
@@ -181,6 +186,15 @@ function serializeAgencyRefreshJob(job) {
 
 const validationFailure = (res, errors) =>
   res.status(400).json({ success: false, message: 'Validation failed', errors });
+
+function removeNullAgencyFileSlots(archivos) {
+  if (!archivos || typeof archivos !== 'object' || Array.isArray(archivos)) return archivos;
+  const result = { ...archivos };
+  FILE_FIELDS.forEach((field) => {
+    if (result[field] === null || result[field] === undefined) delete result[field];
+  });
+  return result;
+}
 
 const validateAgencyInput = (body, partial) => {
   const errors = {};
@@ -285,80 +299,15 @@ const validateAgencyInput = (body, partial) => {
       const archivos = {};
       for (const [field, file] of Object.entries(body.archivos)) {
         if (field === 'carpetaPrincipal' || field === 'carpetaBase') {
-          if (typeof file !== 'string' || !file.trim() || file.trim().length > 2048) {
-            errors[`archivos.${field}`] = 'Must be a non-empty string of at most 2048 characters';
+          if (typeof file !== 'string' || file.trim().length > 2048) {
+            errors[`archivos.${field}`] = 'Must be a string of at most 2048 characters';
           } else {
             archivos[field] = file.trim();
           }
           continue;
         }
 
-        if (!FILE_FIELDS.has(field)) {
-          errors[`archivos.${field}`] = 'Unknown field';
-          continue;
-        }
-        if (file === null) {
-          archivos[field] = null;
-          continue;
-        }
-        if (!file || typeof file !== 'object' || Array.isArray(file)) {
-          errors[`archivos.${field}`] = 'Must be an object';
-          continue;
-        }
-
-        for (const key of Object.keys(file)) {
-          if (!['nombre', 'ruta', 'driveId', 'pseudoPath', 'path'].includes(key)) {
-            errors[`archivos.${field}.${key}`] = 'Unknown field';
-          }
-        }
-
-        const nombre = typeof file.nombre === 'string' ? file.nombre.trim() : '';
-        const ruta = typeof file.ruta === 'string' ? file.ruta.trim() : '';
-        if (!nombre || nombre.length > 255) {
-          errors[`archivos.${field}.nombre`] = 'A name of at most 255 characters is required';
-        }
-        if (!ruta || ruta.length > 2048) {
-          errors[`archivos.${field}.ruta`] = 'A path of at most 2048 characters is required';
-        }
-
-        let driveId;
-        if (file.driveId !== undefined) {
-          if (typeof file.driveId !== 'string' || file.driveId.trim().length > 2048) {
-            errors[`archivos.${field}.driveId`] = 'Must be a string of at most 2048 characters';
-          } else if (file.driveId.trim()) {
-            driveId = file.driveId.trim();
-          }
-        }
-
-        let pseudoPath;
-        if (file.pseudoPath !== undefined) {
-          if (!Array.isArray(file.pseudoPath) || file.pseudoPath.length > 100 || file.pseudoPath.some((part) => (
-            typeof part !== 'string' || !part.trim() || part.trim().length > 255
-          ))) {
-            errors[`archivos.${field}.pseudoPath`] = 'Must be an array of up to 100 non-empty strings of at most 255 characters';
-          } else {
-            pseudoPath = file.pseudoPath.map((part) => part.trim());
-          }
-        }
-
-        let path;
-        if (file.path !== undefined) {
-          if (typeof file.path !== 'string' || !file.path.trim() || file.path.trim().length > 4096) {
-            errors[`archivos.${field}.path`] = 'Must be a non-empty string of at most 4096 characters';
-          } else {
-            path = file.path.trim();
-          }
-        }
-
-        if (nombre && ruta && nombre.length <= 255 && ruta.length <= 2048) {
-          archivos[field] = {
-            nombre,
-            ruta,
-            ...(driveId !== undefined ? { driveId } : {}),
-            ...(pseudoPath !== undefined ? { pseudoPath } : {}),
-            ...(path !== undefined ? { path } : {}),
-          };
-        }
+        errors[`archivos.${field}`] = 'Only carpetaPrincipal and carpetaBase belong to an agency';
       }
       value.archivos = archivos;
     }
@@ -410,15 +359,6 @@ const getMissingAgencyFields = (agency) => {
   const files = agency.archivos || {};
   if (typeof files.carpetaPrincipal !== 'string' || !files.carpetaPrincipal.trim()) {
     missingFields.push('archivos.carpetaPrincipal');
-  }
-  for (const field of FILE_FIELDS) {
-    const file = files[field] || {};
-    if (typeof file.nombre !== 'string' || !file.nombre.trim()) {
-      missingFields.push(`archivos.${field}.nombre`);
-    }
-    if (typeof file.ruta !== 'string' || !file.ruta.trim()) {
-      missingFields.push(`archivos.${field}.ruta`);
-    }
   }
   return missingFields;
 };
@@ -486,11 +426,28 @@ const getAgencies = async (req, res, next) => {
     if (req.query.status && !ALLOWED_STATUSES.has(req.query.status)) {
       return validationFailure(res, { status: `Must be one of: ${[...ALLOWED_STATUSES].join(', ')}` });
     }
+    const period = req.query.period || '';
+    if (period && !/^(20\d{2})-(0[1-9]|1[0-2])$/.test(period)) {
+      return validationFailure(res, { period: 'Must be a period in YYYY-MM format' });
+    }
     const filter = {
       ...(req.query.status ? { status: req.query.status } : {}),
       ...(req.user.rol === 'consultor' ? { consultantId: req.user._id } : {}),
     };
-    const agencies = await Agency.find(filter).sort({ createdAt: -1 });
+    const agencies = await Agency.find(filter).sort({ createdAt: -1 }).lean();
+    if (period) {
+      const records = await AgencyMonthlyFiles.find({
+        agencyId: { $in: agencies.map((agency) => agency._id) },
+        period,
+      }).select('agencyId archivos').lean();
+      const filesByAgency = new Map(records.map((record) => [
+        String(record.agencyId),
+        record.archivos || {},
+      ]));
+      agencies.forEach((agency) => {
+        agency.periodFiles = filesByAgency.get(String(agency._id)) || {};
+      });
+    }
     return success(res, agencies, 'Agencies fetched');
   } catch (err) {
     return next(err);
@@ -635,6 +592,7 @@ const deleteAgency = async (req, res, next) => {
     await Promise.all([
       CalendarEvent.deleteMany({ agencyId: agency._id }),
       AgencyMonthlyInspection.deleteMany({ agencyId: agency._id }),
+      AgencyMonthlyFiles.deleteMany({ agencyId: agency._id }),
       AgencyNote.deleteMany({ agencyId: agency._id }),
       AgencyPersonalization.deleteMany({ agencyId: agency._id }),
     ]);
@@ -936,4 +894,5 @@ module.exports = {
   getAgencyMaintenanceHistory,
   getAgencyRefreshJob,
   validateAgencyInput,
+  removeNullAgencyFileSlots,
 };

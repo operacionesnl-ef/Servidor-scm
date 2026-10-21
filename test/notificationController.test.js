@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
 const Agency = require('../src/models/Agency');
+const AgencyMonthlyFiles = require('../src/models/AgencyMonthlyFiles');
 const AgencyRefreshJob = require('../src/models/AgencyRefreshJob');
 const MailJob = require('../src/models/MailJob');
 const Notification = require('../src/models/Notification');
@@ -44,6 +45,7 @@ test('notification feed limits process visibility to the authenticated user', as
   const userId = new mongoose.Types.ObjectId();
   const originalMethods = {
     agencyFind: Agency.find,
+    monthlyFilesFind: AgencyMonthlyFiles.find,
     globalSettingFindById: GlobalSetting.findById,
     notificationFind: Notification.find,
     refreshFind: AgencyRefreshJob.find,
@@ -54,6 +56,7 @@ test('notification feed limits process visibility to the authenticated user', as
   let notificationFilter;
 
   Agency.find = () => listQuery([]);
+  AgencyMonthlyFiles.find = () => listQuery([]);
   GlobalSetting.findById = () => ({ lean: async () => ({ year: 2026, month: 8 }) });
   Notification.find = (filter) => {
     notificationFilter = filter;
@@ -83,6 +86,7 @@ test('notification feed limits process visibility to the authenticated user', as
     );
   } finally {
     Agency.find = originalMethods.agencyFind;
+    AgencyMonthlyFiles.find = originalMethods.monthlyFilesFind;
     GlobalSetting.findById = originalMethods.globalSettingFindById;
     Notification.find = originalMethods.notificationFind;
     AgencyRefreshJob.find = originalMethods.refreshFind;
@@ -93,6 +97,7 @@ test('notification feed limits process visibility to the authenticated user', as
 test('notification feed exposes administrative process queries only to admin roles', async () => {
   const originalMethods = {
     agencyFind: Agency.find,
+    monthlyFilesFind: AgencyMonthlyFiles.find,
     globalSettingFindById: GlobalSetting.findById,
     notificationFind: Notification.find,
     refreshFind: AgencyRefreshJob.find,
@@ -102,6 +107,7 @@ test('notification feed exposes administrative process queries only to admin rol
   let notificationFilter;
 
   Agency.find = () => listQuery([]);
+  AgencyMonthlyFiles.find = () => listQuery([]);
   GlobalSetting.findById = () => ({ lean: async () => null });
   Notification.find = (filter) => {
     notificationFilter = filter;
@@ -121,6 +127,7 @@ test('notification feed exposes administrative process queries only to admin rol
     assert.deepEqual(notificationFilter.audience, { $in: ['all', 'admin'] });
   } finally {
     Agency.find = originalMethods.agencyFind;
+    AgencyMonthlyFiles.find = originalMethods.monthlyFilesFind;
     GlobalSetting.findById = originalMethods.globalSettingFindById;
     Notification.find = originalMethods.notificationFind;
     AgencyRefreshJob.find = originalMethods.refreshFind;
@@ -131,6 +138,7 @@ test('notification feed exposes administrative process queries only to admin rol
 test('quick notification feed includes every unread item and only three visible read items', async () => {
   const originalMethods = {
     agencyFind: Agency.find,
+    monthlyFilesFind: AgencyMonthlyFiles.find,
     globalSettingFindById: GlobalSetting.findById,
     notificationFind: Notification.find,
     refreshFind: AgencyRefreshJob.find,
@@ -149,6 +157,7 @@ test('quick notification feed includes every unread item and only three visible 
     })),
   ];
   Agency.find = () => listQuery([]);
+  AgencyMonthlyFiles.find = () => listQuery([]);
   GlobalSetting.findById = () => ({ lean: async () => null });
   Notification.find = () => listQuery(notices);
   AgencyRefreshJob.find = () => listQuery([]);
@@ -168,6 +177,7 @@ test('quick notification feed includes every unread item and only three visible 
     assert.equal(res.body.unreadCount, 2);
   } finally {
     Agency.find = originalMethods.agencyFind;
+    AgencyMonthlyFiles.find = originalMethods.monthlyFilesFind;
     GlobalSetting.findById = originalMethods.globalSettingFindById;
     Notification.find = originalMethods.notificationFind;
     AgencyRefreshJob.find = originalMethods.refreshFind;
