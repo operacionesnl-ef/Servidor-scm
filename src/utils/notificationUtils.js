@@ -52,15 +52,19 @@ function createAgencyReminder(agency, year, month, createdAt = new Date()) {
 }
 
 function serializeAnnouncement(notification, userId) {
+  const personal = notification.audience === 'personal';
   return {
     id: String(notification._id),
-    category: 'system',
+    category: personal ? 'personal' : 'system',
     title: notification.title,
     summary: notification.message,
     createdAt: notification.createdAt,
     severity: notification.severity,
     read: notification.readBy.some((id) => String(id) === String(userId)),
     persistent: false,
+    ...(notification.actionUrl ? { actionUrl: notification.actionUrl } : {}),
+    ...(notification.agencyId ? { agencyId: String(notification.agencyId) } : {}),
+    ...(notification.notificationType ? { notificationType: notification.notificationType } : {}),
   };
 }
 
@@ -113,14 +117,16 @@ function buildNotificationFeed({ agencies, announcements, refreshJobs, mailJobs,
       return priority[left.category] - priority[right.category]
         || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
     });
-  const unreadAnnouncements = announcementItems.filter((item) => !item.read).length;
+  const unreadAnnouncements = announcementItems.filter((item) => item.category === 'system' && !item.read).length;
+  const unreadPersonal = announcementItems.filter((item) => item.category === 'personal' && !item.read).length;
 
   return {
     items,
-    unreadCount: reminders.length + unreadAnnouncements,
+    unreadCount: reminders.length + unreadAnnouncements + unreadPersonal,
     counts: {
       reminders: reminders.length,
       unreadAnnouncements,
+      unreadPersonal,
       activeProcesses: jobs.filter((item) => item.category === 'process').length,
     },
   };

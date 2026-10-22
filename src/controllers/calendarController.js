@@ -6,6 +6,7 @@ const Agency = require('../models/Agency');
 const User = require('../models/User');
 const { success } = require('../utils/response');
 const { recordAgencyHistory } = require('../services/agencyHistory');
+const { notifyConsultant } = require('../services/consultantNotifications');
 
 const EVENT_TYPES = new Set([
   'agency_visit',
@@ -155,6 +156,66 @@ function serializeEvent(event) {
 
 function validId(value) {
   return mongoose.isValidObjectId(value);
+}
+
+async function getVisitConsultant(event) {
+  if (!event?.agencyId || event.type !== 'agency_visit') return null;
+  const agency = await Agency.findById(event.agencyId).select('_id nombre consultantId').lean();
+  if (!agency?.consultantId) return null;
+  if (event.consultantId && String(event.consultantId) !== String(agency.consultantId)) return null;
+  return {
+    id: agency.consultantId,
+    agencyId: agency._id,
+    agencyName: agency.nombre,
+    actionUrl: `/agencias/${agency._id}?tab=inspections`,
+  };
+}
+
+async function notifyVisitChange(event, notification, idempotencySuffix) {
+  try {
+    const recipient = await getVisitConsultant(event);
+    if (!recipient) return;
+    const date = event.startAt instanceof Date ? event.startAt : new Date(event.startAt);
+    const dateLabel = Number.isNaN(date.getTime())
+      ? 'fecha no disponible'
+      : date.toLocaleString('es-MX', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: 'America/Mexico_City',
+      });
+    const messages = {
+      scheduled: {
+        title: 'Visita programada',
+        message: `Tu visita a ${recipient.agencyName} está programada para el ${dateLabel}.`,
+        type: 'visit_scheduled',
+      },
+      authorized: {
+        title: 'Visita autorizada',
+        message: `Se autorizó tu visita a ${recipient.agencyName} para el ${dateLabel}.`,
+        type: 'visit_authorized',
+      },
+      changed: {
+        title: 'Cambio de visita',
+        message: `La visita a ${recipient.agencyName} cambió. Nueva fecha: ${dateLabel}.`,
+        type: 'visit_changed',
+      },
+      cancelled: {
+        title: 'Visita cancelada',
+        message: `La visita a ${recipient.agencyName} del ${dateLabel} fue cancelada.`,
+        type: 'visit_cancelled',
+      },
+    };
+    const content = messages[notification];
+    await notifyConsultant({
+      consultantId: recipient.id,
+      agencyId: recipient.agencyId,
+      actionUrl: recipient.actionUrl,
+      ...content,
+      idempotencyKey: `calendar:${event._id}:${idempotencySuffix}`,
+    });
+  } catch (error) {
+    console.error('[Notifications] No se pudo procesar un aviso de visita:', error.message);
+  }
 }
 
 function validateEventSeriesInput(body) {
@@ -381,6 +442,7 @@ async function createCalendarEvent(req, res, next) {
       createdBy: req.user._id,
       updatedBy: req.user._id,
     });
+    if (event.authorized) await notifyVisitChange(event, 'scheduled', `created:${event.updatedAt.getTime()}`);
     await event.populate(POPULATES);
     if (event.agencyId) {
       await recordAgencyHistory({
@@ -425,6 +487,13 @@ async function createCalendarEventSeries(req, res, next) {
     }));
     await Promise.all(documents.map((event) => event.validate()));
     const createdEvents = await CalendarEvent.insertMany(documents, { ordered: true });
+    if (value.event.authorized) {
+      await Promise.all(createdEvents.map((event) => notifyVisitChange(
+        event,
+        'scheduled',
+        `created:${event.updatedAt.getTime()}`,
+      )));
+    }
     if (value.event.agencyId) {
       const ruleLabel = recurrence.frequency === 'daily'
         ? `${recurrence.interval} día(s)`
@@ -463,6 +532,20 @@ async function updateCalendarEvent(req, res, next) {
   try {
     const event = await CalendarEvent.findById(req.params.id);
     if (!event) return res.status(404).json({ success: false, message: 'Calendar event not found' });
+    const previousEvent = {
+      _id: event._id,
+      title: event.title,
+      type: event.type,
+      agencyId: event.agencyId,
+      consultantId: event.consultantId,
+      authorized: event.authorized,
+      startAt: event.startAt,
+      endAt: event.endAt,
+      updatedAt: event.updatedAt,
+    };
+    const previousRecipient = previousEvent.authorized
+      ? await getVisitConsultant(previousEvent)
+      : null;
     if (value.startAt === undefined && value.endAt !== undefined) value.startAt = event.startAt;
     if (value.endAt === undefined && value.startAt !== undefined) value.endAt = event.endAt;
     if (value.endAt && value.startAt && value.endAt <= value.startAt) {
@@ -473,6 +556,23 @@ async function updateCalendarEvent(req, res, next) {
     const previousTitle = event.title;
     Object.assign(event, value, { updatedBy: req.user._id });
     await event.save();
+    const nextRecipient = event.authorized ? await getVisitConsultant(event) : null;
+    const scheduleChanged = previousEvent.startAt.getTime() !== event.startAt.getTime()
+      || previousEvent.endAt.getTime() !== event.endAt.getTime()
+      || previousEvent.agencyId?.toString() !== event.agencyId?.toString()
+      || previousEvent.title !== event.title;
+    const recipientChanged = String(previousRecipient?.id || '') !== String(nextRecipient?.id || '');
+    if (previousRecipient && (!nextRecipient || recipientChanged || !event.authorized)) {
+      await notifyVisitChange(previousEvent, 'cancelled', `cancelled:${event.updatedAt.getTime()}`);
+    }
+    if (nextRecipient && (recipientChanged || !previousRecipient || scheduleChanged)) {
+      const notice = previousEvent.authorized && !recipientChanged
+        ? 'changed'
+        : previousEvent.authorized
+          ? 'scheduled'
+          : 'authorized';
+      await notifyVisitChange(event, notice, `${notice}:${event.updatedAt.getTime()}`);
+    }
     await event.populate(POPULATES);
     const nextAgencyId = eventAgencyId(event);
     const historyAgencyIds = [...new Set([previousAgencyId, nextAgencyId].filter(Boolean))];
@@ -497,8 +597,10 @@ async function updateCalendarEvent(req, res, next) {
 async function deleteCalendarEvent(req, res, next) {
   if (!validatePathId(req.params.id, res)) return;
   try {
-    const event = await CalendarEvent.findByIdAndDelete(req.params.id);
+    const event = await CalendarEvent.findById(req.params.id);
     if (!event) return res.status(404).json({ success: false, message: 'Calendar event not found' });
+    if (event.authorized) await notifyVisitChange(event, 'cancelled', `deleted:${event.updatedAt.getTime()}`);
+    await event.deleteOne();
     if (event.agencyId) {
       await recordAgencyHistory({
         agencyId: event.agencyId,

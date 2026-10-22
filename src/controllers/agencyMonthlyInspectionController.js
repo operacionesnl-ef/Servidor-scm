@@ -6,6 +6,7 @@ const AgencyMonthlyInspection = require('../models/AgencyMonthlyInspection');
 const CalendarEvent = require('../models/CalendarEvent');
 const { success } = require('../utils/response');
 const { recordAgencyHistory } = require('../services/agencyHistory');
+const { notifyConsultant } = require('../services/consultantNotifications');
 
 const AUTHORIZATION_STATUSES = new Set(['pending', 'authorized', 'unauthorized']);
 
@@ -131,12 +132,22 @@ async function updateMonthlyAuthorization(req, res, next) {
     const previous = await AgencyMonthlyInspection.findOne({
       agencyId: req.params.id,
       period: req.params.period,
-    }).select('authorizationStatus').lean();
+    }).select('authorizationStatus calendarEventId').lean();
     const record = await AgencyMonthlyInspection.findOneAndUpdate(
       { agencyId: req.params.id, period: req.params.period },
       { $set: { authorizationStatus }, $setOnInsert: { visitStatus: 'scheduled' } },
       { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
     );
+    if (record.calendarEventId) {
+      try {
+        await CalendarEvent.updateOne(
+          { _id: record.calendarEventId, agencyId: agency._id, type: 'agency_visit' },
+          { $set: { authorized: authorizationStatus === 'authorized', updatedBy: req.user._id } },
+        );
+      } catch (error) {
+        console.error('[Calendar] No se pudo sincronizar la autorización de la visita:', error.message);
+      }
+    }
     if ((previous?.authorizationStatus || 'pending') !== authorizationStatus) {
       await recordAgencyHistory({
         agencyId: agency._id,
@@ -149,6 +160,20 @@ async function updateMonthlyAuthorization(req, res, next) {
           to: authorizationStatus,
         },
       });
+      if (agency.consultantId && authorizationStatus !== 'pending') {
+        const approved = authorizationStatus === 'authorized';
+        await notifyConsultant({
+          consultantId: agency.consultantId,
+          title: approved ? 'Visita autorizada' : 'Visita no autorizada',
+          message: approved
+            ? `Se autorizó tu visita a ${agency.nombre} para el período ${req.params.period}.`
+            : `La visita a ${agency.nombre} para el período ${req.params.period} no fue autorizada.`,
+          notificationType: approved ? 'visit_authorized' : 'visit_not_authorized',
+          actionUrl: `/agencias/${agency._id}?tab=inspections`,
+          agencyId: agency._id,
+          idempotencyKey: `monthly:${agency._id}:${req.params.period}:authorization:${authorizationStatus}:${record.updatedAt.getTime()}`,
+        });
+      }
     }
     return success(res, serializeRecord(record), 'Monthly authorization updated');
   } catch (error) {
@@ -236,6 +261,7 @@ async function scheduleMonthlyVisit(req, res, next) {
     }
 
     // ── Datos del evento a crear o actualizar ────────────────────────────
+    const isRescheduling = Boolean(record.calendarEventId);
     const eventData = {
       title: `Visita: ${agency.nombre}`,
       type: 'agency_visit',
@@ -302,6 +328,22 @@ async function scheduleMonthlyVisit(req, res, next) {
       { _id: record._id },
       { $set: { visitStatus: 'scheduled', calendarEventId: event._id } },
     );
+    const visitDate = new Date(event.startAt).toLocaleString('es-MX', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: 'America/Mexico_City',
+    });
+    await notifyConsultant({
+      consultantId: agency.consultantId,
+      title: isRescheduling ? 'Cambio de visita' : 'Visita programada',
+      message: isRescheduling
+        ? `La visita a ${agency.nombre} cambió. Nueva fecha: ${visitDate}.`
+        : `Tu visita a ${agency.nombre} está programada para el ${visitDate}.`,
+      notificationType: isRescheduling ? 'visit_changed' : 'visit_scheduled',
+      actionUrl: `/agencias/${agency._id}?tab=inspections`,
+      agencyId: agency._id,
+      idempotencyKey: `monthly:${agency._id}:${req.params.period}:${isRescheduling ? 'rescheduled' : 'scheduled'}:${event.startAt.getTime()}`,
+    });
 
     await recordAgencyHistory({
       agencyId: agency._id,

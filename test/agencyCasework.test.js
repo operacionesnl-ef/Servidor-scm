@@ -12,6 +12,8 @@ const CalendarEvent = require('../src/models/CalendarEvent');
 const SentEmail = require('../src/models/SentEmail');
 const User = require('../src/models/User');
 const AgencyHistory = require('../src/models/AgencyHistory');
+const Notification = require('../src/models/Notification');
+const Subscription = require('../src/models/Subscription');
 const { deleteAgency } = require('../src/controllers/agencyController');
 const {
   scheduleMonthlyVisit,
@@ -142,15 +144,19 @@ test('monthly visit uses agency consultant relation and creates exactly one cale
   const originals = {
     agencyFindById: Agency.findById,
     inspectionUpdateOne: AgencyMonthlyInspection.updateOne,
+    inspectionFindOneAndUpdate: AgencyMonthlyInspection.findOneAndUpdate,
     inspectionFindOne: AgencyMonthlyInspection.findOne,
     inspectionFindById: AgencyMonthlyInspection.findById,
     calendarExists: CalendarEvent.exists,
     calendarCreate: CalendarEvent.create,
+    notificationFindOneAndUpdate: Notification.findOneAndUpdate,
+    subscriptionExists: Subscription.exists,
   };
   const agencyId = new mongoose.Types.ObjectId();
   const consultantId = new mongoose.Types.ObjectId();
   const recordId = new mongoose.Types.ObjectId();
   let createdEvent;
+  let createdNotification;
   let reserveCount = 0;
   Agency.findById = () => ({ select: async () => ({
     _id: agencyId,
@@ -162,6 +168,14 @@ test('monthly visit uses agency consultant relation and creates exactly one cale
     reserveCount += 1;
     return { modifiedCount: 1 };
   };
+  AgencyMonthlyInspection.findOneAndUpdate = async () => ({
+    _id: recordId,
+    agencyId,
+    period: '2026-10',
+    authorizationStatus: 'authorized',
+    visitStatus: 'scheduled',
+    calendarEventId: null,
+  });
   AgencyMonthlyInspection.findOne = async () => ({
     _id: recordId,
     agencyId,
@@ -187,6 +201,11 @@ test('monthly visit uses agency consultant relation and creates exactly one cale
     createdEvent = input;
     return input;
   };
+  Notification.findOneAndUpdate = async (_filter, update) => {
+    createdNotification = update.$setOnInsert;
+    return { _id: new mongoose.Types.ObjectId(), ...createdNotification };
+  };
+  Subscription.exists = async () => false;
   try {
     const res = response();
     await scheduleMonthlyVisit({
@@ -202,14 +221,21 @@ test('monthly visit uses agency consultant relation and creates exactly one cale
     assert.deepEqual(createdEvent.consultantId, consultantId);
     assert.equal(createdEvent.type, 'agency_visit');
     assert.equal(res.body.data.record.calendarEventId, String(createdEvent._id));
+    assert.equal(createdNotification.audience, 'personal');
+    assert.deepEqual(createdNotification.recipientUserId, consultantId);
+    assert.equal(createdNotification.notificationType, 'visit_scheduled');
+    assert.equal(createdNotification.actionUrl, `/agencias/${agencyId}?tab=inspections`);
     assert.equal(reserveCount, 2);
   } finally {
     Agency.findById = originals.agencyFindById;
     AgencyMonthlyInspection.updateOne = originals.inspectionUpdateOne;
+    AgencyMonthlyInspection.findOneAndUpdate = originals.inspectionFindOneAndUpdate;
     AgencyMonthlyInspection.findOne = originals.inspectionFindOne;
     AgencyMonthlyInspection.findById = originals.inspectionFindById;
     CalendarEvent.exists = originals.calendarExists;
     CalendarEvent.create = originals.calendarCreate;
+    Notification.findOneAndUpdate = originals.notificationFindOneAndUpdate;
+    Subscription.exists = originals.subscriptionExists;
   }
 });
 
@@ -260,7 +286,6 @@ test('rescheduling a completed inspection with a stale event link reopens its mo
     createdEvent = input;
     return input;
   };
-
   try {
     const res = response();
     await scheduleMonthlyVisit({
@@ -287,7 +312,7 @@ test('rescheduling a completed inspection with a stale event link reopens its mo
 
 test('monthly visit cannot be scheduled before the monthly authorization is approved', async () => {
   const originalAgencyFindById = Agency.findById;
-  const originalInspectionFindOne = AgencyMonthlyInspection.findOne;
+  const originalInspectionFindOneAndUpdate = AgencyMonthlyInspection.findOneAndUpdate;
   const agencyId = new mongoose.Types.ObjectId();
   Agency.findById = () => ({
     select: async () => ({
@@ -296,7 +321,9 @@ test('monthly visit cannot be scheduled before the monthly authorization is appr
       consultantId: new mongoose.Types.ObjectId(),
     }),
   });
-  AgencyMonthlyInspection.findOne = async () => ({
+  AgencyMonthlyInspection.findOneAndUpdate = async () => ({
+    _id: new mongoose.Types.ObjectId(),
+    calendarEventId: null,
     authorizationStatus: 'unauthorized',
   });
 
@@ -315,7 +342,7 @@ test('monthly visit cannot be scheduled before the monthly authorization is appr
     assert.match(res.body.message, /autorización.*autorizada/i);
   } finally {
     Agency.findById = originalAgencyFindById;
-    AgencyMonthlyInspection.findOne = originalInspectionFindOne;
+    AgencyMonthlyInspection.findOneAndUpdate = originalInspectionFindOneAndUpdate;
   }
 });
 

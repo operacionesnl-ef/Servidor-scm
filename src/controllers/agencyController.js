@@ -21,6 +21,7 @@ const { normalizeEmailList } = require('../utils/emailList');
 const { getMexicoPeriod } = require('../utils/notificationUtils');
 const { logEvent } = require('../utils/consoleLogger');
 const { recordAgencyHistory } = require('../services/agencyHistory');
+const { notifyConsultant } = require('../services/consultantNotifications');
 
 const AGENCY_SEARCH_PERIOD_SETTING = 'agency-search-period';
 
@@ -480,6 +481,17 @@ const createAgency = async (req, res, next) => {
       return validationFailure(res, { consultantId: 'Active consultant not found' });
     }
     const agency = await Agency.create(value);
+    if (agency.consultantId) {
+      await notifyConsultant({
+        consultantId: agency.consultantId,
+        title: 'Nueva agencia asignada',
+        message: `Se te asignó la agencia ${agency.nombre}. Consulta sus detalles.`,
+        notificationType: 'agency_assigned',
+        actionUrl: `/agencias/${agency._id}`,
+        agencyId: agency._id,
+        idempotencyKey: `agency:${agency._id}:assigned:${agency.updatedAt.getTime()}`,
+      });
+    }
     await recordAgencyHistory({
       agencyId: agency._id,
       actor: req.user,
@@ -552,6 +564,46 @@ const updateAgency = async (req, res, next) => {
         ? []
         : [{ field, label: AGENCY_HISTORY_FIELD_LABELS[field], from, to }];
     });
+    const previousConsultantId = previousValues.consultantId ? String(previousValues.consultantId) : '';
+    const nextConsultantId = agency.consultantId ? String(agency.consultantId) : '';
+    const notificationKey = `agency:${agency._id}:${agency.updatedAt.getTime()}`;
+    if (previousConsultantId && previousConsultantId !== nextConsultantId) {
+      await notifyConsultant({
+        consultantId: previousConsultantId,
+        title: 'Agencia reasignada',
+        message: `La agencia ${agency.nombre} ya no está asignada a tu cuenta.`,
+        notificationType: 'agency_unassigned',
+        actionUrl: '/agencias',
+        agencyId: agency._id,
+        idempotencyKey: `${notificationKey}:unassigned:${previousConsultantId}`,
+      });
+    }
+    if (nextConsultantId && previousConsultantId !== nextConsultantId) {
+      await notifyConsultant({
+        consultantId: nextConsultantId,
+        title: 'Nueva agencia asignada',
+        message: `Se te asignó la agencia ${agency.nombre}. Consulta sus detalles.`,
+        notificationType: 'agency_assigned',
+        actionUrl: `/agencias/${agency._id}`,
+        agencyId: agency._id,
+        idempotencyKey: `${notificationKey}:assigned:${nextConsultantId}`,
+      });
+    } else if (nextConsultantId) {
+      const relevantChanges = changes.filter(({ field }) => (
+        ['nombre', 'direccion', 'gerente', 'telefonoGerente', 'seguimiento', 'status'].includes(field)
+      ));
+      if (relevantChanges.length) {
+        await notifyConsultant({
+          consultantId: nextConsultantId,
+          title: 'Cambios en una agencia asignada',
+          message: `Se actualizaron datos de ${agency.nombre} que pueden afectar tu trabajo.`,
+          notificationType: 'agency_updated',
+          actionUrl: `/agencias/${agency._id}`,
+          agencyId: agency._id,
+          idempotencyKey: `${notificationKey}:updated:${nextConsultantId}`,
+        });
+      }
+    }
     if (changes.length) {
       await recordAgencyHistory({
         agencyId: agency._id,
