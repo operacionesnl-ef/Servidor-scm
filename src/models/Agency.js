@@ -20,7 +20,7 @@ const drivePatternEntrySchema = new mongoose.Schema(
 const agencySchema = new mongoose.Schema(
   {
     nombre: { type: String, required: true, trim: true },
-    nombreEmpresa: { type: String, trim: true },
+    razonSocial: { type: String, trim: true },
     direccion: { type: String, trim: true },
     longitud: { type: Number, min: -180, max: 180 },
     latitud: { type: Number, min: -90, max: 90 },

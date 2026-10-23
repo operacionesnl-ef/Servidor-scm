@@ -18,7 +18,23 @@ function auditActivity(req, res, next) {
     const path = `${req.baseUrl}${req.path}`;
     const user = req.user;
     const readOnly = method === 'GET' || method === 'HEAD';
-    const safeRequestData = sanitizeAuditValue(readOnly ? req.query : req.body || {});
+    const isForReportRequest = path.startsWith('/api/for-aud-amb');
+    const reportRequestSummary = {
+      reportId: req.params?.reportId,
+      evidenceId: req.params?.evidenceId,
+      imageId: req.params?.imageId,
+      agencyId: req.body?.agencyId || req.query?.agencyId,
+      inspectionDate: req.body?.generalData?.inspectionDate || req.query?.inspectionDate,
+      status: req.body?.status,
+      aspectCount: Array.isArray(req.body?.environmentalAspects) ? req.body.environmentalAspects.length : undefined,
+      evidenceCount: Array.isArray(req.body?.evidence) ? req.body.evidence.length : undefined,
+      imageCount: Array.isArray(req.body?.evidence)
+        ? req.body.evidence.reduce((total, entry) => total + (Array.isArray(entry.images) ? entry.images.length : 0), 0)
+        : undefined,
+    };
+    const safeRequestData = sanitizeAuditValue(isForReportRequest
+      ? Object.fromEntries(Object.entries(reportRequestSummary).filter(([, value]) => value !== undefined))
+      : (readOnly ? req.query : req.body || {}));
     const entry = {
       timestamp: finishedAt.toISOString(),
       user: user

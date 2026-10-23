@@ -75,7 +75,7 @@ const updateAgencySearchPeriod = async (req, res, next) => {
 
 const ALLOWED_FIELDS = new Set([
   'nombre',
-  'nombreEmpresa',
+  'razonSocial',
   'direccion',
   'longitud',
   'latitud',
@@ -97,7 +97,7 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const REQUIRED_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 const AGENCY_HISTORY_FIELD_LABELS = {
   nombre: 'Nombre',
-  nombreEmpresa: 'Empresa',
+  razonSocial: 'Razon Social',
   direccion: 'Dirección',
   longitud: 'Longitud',
   latitud: 'Latitud',
@@ -242,7 +242,7 @@ const validateAgencyInput = (body, partial) => {
     }
   }
 
-  for (const field of ['nombreEmpresa', 'direccion']) {
+  for (const field of ['razonSocial', 'direccion']) {
     if (body[field] === undefined) continue;
     if (typeof body[field] !== 'string') {
       errors[field] = 'Must be a string';
@@ -534,14 +534,14 @@ const updateAgency = async (req, res, next) => {
     if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
 
     const historyFields = [
-      'nombre', 'nombreEmpresa', 'direccion', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente',
+      'nombre', 'razonSocial', 'direccion', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente',
       'seguimiento', 'cc', 'cco', 'entidadFederativa', 'status', 'consultantId', 'archivos',
     ];
     const previousValues = Object.fromEntries(
       historyFields.map((field) => [field, historyValue(getAgencyField(agency, field))]),
     );
     for (const field of [
-      'nombre','nombreEmpresa','direccion', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
+      'nombre','razonSocial','direccion', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
       'cc', 'cco', 'entidadFederativa', 'status', 'consultantId',
     ]) {
       if (value[field] !== undefined) agency.set(field, value[field]);

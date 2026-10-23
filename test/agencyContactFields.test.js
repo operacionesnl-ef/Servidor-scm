@@ -31,12 +31,12 @@ test('validates and trims agency company name and address', () => {
   const { errors, value } = validateAgencyInput({
     nombre: 'Agencia Centro',
     entidadFederativa: 'Jalisco',
-    nombreEmpresa: '  Empresa Centro  ',
+    razonSocial: '  Empresa Centro  ',
     direccion: '  Av. Central 123  ',
   }, false);
 
   assert.deepEqual(errors, {});
-  assert.equal(value.nombreEmpresa, 'Empresa Centro');
+  assert.equal(value.razonSocial, 'Empresa Centro');
   assert.equal(value.direccion, 'Av. Central 123');
 });
 
@@ -44,11 +44,11 @@ test('rejects non-string agency company name and address', () => {
   const { errors } = validateAgencyInput({
     nombre: 'Agencia Centro',
     entidadFederativa: 'Jalisco',
-    nombreEmpresa: 42,
+    razonSocial: 42,
     direccion: null,
   }, false);
 
-  assert.equal(errors.nombreEmpresa, 'Must be a string');
+  assert.equal(errors.razonSocial, 'Must be a string');
   assert.equal(errors.direccion, 'Must be a string');
 });
 

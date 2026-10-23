@@ -12,6 +12,8 @@ const templateRoutes = require('./templateRoutes');
 const notificationRoutes = require('./notificationRoutes');
 const adminRoutes = require('./adminRoutes');
 const calendarRoutes = require('./calendarRoutes');
+const googleDriveRoutes = require('./googleDriveRoutes');
+const forReportRoutes = require('./forReportRoutes');
 const requireAuth = require('../middlewares/requireAuth');
 
 const denyConsultor = (req, res, next) => {
@@ -32,5 +34,7 @@ router.use('/users', requireAuth, denyConsultor, userRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/admin', requireAuth, denyConsultor, adminRoutes);
 router.use('/calendar', calendarRoutes);
+router.use('/google-drive', googleDriveRoutes);
+router.use('/for-aud-amb', forReportRoutes);
 
 module.exports = router;
