@@ -33,6 +33,8 @@ async function findOrCreateFolder(drive, parentId, folderName) {
     spaces: 'drive',
     pageSize: 10,
     fields: 'files(id,name,mimeType)',
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
   });
   if (data.files?.length > 1) {
     throw new Error(`Se encontraron carpetas duplicadas con el nombre ${folderName}.`);
@@ -46,8 +48,72 @@ async function findOrCreateFolder(drive, parentId, folderName) {
       parents: [parentId],
     },
     fields: 'id,name,mimeType',
+    supportsAllDrives: true,
   });
   return createdFolder;
+}
+
+async function findOrCreateAuxiliaryFolder(drive) {
+  const { rootFolderId } = getGoogleDriveOAuthConfig();
+  if (!rootFolderId) throw new Error('Falta configurar GOOGLE_DRIVE_ROOT_FOLDER_ID para crear copias auxiliares.');
+  return findOrCreateFolder(drive, rootFolderId, 'Copias_auxiliares');
+}
+
+async function createOrGetPublicDriveCopy(drive, { sourceDriveId, folderId, fileName }) {
+  if (!sourceDriveId || !folderId || !fileName) {
+    throw new TypeError('Se requieren archivo original, carpeta auxiliar y nombre para crear una copia.');
+  }
+
+  const existingCopy = await findDriveFileByAppProperties(drive, folderId, { scmOriginalDriveId: sourceDriveId });
+  let copy = existingCopy;
+  if (!copy) {
+    const { data } = await drive.files.copy({
+      fileId: sourceDriveId,
+      supportsAllDrives: true,
+      requestBody: {
+        name: fileName,
+        parents: [folderId],
+        appProperties: { scmOriginalDriveId: sourceDriveId },
+      },
+      fields: 'id,name,mimeType,webViewLink,size,parents,appProperties',
+    });
+    copy = data;
+  }
+
+  if (!copy.webViewLink) {
+    const { data } = await drive.files.get({
+      fileId: copy.id,
+      fields: 'id,name,webViewLink',
+      supportsAllDrives: true,
+    });
+    copy = { ...copy, ...data };
+  }
+  if (!copy.webViewLink) throw new Error(`Drive no devolvió un enlace para la copia de ${fileName}.`);
+
+  const { data: permissionData } = await drive.permissions.list({
+    fileId: copy.id,
+    fields: 'permissions(id,type,role)',
+    supportsAllDrives: true,
+  });
+  const publicPermission = (permissionData.permissions || []).find((permission) => permission.type === 'anyone');
+  if (publicPermission?.role !== 'reader') {
+    if (publicPermission) {
+      await drive.permissions.update({
+        fileId: copy.id,
+        permissionId: publicPermission.id,
+        requestBody: { role: 'reader', allowFileDiscovery: false },
+        supportsAllDrives: true,
+      });
+    } else {
+      await drive.permissions.create({
+        fileId: copy.id,
+        requestBody: { type: 'anyone', role: 'reader', allowFileDiscovery: false },
+        fields: 'id,type,role',
+        supportsAllDrives: true,
+      });
+    }
+  }
+  return copy;
 }
 
 async function findDriveFileByAppProperties(drive, folderId, appProperties) {
@@ -59,6 +125,8 @@ async function findDriveFileByAppProperties(drive, folderId, appProperties) {
     spaces: 'drive',
     pageSize: 10,
     fields: 'files(id,name,mimeType,parents,size,md5Checksum,appProperties)',
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
   });
   if (data.files?.length > 1) {
     throw new Error('Drive contiene más de un archivo con la misma identidad de evidencia.');
@@ -119,8 +187,10 @@ async function deleteDriveFile(drive, fileId) {
 
 module.exports = {
   deleteDriveFile,
+  createOrGetPublicDriveCopy,
   findDriveFileByAppProperties,
   findOrCreateFolder,
+  findOrCreateAuxiliaryFolder,
   findOrCreateRootFolder,
   getDriveFileMetadata,
   getRootFolderStatus,

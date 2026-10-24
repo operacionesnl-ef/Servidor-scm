@@ -27,7 +27,9 @@ Las plantillas y cada agencia admiten hasta 20 direcciones CC y 20 CCO; al envia
 
 Las plantillas también indican cuáles archivos individuales de agencia son opcionales. El servidor omite esos archivos cuando la agencia no los tiene y sigue rechazando el envío si falta un archivo marcado como obligatorio.
 
-El front solicita los permisos `gmail.send` y `drive.readonly`, valida los destinatarios y crea un trabajo en `POST /api/mail-jobs` con la sesión autenticada y el access token temporal de Google. La sesión se envía mediante cookie segura. El servidor comprueba que la cuenta Google verificada coincide con la cuenta de sesión y que los permisos necesarios estén concedidos.
+El front solicita los permisos `gmail.send` y `drive`, valida los destinatarios y crea un trabajo en `POST /api/mail-jobs` con la sesión autenticada y el access token temporal de Google. La sesión se envía mediante cookie segura. El servidor comprueba que la cuenta Google verificada coincide con la cuenta de sesión y que los permisos necesarios estén concedidos. El permiso `drive` es amplio; el proyecto OAuth de Google puede requerir configuración o verificación adicional.
+
+Los adjuntos que exceden 25 MiB, o que harían que el total adjunto exceda ese límite, se copian una sola vez a `Copias_auxiliares` dentro de `GOOGLE_DRIVE_ROOT_FOLDER_ID`. Solo la copia recibe permiso `anyone` de lector y el correo incluye su enlace; el original no se modifica. Las copias y sus enlaces públicos se conservan indefinidamente. Cualquier persona que obtenga el enlace podrá ver la copia; revisa las políticas de Google Workspace antes de habilitar el permiso.
 
 Los trabajos y su avance se guardan en MongoDB. `GET /api/mail-jobs/active` recupera el trabajo activo y `GET /api/mail-jobs/:jobId` consulta uno específico; ambas rutas están limitadas al usuario dueño del trabajo. El navegador conserva solo el ID del trabajo para volver a consultar el estado después de recargar. El access token se cifra con AES-256-GCM usando una clave derivada de `JWT_SECRET`, no se devuelve por las rutas ni se escribe en logs, y el registro terminal se elimina después de 30 días.
 

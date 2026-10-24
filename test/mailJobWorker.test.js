@@ -3,7 +3,75 @@
 const assert = require('node:assert/strict');
 const { Readable } = require('node:stream');
 const { test } = require('node:test');
-const { buildAttachments } = require('../src/services/mailJobWorker');
+const { assertGmailRawMessageBytes, buildAttachments } = require('../src/services/mailJobWorker');
+
+test('rejects encoded Gmail messages above the API size limit before sending', () => {
+  assert.throws(
+    () => assertGmailRawMessageBytes(35 * 1024 * 1024 + 1),
+    /excede el límite de tamaño que acepta Gmail/,
+  );
+  assert.doesNotThrow(() => assertGmailRawMessageBytes(1024));
+});
+
+test('copies oversized files to the auxiliary folder and shares only the copy', async (context) => {
+  const originalRoot = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
+  process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID = 'root-folder';
+  context.after(() => {
+    if (originalRoot === undefined) delete process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
+    else process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID = originalRoot;
+  });
+
+  const calls = [];
+  const drive = {
+    files: {
+      async get({ fileId, alt }) {
+        calls.push(['get', fileId, alt]);
+        if (alt === 'media') assert.fail('oversized file should not be downloaded');
+        return { data: { id: fileId, name: 'large.pdf', mimeType: 'application/pdf', size: String(25 * 1024 * 1024 + 1) } };
+      },
+      async list(request) {
+        calls.push(['list', request.q]);
+        return { data: { files: [] } };
+      },
+      async create(request) {
+        calls.push(['folder-create', request.requestBody]);
+        return { data: { id: 'aux-folder', name: 'Copias_auxiliares' } };
+      },
+      async copy(request) {
+        calls.push(['copy', request]);
+        return { data: { id: 'copy-1', name: 'large.pdf', webViewLink: 'https://drive.google.com/file/d/copy-1/view' } };
+      },
+    },
+    permissions: {
+      async list(request) {
+        calls.push(['permissions-list', request.fileId]);
+        return { data: { permissions: [] } };
+      },
+      async create(request) {
+        calls.push(['permissions-create', request.requestBody]);
+        return { data: { id: 'public-reader', type: 'anyone', role: 'reader' } };
+      },
+    },
+  };
+
+  const attachments = await buildAttachments(drive, {
+    agencyName: 'Agencia de prueba',
+    attachments: [{ code: 'FOR', driveId: 'source-1', nombre: 'large.pdf' }],
+  }, []);
+
+  assert.deepEqual(attachments, [{
+    nombre: 'large.pdf',
+    driveId: 'copy-1',
+    driveLink: 'https://drive.google.com/file/d/copy-1/view',
+    code: 'FOR',
+  }]);
+  assert.equal(calls.find(([call]) => call === 'copy')[1].requestBody.parents[0], 'aux-folder');
+  assert.deepEqual(calls.find(([call]) => call === 'permissions-create')[1], {
+    type: 'anyone',
+    role: 'reader',
+    allowFileDiscovery: false,
+  });
+});
 
 test('continues preparing attachments when an optional Drive file cannot be read', async () => {
   const drive = {
@@ -34,4 +102,3 @@ test('continues preparing attachments when an optional Drive file cannot be read
   assert.equal(attachments[0].code, 'FOR');
   assert.equal(attachments[0].content.toString(), 'report');
 });
-

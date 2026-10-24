@@ -24,6 +24,7 @@ const {
   getDriveFileMetadata,
   uploadDriveFile,
 } = require('../services/googleDriveService');
+const { ImageProcessingError, processForReportImage } = require('../services/forReportImageProcessor');
 
 const WRITABLE_ROLES = new Set(['admin', 'developer', 'user', 'consultor']);
 const IMAGE_EXTENSIONS = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
@@ -295,6 +296,16 @@ async function uploadReportImage(req, res, next) {
       });
     }
 
+    let processedImage;
+    try {
+      processedImage = await processForReportImage(req.file.buffer, mimeType);
+    } catch (error) {
+      if (error instanceof ImageProcessingError) {
+        throw new RequestError(422, error.message);
+      }
+      throw error;
+    }
+
     const drive = createGoogleDriveClient();
     const folderId = await ensureEvidenceFolder(drive, report);
     const appProperties = {
@@ -309,7 +320,7 @@ async function uploadReportImage(req, res, next) {
       folderId,
       fileName: driveName,
       mimeType,
-      body: Readable.from([req.file.buffer]),
+      body: Readable.from([processedImage.buffer]),
       appProperties,
     });
     if (driveFile.name !== driveName || !driveFile.parents?.includes(folderId)) {
@@ -320,7 +331,7 @@ async function uploadReportImage(req, res, next) {
     image.driveFileId = metadata.id;
     image.fileName = sanitizeOriginalName(req.file.originalname);
     image.mimeType = mimeType;
-    image.sizeBytes = Number(metadata.size) || req.file.size;
+    image.sizeBytes = Number(metadata.size) || processedImage.buffer.length;
     image.checksum = metadata.md5Checksum || '';
     image.status = 'active';
     image.uploadedAt = new Date();

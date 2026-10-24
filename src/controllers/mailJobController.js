@@ -13,7 +13,7 @@ const { getFilePeriod } = require('../utils/agencyFileRefreshUtils');
 const CODE_TO_KEY = { ANX: 'archivo1', FOR: 'archivo2', REP: 'archivo3', REV: 'archivo4' };
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const REQUIRED_GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
-const REQUIRED_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+const REQUIRED_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 
 function isValidOptionalAttachment(file, year, month) {
   if (!file?.driveId || !Number.isInteger(year) || !Number.isInteger(month)) return false;
@@ -164,7 +164,7 @@ async function createMailJob(req, res, next) {
       recipient.attachments.length > 0
     ));
     if (needsDrive && !scopes.includes(REQUIRED_DRIVE_SCOPE)) {
-      return res.status(403).json({ message: 'Falta el permiso de lectura de Google Drive para descargar los adjuntos.' });
+      return res.status(403).json({ message: 'Falta el permiso de Google Drive para preparar adjuntos y compartir copias auxiliares. Autoriza Drive e inténtalo de nuevo.' });
     }
 
     const job = await MailJob.create({
