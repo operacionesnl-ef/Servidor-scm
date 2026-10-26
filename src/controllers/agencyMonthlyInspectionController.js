@@ -6,6 +6,7 @@ const AgencyMonthlyInspection = require('../models/AgencyMonthlyInspection');
 const CalendarEvent = require('../models/CalendarEvent');
 const { success } = require('../utils/response');
 const { recordAgencyHistory } = require('../services/agencyHistory');
+const { notifyConsultant } = require('../services/consultantNotifications');
 
 const AUTHORIZATION_STATUSES = new Set(['pending', 'authorized', 'unauthorized']);
 
@@ -73,9 +74,9 @@ async function getMonthlyInspection(req, res, next) {
 async function getMonthlyInspectionOverview(req, res, next) {
   if (!validPeriod(req.params.period, res)) return;
   try {
-    const agencies = await Agency.find({})
-      .select('_id nombre')
-      .lean();
+    const agencies = await Agency.find({
+      ...(req.user?.rol === 'consultor' ? { consultantId: req.user._id } : {}),
+    }).select('_id nombre').lean();
     const agencyIds = agencies.map((agency) => agency._id);
     const records = agencyIds.length
       ? await AgencyMonthlyInspection.find({ agencyId: { $in: agencyIds }, period: req.params.period })
@@ -131,12 +132,22 @@ async function updateMonthlyAuthorization(req, res, next) {
     const previous = await AgencyMonthlyInspection.findOne({
       agencyId: req.params.id,
       period: req.params.period,
-    }).select('authorizationStatus').lean();
+    }).select('authorizationStatus calendarEventId').lean();
     const record = await AgencyMonthlyInspection.findOneAndUpdate(
       { agencyId: req.params.id, period: req.params.period },
       { $set: { authorizationStatus }, $setOnInsert: { visitStatus: 'scheduled' } },
       { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
     );
+    if (record.calendarEventId) {
+      try {
+        await CalendarEvent.updateOne(
+          { _id: record.calendarEventId, agencyId: agency._id, type: 'agency_visit' },
+          { $set: { authorized: authorizationStatus === 'authorized', updatedBy: req.user._id } },
+        );
+      } catch (error) {
+        console.error('[Calendar] No se pudo sincronizar la autorización de la visita:', error.message);
+      }
+    }
     if ((previous?.authorizationStatus || 'pending') !== authorizationStatus) {
       await recordAgencyHistory({
         agencyId: agency._id,
@@ -149,6 +160,20 @@ async function updateMonthlyAuthorization(req, res, next) {
           to: authorizationStatus,
         },
       });
+      if (agency.consultantId && authorizationStatus !== 'pending') {
+        const approved = authorizationStatus === 'authorized';
+        await notifyConsultant({
+          consultantId: agency.consultantId,
+          title: approved ? 'Visita autorizada' : 'Visita no autorizada',
+          message: approved
+            ? `Se autorizó tu visita a ${agency.nombre} para el período ${req.params.period}.`
+            : `La visita a ${agency.nombre} para el período ${req.params.period} no fue autorizada.`,
+          notificationType: approved ? 'visit_authorized' : 'visit_not_authorized',
+          actionUrl: `/agencias/${agency._id}?tab=inspections`,
+          agencyId: agency._id,
+          idempotencyKey: `monthly:${agency._id}:${req.params.period}:authorization:${authorizationStatus}:${record.updatedAt.getTime()}`,
+        });
+      }
     }
     return success(res, serializeRecord(record), 'Monthly authorization updated');
   } catch (error) {
@@ -201,70 +226,43 @@ async function scheduleMonthlyVisit(req, res, next) {
   if (!validAgencyId(req.params.id, res) || !validPeriod(req.params.period, res)) return;
   const { errors, value } = validateVisitBody(req.body);
   if (Object.keys(errors).length) return validationFailure(res, errors);
+
   try {
     const agency = await findAgencyOr404(req.params.id, res);
     if (!agency) return;
+
     if (!agency.consultantId) {
       return validationFailure(res, { consultantId: 'Agency has no responsible consultant assigned' });
     }
-    const existingRecord = await AgencyMonthlyInspection.findOne({
-      agencyId: agency._id,
-      period: req.params.period,
-    });
-    if (existingRecord?.authorizationStatus !== 'authorized') {
+
+    // ── Obtener o crear el registro mensual ──────────────────────────────
+    const record = await AgencyMonthlyInspection.findOneAndUpdate(
+      { agencyId: agency._id, period: req.params.period },
+      { $setOnInsert: { authorizationStatus: 'pending', visitStatus: 'scheduled' } },
+      { new: true, upsert: true, setDefaultsOnInsert: true },
+    );
+
+    // ── Verificar autorización ───────────────────────────────────────────
+    if (record.authorizationStatus !== 'authorized') {
       return res.status(409).json({
         success: false,
         message: 'No se puede programar la visita mensual hasta que la autorización del período esté autorizada.',
         code: 'MONTHLY_AUTHORIZATION_REQUIRED',
       });
     }
-    await AgencyMonthlyInspection.updateOne(
-      { agencyId: agency._id, period: req.params.period },
-      { $setOnInsert: { authorizationStatus: 'pending', visitStatus: 'scheduled' } },
-      { upsert: true, setDefaultsOnInsert: true },
-    );
-    const record = await AgencyMonthlyInspection.findOne({
-      agencyId: agency._id,
-      period: req.params.period,
-    });
-    let eventId = record.calendarEventId;
-    const linkedEventExists = eventId && await CalendarEvent.exists({
-      _id: eventId,
-      agencyId: agency._id,
-      type: 'agency_visit',
-    });
-    if (eventId && !linkedEventExists) {
-      const reset = await AgencyMonthlyInspection.updateOne(
-        { _id: record._id, calendarEventId: eventId },
-        { $set: { calendarEventId: null, visitStatus: 'scheduled' } },
-      );
-      if (reset.modifiedCount) {
-        eventId = null;
-      } else {
-        const latest = await AgencyMonthlyInspection.findById(record._id).lean();
-        eventId = latest?.calendarEventId || null;
-      }
-    }
-    if (!eventId) {
-      eventId = new mongoose.Types.ObjectId();
-      const reserved = await AgencyMonthlyInspection.updateOne(
-        { _id: record._id, calendarEventId: null },
-        { $set: { calendarEventId: eventId, visitStatus: 'scheduled' } },
-      );
-      if (!reserved.modifiedCount) {
-        const latest = await AgencyMonthlyInspection.findById(record._id).lean();
-        if (!latest?.calendarEventId) {
-          return res.status(409).json({ success: false, message: 'Monthly visit is already being scheduled.' });
-        }
-        eventId = latest.calendarEventId;
-      }
-    }
-    if (await CalendarEvent.exists({ _id: eventId })) {
-      return res.status(409).json({ success: false, message: 'A calendar visit is already linked to this period.' });
+
+    // ── Bloquear reprogramación si la visita ya fue completada ───────────
+    if (record.visitStatus === 'completed') {
+      return res.status(409).json({
+        success: false,
+        message: 'La visita de este período ya fue marcada como realizada y no puede reprogramarse.',
+        code: 'MONTHLY_VISIT_ALREADY_COMPLETED',
+      });
     }
 
-    const event = await CalendarEvent.create({
-      _id: eventId,
+    // ── Datos del evento a crear o actualizar ────────────────────────────
+    const isRescheduling = Boolean(record.calendarEventId);
+    const eventData = {
       title: `Visita: ${agency.nombre}`,
       type: 'agency_visit',
       startAt: value.startAt,
@@ -274,22 +272,97 @@ async function scheduleMonthlyVisit(req, res, next) {
       notes: req.body.notes?.trim() || '',
       authorized: true,
       reminders: req.body.reminders || { enabled: false, minutesBefore: [] },
-      createdBy: req.user._id,
       updatedBy: req.user._id,
+    };
+
+    let event;
+
+    if (record.calendarEventId) {
+      // ── Ya existe un evento vinculado: actualizarlo (reprogramación) ───
+      event = await CalendarEvent.findOneAndUpdate(
+        { _id: record.calendarEventId, agencyId: agency._id, type: 'agency_visit' },
+        { $set: eventData },
+        { new: true },
+      );
+
+      if (!event) {
+        // El ID quedó huérfano — limpiar y crear uno nuevo
+        await AgencyMonthlyInspection.updateOne(
+          { _id: record._id },
+          { $set: { calendarEventId: null, visitStatus: 'scheduled' } },
+        );
+        record.calendarEventId = null;
+      }
+    }
+
+    if (!event) {
+      // ── Crear evento nuevo ─────────────────────────────────────────────
+      const newEventId = new mongoose.Types.ObjectId();
+
+      // Reservar el ID en el registro antes de escribir en CalendarEvent
+      const reserved = await AgencyMonthlyInspection.updateOne(
+        { _id: record._id, calendarEventId: null },
+        { $set: { calendarEventId: newEventId, visitStatus: 'scheduled' } },
+      );
+
+      if (!reserved.modifiedCount) {
+        // Otra petición se adelantó y reservó un ID — devolver el estado actual
+        const latest = await AgencyMonthlyInspection.findById(record._id).lean();
+        return res.status(409).json({
+          success: false,
+          message: 'La visita ya está siendo programada por otra solicitud. Recarga la página.',
+          code: 'MONTHLY_VISIT_CONCURRENT',
+          record: latest ? serializeRecord(latest) : null,
+        });
+      }
+
+      event = await CalendarEvent.create({
+        _id: newEventId,
+        ...eventData,
+        createdBy: req.user._id,
+      });
+    }
+
+    // ── Actualizar visitStatus a 'scheduled' si no lo estaba ya ─────────
+    await AgencyMonthlyInspection.updateOne(
+      { _id: record._id },
+      { $set: { visitStatus: 'scheduled', calendarEventId: event._id } },
+    );
+    const visitDate = new Date(event.startAt).toLocaleString('es-MX', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: 'America/Mexico_City',
     });
+    await notifyConsultant({
+      consultantId: agency.consultantId,
+      title: isRescheduling ? 'Cambio de visita' : 'Visita programada',
+      message: isRescheduling
+        ? `La visita a ${agency.nombre} cambió. Nueva fecha: ${visitDate}.`
+        : `Tu visita a ${agency.nombre} está programada para el ${visitDate}.`,
+      notificationType: isRescheduling ? 'visit_changed' : 'visit_scheduled',
+      actionUrl: `/agencias/${agency._id}?tab=inspections`,
+      agencyId: agency._id,
+      idempotencyKey: `monthly:${agency._id}:${req.params.period}:${isRescheduling ? 'rescheduled' : 'scheduled'}:${event.startAt.getTime()}`,
+    });
+
     await recordAgencyHistory({
       agencyId: agency._id,
       actor: req.user,
       action: 'monthly_visit_scheduled',
-      summary: 'Visita mensual programada',
+      summary: record.calendarEventId
+        ? 'Visita mensual reprogramada'
+        : 'Visita mensual programada',
       details: {
         period: req.params.period,
         startAt: event.startAt,
         endAt: event.endAt,
       },
     });
+
+    const updatedRecord = await AgencyMonthlyInspection.findById(record._id).lean();
+
     return success(res, {
-      record: serializeRecord(await AgencyMonthlyInspection.findById(record._id).lean()),
+      record: serializeRecord(updatedRecord),
       calendarEvent: {
         id: String(event._id),
         title: event.title,
@@ -300,9 +373,13 @@ async function scheduleMonthlyVisit(req, res, next) {
         consultantId: String(event.consultantId),
       },
     }, 'Monthly visit scheduled', 201);
+
   } catch (error) {
     if (error.code === 11000) {
-      return res.status(409).json({ success: false, message: 'A calendar visit is already linked to this period.' });
+      return res.status(409).json({
+        success: false,
+        message: 'A calendar visit is already linked to this period.',
+      });
     }
     if (error.name === 'ValidationError') {
       return validationFailure(res, Object.fromEntries(
@@ -315,17 +392,31 @@ async function scheduleMonthlyVisit(req, res, next) {
 
 async function updateMonthlyVisitStatus(req, res, next) {
   if (!validAgencyId(req.params.id, res) || !validPeriod(req.params.period, res)) return;
+  if (!['admin', 'developer', 'consultor'].includes(req.user?.rol)) {
+    return res.status(403).json({ success: false, message: 'You are not authorized to mark visits as completed.' });
+  }
   if (Object.keys(req.body || {}).some((field) => field !== 'status')
     || req.body?.status !== 'completed') {
     return validationFailure(res, { status: 'Must be completed; create a calendar visit to schedule it' });
   }
   try {
+    if (req.user?.rol === 'consultor'
+      && !await Agency.exists({ _id: req.params.id, consultantId: req.user._id })) {
+      return res.status(404).json({ success: false, message: 'Agency not found' });
+    }
     const record = await AgencyMonthlyInspection.findOne({
       agencyId: req.params.id,
       period: req.params.period,
     });
     if (!record) return res.status(404).json({ success: false, message: 'Monthly inspection not found' });
-    if (!record.calendarEventId || !await CalendarEvent.exists({ _id: record.calendarEventId })) {
+    if (record.visitStatus !== 'scheduled') {
+      return res.status(409).json({ success: false, message: 'Only a scheduled visit can be marked as completed.' });
+    }
+    if (!record.calendarEventId || !await CalendarEvent.exists({
+      _id: record.calendarEventId,
+      agencyId: req.params.id,
+      type: 'agency_visit',
+    })) {
       return validationFailure(res, { status: 'A linked calendar visit is required before completion' });
     }
     record.visitStatus = 'completed';

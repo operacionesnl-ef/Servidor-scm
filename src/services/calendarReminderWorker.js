@@ -2,6 +2,7 @@
 
 const CalendarEvent = require('../models/CalendarEvent');
 const pushNotificationService = require('./pushNotificationService');
+const { createConsultantNotification } = require('./consultantNotifications');
 const { dispatchMonthlyInspectionReminders } = require('./agencyMonthlyInspectionReminders');
 const { logEvent } = require('../utils/consoleLogger');
 
@@ -14,7 +15,19 @@ function getDispatchKey(event, userId, minutesBefore) {
   return `${event.startAt.getTime()}:${userId}:${minutesBefore}`;
 }
 
-async function dispatchOneReminder(event, minutesBefore) {
+function formatTimeUntilVisit(startAt, now) {
+  const minutes = Math.max(1, Math.ceil((startAt.getTime() - now.getTime()) / 60_000));
+  if (minutes < 60) return `${minutes} ${minutes === 1 ? 'minuto' : 'minutos'}`;
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  const hourLabel = `${hours} ${hours === 1 ? 'hora' : 'horas'}`;
+  return remainingMinutes
+    ? `${hourLabel} y ${remainingMinutes} ${remainingMinutes === 1 ? 'minuto' : 'minutos'}`
+    : hourLabel;
+}
+
+async function dispatchOneReminder(event, minutesBefore, now) {
   const userId = String(event.consultantId);
   const dispatchKey = getDispatchKey(event, userId, minutesBefore);
   const claimed = await CalendarEvent.updateOne(
@@ -32,18 +45,50 @@ async function dispatchOneReminder(event, minutesBefore) {
   if (!claimed.modifiedCount) return false;
 
   try {
-    const result = await pushNotificationService.sendPushToUser(event.consultantId, {
-      title: `Recordatorio: ${event.title}`,
-      body: 'Tienes un evento próximo en el calendario operacional.',
-      url: '/notificaciones',
-      tag: `calendar-reminder-${String(event._id)}-${minutesBefore}-${event.startAt.getTime()}`,
+    const agency = event.agencyId && typeof event.agencyId === 'object' ? event.agencyId : null;
+    const agencyName = agency?.nombre || event.title || 'tu evento';
+    const visitDate = event.startAt.toLocaleString('es-MX', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: 'America/Mexico_City',
     });
-    if (!result.sent) {
+    const isVisitToday = event.startAt.toLocaleDateString('es-MX', {
+      timeZone: 'America/Mexico_City',
+    }) === now.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
+    const notification = await createConsultantNotification({
+      consultantId: event.consultantId,
+      title: `Recordatorio: ${agencyName}`,
+      message: event.type === 'agency_visit'
+        ? isVisitToday
+          ? `Tienes que ir a ${agencyName}; tienes una visita hoy en ${formatTimeUntilVisit(event.startAt, now)}.`
+          : `Tienes que ir a ${agencyName}; tu visita está programada para el ${visitDate} (en ${formatTimeUntilVisit(event.startAt, now)}).`
+        : `${agencyName} está programado para el ${visitDate}.`,
+      notificationType: event.type === 'agency_visit' ? 'visit_reminder' : 'calendar_reminder',
+      actionUrl: agency
+        ? `/agencias/${agency._id}?tab=inspections`
+        : '/calendario',
+      agencyId: agency?._id || null,
+      idempotencyKey: `calendar-reminder:${event._id}:${minutesBefore}:${event.startAt.getTime()}`,
+    });
+    if (!notification) {
       await CalendarEvent.updateOne(
         { _id: event._id },
         { $pull: { reminderDispatchKeys: dispatchKey } },
       );
       return false;
+    }
+    const result = await pushNotificationService.sendPushToUser(event.consultantId, {
+      title: notification.title,
+      body: notification.message,
+      url: notification.actionUrl,
+      tag: `calendar-reminder-${String(event._id)}-${minutesBefore}-${event.startAt.getTime()}`,
+    });
+    if (!result.sent && result.total > 0) {
+      logEvent('calendar_reminder_web_push_not_delivered', {
+        eventId: String(event._id),
+        consultantId: userId,
+        subscriptions: result.total,
+      });
     }
     return true;
   } catch (error) {
@@ -63,14 +108,21 @@ async function dispatchCalendarReminders(now = new Date()) {
     'reminders.enabled': true,
     startAt: { $gt: now, $lte: latestStartAt },
   })
-    .select('_id title startAt consultantId reminders')
+    .populate('agencyId', 'nombre consultantId')
+    .select('_id title type startAt consultantId reminders agencyId')
     .lean();
 
   let dispatched = 0;
   for (const event of events) {
+    if (event.type === 'agency_visit'
+      && (!event.agencyId?.consultantId
+        || String(event.agencyId.consultantId) !== String(event.consultantId))) {
+      logEvent('calendar_reminder_recipient_mismatch', { eventId: String(event._id) });
+      continue;
+    }
     for (const minutesBefore of event.reminders?.minutesBefore || []) {
       const dueAt = new Date(event.startAt.getTime() - minutesBefore * 60 * 1000);
-      if (dueAt <= now && await dispatchOneReminder(event, minutesBefore)) dispatched += 1;
+      if (dueAt <= now && await dispatchOneReminder(event, minutesBefore, now)) dispatched += 1;
     }
   }
   return { events: events.length, dispatched };

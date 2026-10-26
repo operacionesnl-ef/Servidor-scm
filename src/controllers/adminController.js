@@ -4,9 +4,9 @@ const os = require('node:os');
 const { once } = require('node:events');
 const mongoose = require('mongoose');
 const Agency = require('../models/Agency');
+const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
 const MailLog = require('../models/Maillog');
-const { getFilePeriod } = require('../utils/agencyFileRefreshUtils');
 require('../models/AuthSession');
 
 const FILE_FIELDS = ['archivo1', 'archivo2', 'archivo3', 'archivo4'];
@@ -50,8 +50,11 @@ async function getDashboard(req, res, next) {
   }
 
   try {
-    const [agencies, mailLogs, latestIntegrityByAgency] = await Promise.all([
+    const [agencies, monthlyRecords, mailLogs, latestIntegrityByAgency] = await Promise.all([
       Agency.find().select('nombre correo status archivos').lean(),
+      AgencyMonthlyFiles.find({
+        period: `${period.year}-${String(period.month).padStart(2, '0')}`,
+      }).select('agencyId archivos').lean(),
       MailLog.find({
         $or: [
           { year: period.year, month: period.month },
@@ -86,17 +89,16 @@ async function getDashboard(req, res, next) {
     ]);
 
     const activeAgencies = agencies.filter((agency) => agency.status === 'activa');
+    const monthlyFilesByAgency = new Map(monthlyRecords.map((record) => [
+      String(record.agencyId),
+      record.archivos || {},
+    ]));
     const missingEmailAgencies = agencies.filter((agency) => (
       typeof agency.correo !== 'string' || !EMAIL_PATTERN.test(agency.correo.trim())
     ));
     const completeFileSlots = activeAgencies.reduce((total, agency) => (
       total + FILE_FIELDS.filter((field) => {
-        const file = agency.archivos?.[field];
-        if (!isCompleteFile(file)) return false;
-        const filePeriod = Number.isInteger(file.periodYear) && Number.isInteger(file.periodMonth)
-          ? { year: file.periodYear, month: file.periodMonth }
-          : getFilePeriod({ name: file.nombre, folderPath: file.pseudoPath || [], path: file.path || '' });
-        return filePeriod?.year === period.year && filePeriod?.month === period.month;
+        return isCompleteFile(monthlyFilesByAgency.get(String(agency._id))?.[field]);
       }).length
     ), 0);
     const requiredFileSlots = activeAgencies.length * FILE_FIELDS.length;

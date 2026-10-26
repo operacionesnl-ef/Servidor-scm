@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
 const Agency = require('../src/models/Agency');
+const AgencyMonthlyFiles = require('../src/models/AgencyMonthlyFiles');
 const AgencyRefreshJob = require('../src/models/AgencyRefreshJob');
 const MailJob = require('../src/models/MailJob');
 const Notification = require('../src/models/Notification');
@@ -44,6 +45,7 @@ test('notification feed limits process visibility to the authenticated user', as
   const userId = new mongoose.Types.ObjectId();
   const originalMethods = {
     agencyFind: Agency.find,
+    monthlyFilesFind: AgencyMonthlyFiles.find,
     globalSettingFindById: GlobalSetting.findById,
     notificationFind: Notification.find,
     refreshFind: AgencyRefreshJob.find,
@@ -54,6 +56,7 @@ test('notification feed limits process visibility to the authenticated user', as
   let notificationFilter;
 
   Agency.find = () => listQuery([]);
+  AgencyMonthlyFiles.find = () => listQuery([]);
   GlobalSetting.findById = () => ({ lean: async () => ({ year: 2026, month: 8 }) });
   Notification.find = (filter) => {
     notificationFilter = filter;
@@ -74,7 +77,8 @@ test('notification feed limits process visibility to the authenticated user', as
 
     assert.deepEqual(refreshFilter.owner, userId);
     assert.deepEqual(mailFilter.owner, userId);
-    assert.equal(notificationFilter.audience, 'all');
+    assert.equal(notificationFilter.$or[0].audience, 'all');
+    assert.deepEqual(notificationFilter.$or[1], { audience: 'personal', recipientUserId: userId });
     assert.equal(res.body.unreadCount, 0);
     const expectedPeriod = getMexicoPeriod(new Date());
     assert.deepEqual(
@@ -83,6 +87,7 @@ test('notification feed limits process visibility to the authenticated user', as
     );
   } finally {
     Agency.find = originalMethods.agencyFind;
+    AgencyMonthlyFiles.find = originalMethods.monthlyFilesFind;
     GlobalSetting.findById = originalMethods.globalSettingFindById;
     Notification.find = originalMethods.notificationFind;
     AgencyRefreshJob.find = originalMethods.refreshFind;
@@ -93,6 +98,7 @@ test('notification feed limits process visibility to the authenticated user', as
 test('notification feed exposes administrative process queries only to admin roles', async () => {
   const originalMethods = {
     agencyFind: Agency.find,
+    monthlyFilesFind: AgencyMonthlyFiles.find,
     globalSettingFindById: GlobalSetting.findById,
     notificationFind: Notification.find,
     refreshFind: AgencyRefreshJob.find,
@@ -102,6 +108,7 @@ test('notification feed exposes administrative process queries only to admin rol
   let notificationFilter;
 
   Agency.find = () => listQuery([]);
+  AgencyMonthlyFiles.find = () => listQuery([]);
   GlobalSetting.findById = () => ({ lean: async () => null });
   Notification.find = (filter) => {
     notificationFilter = filter;
@@ -118,9 +125,11 @@ test('notification feed exposes administrative process queries only to admin rol
     await getNotifications({ user: { _id: 'admin-id', rol: 'admin' } }, res, (error) => { throw error; });
 
     assert.equal(Object.hasOwn(refreshFilter, 'owner'), false);
-    assert.deepEqual(notificationFilter.audience, { $in: ['all', 'admin'] });
+    assert.deepEqual(notificationFilter.$or[0].audience, { $in: ['all', 'admin'] });
+    assert.deepEqual(notificationFilter.$or[1], { audience: 'personal', recipientUserId: 'admin-id' });
   } finally {
     Agency.find = originalMethods.agencyFind;
+    AgencyMonthlyFiles.find = originalMethods.monthlyFilesFind;
     GlobalSetting.findById = originalMethods.globalSettingFindById;
     Notification.find = originalMethods.notificationFind;
     AgencyRefreshJob.find = originalMethods.refreshFind;
@@ -128,9 +137,102 @@ test('notification feed exposes administrative process queries only to admin rol
   }
 });
 
+test('consultant feed includes only personal notices addressed to the authenticated consultant', async () => {
+  const userId = new mongoose.Types.ObjectId();
+  const otherUserId = new mongoose.Types.ObjectId();
+  const agencyId = new mongoose.Types.ObjectId();
+  const period = getMexicoPeriod(new Date());
+  const originalMethods = {
+    agencyFind: Agency.find,
+    monthlyFilesFind: AgencyMonthlyFiles.find,
+    globalSettingFindById: GlobalSetting.findById,
+    notificationFind: Notification.find,
+    refreshFind: AgencyRefreshJob.find,
+    mailFind: MailJob.find,
+  };
+  const notices = [
+    {
+      _id: new mongoose.Types.ObjectId(),
+      title: 'Visita programada',
+      message: 'Tu visita está programada.',
+      audience: 'personal',
+      recipientUserId: userId,
+      actionUrl: `/agencias/${agencyId}?tab=inspections`,
+      agencyId,
+      notificationType: 'visit_scheduled',
+      readBy: [],
+      createdAt: new Date(),
+    },
+    {
+      _id: new mongoose.Types.ObjectId(),
+      title: 'Otro consultor',
+      message: 'Aviso privado.',
+      audience: 'personal',
+      recipientUserId: otherUserId,
+      readBy: [],
+      createdAt: new Date(),
+    },
+  ];
+  Agency.find = () => listQuery([{ _id: agencyId, nombre: 'Agencia propia', status: 'activa', archivos: {} }]);
+  AgencyMonthlyFiles.find = () => listQuery([{
+    agencyId,
+    archivos: Object.fromEntries(['archivo1', 'archivo2', 'archivo3', 'archivo4'].map((key) => [
+      key,
+      { driveId: `${key}-drive`, periodYear: period.year, periodMonth: period.month },
+    ])),
+  }]);
+  GlobalSetting.findById = () => ({ lean: async () => null });
+  Notification.find = () => listQuery(notices);
+  AgencyRefreshJob.find = () => listQuery([]);
+  MailJob.find = () => listQuery([]);
+
+  try {
+    const res = response();
+    await getNotifications({
+      query: {},
+      user: { _id: userId, rol: 'consultor', readNotificationIds: [], quickViewHiddenNotifications: [] },
+    }, res, (error) => { throw error; });
+
+    assert.deepEqual(res.body.items.map((item) => item.title), ['Visita programada']);
+    assert.equal(res.body.items[0].category, 'personal');
+    assert.equal(res.body.items[0].actionUrl, `/agencias/${agencyId}?tab=inspections`);
+    assert.equal(res.body.unreadCount, 1);
+  } finally {
+    Agency.find = originalMethods.agencyFind;
+    AgencyMonthlyFiles.find = originalMethods.monthlyFilesFind;
+    GlobalSetting.findById = originalMethods.globalSettingFindById;
+    Notification.find = originalMethods.notificationFind;
+    AgencyRefreshJob.find = originalMethods.refreshFind;
+    MailJob.find = originalMethods.mailFind;
+  }
+});
+
+test('marking a personal notice read is scoped to its recipient', async () => {
+  const originalFindOneAndUpdate = Notification.findOneAndUpdate;
+  const userId = new mongoose.Types.ObjectId();
+  const notificationId = new mongoose.Types.ObjectId();
+  let updateFilter;
+  Notification.findOneAndUpdate = async (filter) => {
+    updateFilter = filter;
+    return { _id: notificationId };
+  };
+  try {
+    const res = response();
+    await markNotificationRead({
+      params: { id: String(notificationId) },
+      user: { _id: userId, rol: 'consultor' },
+    }, res, (error) => { throw error; });
+    assert.deepEqual(updateFilter.$or[1], { audience: 'personal', recipientUserId: userId });
+    assert.equal(res.statusCode, 200);
+  } finally {
+    Notification.findOneAndUpdate = originalFindOneAndUpdate;
+  }
+});
+
 test('quick notification feed includes every unread item and only three visible read items', async () => {
   const originalMethods = {
     agencyFind: Agency.find,
+    monthlyFilesFind: AgencyMonthlyFiles.find,
     globalSettingFindById: GlobalSetting.findById,
     notificationFind: Notification.find,
     refreshFind: AgencyRefreshJob.find,
@@ -149,6 +251,7 @@ test('quick notification feed includes every unread item and only three visible 
     })),
   ];
   Agency.find = () => listQuery([]);
+  AgencyMonthlyFiles.find = () => listQuery([]);
   GlobalSetting.findById = () => ({ lean: async () => null });
   Notification.find = () => listQuery(notices);
   AgencyRefreshJob.find = () => listQuery([]);
@@ -168,6 +271,7 @@ test('quick notification feed includes every unread item and only three visible 
     assert.equal(res.body.unreadCount, 2);
   } finally {
     Agency.find = originalMethods.agencyFind;
+    AgencyMonthlyFiles.find = originalMethods.monthlyFilesFind;
     GlobalSetting.findById = originalMethods.globalSettingFindById;
     Notification.find = originalMethods.notificationFind;
     AgencyRefreshJob.find = originalMethods.refreshFind;

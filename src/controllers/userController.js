@@ -3,7 +3,7 @@ const User = require('../models/User');
 const { success } = require('../utils/response');
 
 const ALLOWED_FIELDS = new Set(['nombre', 'correo', 'telefono', 'rol', 'status']);
-const ALLOWED_ROLES = new Set(['developer', 'admin', 'user', 'consultor']);
+const ALLOWED_ROLES = new Set(['developer', 'admin', 'user', 'consultor', 'organizador']);
 const ALLOWED_STATUSES = new Set(['activo', 'inactivo', 'suspendido']);
 
 const validateUserInput = (body, partial) => {

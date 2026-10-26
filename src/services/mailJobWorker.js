@@ -3,6 +3,7 @@ const MailJob = require('../models/MailJob');
 const MailLog = require('../models/Maillog');
 const { decryptGoogleToken } = require('../utils/mailJobCrypto');
 const { buildRawMessage } = require('../utils/gmailMessage');
+const { createOrGetPublicDriveCopy, findOrCreateAuxiliaryFolder } = require('./googleDriveService');
 const { logConsoleEvent, logServerEvent } = require('../utils/serverLogger');
 const { logEvent } = require('../utils/consoleLogger');
 const { sendPushToUser } = require('./pushNotificationService');
@@ -13,11 +14,60 @@ const GOOGLE_EXPORT_TYPES = {
   'application/vnd.google-apps.presentation': 'application/pdf',
   'application/vnd.google-apps.drawing': 'image/png',
 };
-const MAX_ATTACHMENT_MB = 90; // 90MB max archivos por correo
-const MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT_MB * 1024 * 1024;
+const MAX_DIRECT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MAX_GMAIL_RAW_BYTES = 25 * 1024 * 1024;
 
 let workerPromise = null;
 let pollTimer = null;
+
+function assertGmailRawMessageSize(raw) {
+  assertGmailRawMessageBytes(Buffer.from(raw, 'base64url').length);
+}
+
+function assertGmailRawMessageBytes(messageBytes) {
+  if (messageBytes > MAX_GMAIL_RAW_BYTES) {
+    throw new Error('El correo excede el límite de tamaño que acepta Gmail después de codificar los adjuntos. Reduce el tamaño de los archivos o envíalos mediante un enlace de Google Drive.');
+  }
+}
+
+async function buildRawMessageWithinLimit(drive, { to, cc, cco, subject, message, preparedAttachments }) {
+  const attachments = preparedAttachments.filter((attachment) => attachment.content);
+  const driveLinks = preparedAttachments.filter((attachment) => attachment.driveLink);
+  while (true) {
+    const linkText = driveLinks.length
+      ? `\n\nArchivos disponibles en Google Drive:\n${driveLinks.map((file) => `${file.nombre}: ${file.driveLink}`).join('\n')}`
+      : '';
+    const raw = buildRawMessage({
+      to,
+      cc,
+      cco,
+      subject,
+      text: message + linkText,
+      attachments,
+    });
+    if (Buffer.from(raw, 'base64url').length <= MAX_GMAIL_RAW_BYTES) {
+      return { raw, preparedAttachments };
+    }
+    if (!attachments.length) assertGmailRawMessageSize(raw);
+
+    const attachment = attachments.pop();
+    const auxiliaryFolder = await findOrCreateAuxiliaryFolder(drive);
+    const copy = await createOrGetPublicDriveCopy(drive, {
+      sourceDriveId: attachment.driveId,
+      folderId: auxiliaryFolder.id,
+      fileName: attachment.nombre,
+    });
+    const driveLink = {
+      nombre: copy.name || attachment.nombre,
+      driveId: copy.id,
+      driveLink: copy.webViewLink,
+      code: attachment.code,
+    };
+    driveLinks.push(driveLink);
+    const preparedIndex = preparedAttachments.indexOf(attachment);
+    preparedAttachments[preparedIndex] = driveLink;
+  }
+}
 
 function resolveText(text, { month, year, agencyName }) {
   const months = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
@@ -36,6 +86,11 @@ async function readDriveFile(drive, file) {
   const isNativeFile = metadata.mimeType?.startsWith('application/vnd.google-apps.');
   const exportType = GOOGLE_EXPORT_TYPES[metadata.mimeType];
   if (isNativeFile && !exportType) throw new Error(`El archivo ${metadata.name} no se puede adjuntar en este formato.`);
+  const nombre = file.nombre || metadata.name;
+  const mimeType = isNativeFile ? exportType : metadata.mimeType || 'application/octet-stream';
+  if (!isNativeFile && Number(metadata.size) > MAX_DIRECT_ATTACHMENT_BYTES) {
+    return { nombre, mimeType, content: null };
+  }
 
   const response = isNativeFile
     ? await drive.files.export({ fileId: file.driveId, mimeType: exportType }, { responseType: 'stream' })
@@ -45,14 +100,14 @@ async function readDriveFile(drive, file) {
   for await (const chunk of response.data) {
     const buffer = Buffer.from(chunk);
     size += buffer.length;
-    if (size > MAX_ATTACHMENT_BYTES) throw new Error(`El archivo ${metadata.name} supera el límite de ${MAX_ATTACHMENT_MB} MB.`);
+    if (size > MAX_DIRECT_ATTACHMENT_BYTES) break;
     chunks.push(buffer);
   }
 
   return {
-    nombre: file.nombre || metadata.name,
-    mimeType: isNativeFile ? exportType : metadata.mimeType || 'application/octet-stream',
-    content: Buffer.concat(chunks),
+    nombre,
+    mimeType,
+    content: size > MAX_DIRECT_ATTACHMENT_BYTES ? null : Buffer.concat(chunks),
   };
 }
 
@@ -61,10 +116,29 @@ async function buildAttachments(drive, recipient, globalAttachments) {
     .sort((left, right) => Number(Boolean(left.optional)) - Number(Boolean(right.optional)));
   const attachments = [];
   let totalBytes = 0;
+  let auxiliaryFolderId = null;
   for (const file of files) {
     let attachment;
     try {
       attachment = await readDriveFile(drive, file);
+      if (!attachment.content || totalBytes + attachment.content.length > MAX_DIRECT_ATTACHMENT_BYTES) {
+        if (!auxiliaryFolderId) {
+          const folder = await findOrCreateAuxiliaryFolder(drive);
+          auxiliaryFolderId = folder.id;
+        }
+        const copy = await createOrGetPublicDriveCopy(drive, {
+          sourceDriveId: file.driveId,
+          folderId: auxiliaryFolderId,
+          fileName: attachment.nombre,
+        });
+        attachments.push({
+          nombre: copy.name || attachment.nombre,
+          driveId: copy.id,
+          driveLink: copy.webViewLink,
+          code: file.code,
+        });
+        continue;
+      }
     } catch (error) {
       if (!file.optional) throw error;
       logEvent('mail_optional_attachment_omitted', {
@@ -76,16 +150,6 @@ async function buildAttachments(drive, recipient, globalAttachments) {
       continue;
     }
 
-    if (totalBytes + attachment.content.length > MAX_ATTACHMENT_BYTES) {
-      if (!file.optional) throw new Error(`Los adjuntos superan el límite total de ${MAX_ATTACHMENT_MB} MB.`);
-      logEvent('mail_optional_attachment_omitted', {
-        agency: recipient.agencyName,
-        code: file.code,
-        driveId: file.driveId,
-        reason: 'El tamaño excede el límite total de los adjuntos.',
-      });
-      continue;
-    }
     totalBytes += attachment.content.length;
     attachments.push({ ...attachment, code: file.code, driveId: file.driveId });
   }
@@ -187,21 +251,20 @@ async function processJob(job) {
 
       let result;
       try {
-        const attachments = await buildAttachments(drive, recipient, job.globalAttachments);
+        const preparedAttachments = await buildAttachments(drive, recipient, job.globalAttachments);
         const subject = resolveText(job.subject, { month: job.month, year: job.year, agencyName: recipient.agencyName });
-        const text = resolveText(job.message, { month: job.month, year: job.year, agencyName: recipient.agencyName });
+        const message = resolveText(job.message, { month: job.month, year: job.year, agencyName: recipient.agencyName });
+        const { raw, preparedAttachments: finalAttachments } = await buildRawMessageWithinLimit(drive, {
+          to: recipient.correo,
+          cc: recipient.cc,
+          cco: recipient.cco,
+          subject,
+          message,
+          preparedAttachments,
+        });
         const { data } = await gmail.users.messages.send({
           userId: 'me',
-          requestBody: {
-            raw: buildRawMessage({
-              to: recipient.correo,
-              cc: recipient.cc,
-              cco: recipient.cco,
-              subject,
-              text,
-              attachments,
-            }),
-          },
+          requestBody: { raw },
         });
         result = {
           agencyId: recipient.agencyId,
@@ -211,7 +274,7 @@ async function processJob(job) {
           cco: recipient.cco,
           status: 'sent',
           gmailMessageId: data.id || '',
-          attachedFiles: attachments.map(({ code, driveId, nombre }) => ({ code, driveId, nombre })).filter((file) => file.code),
+          attachedFiles: finalAttachments.map(({ code, driveId, nombre }) => ({ code, driveId, nombre })).filter((file) => file.code),
         };
       } catch (error) {
         result = {
@@ -321,4 +384,11 @@ function kickMailJobWorker() {
   processQueuedJobs().catch((error) => logEvent('mail_job_worker_failed', { message: error.message }));
 }
 
-module.exports = { buildAttachments, startMailJobWorker, kickMailJobWorker };
+module.exports = {
+  assertGmailRawMessageBytes,
+  assertGmailRawMessageSize,
+  buildAttachments,
+  buildRawMessageWithinLimit,
+  startMailJobWorker,
+  kickMailJobWorker,
+};

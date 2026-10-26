@@ -5,11 +5,15 @@ const { createRecoverySnapshot, sanitizeAuditValue } = require('../src/utils/aud
 test('redacts credential fields recursively and bounds request data', () => {
   const safe = sanitizeAuditValue({
     googleAccessToken: 'secret-token',
+    code: 'oauth-code',
+    state: 'oauth-state',
     nested: { passwordHash: 'secret-hash', value: 'visible' },
     values: Array.from({ length: 35 }, (_, index) => index),
   });
 
   assert.equal(safe.googleAccessToken, '[redacted]');
+  assert.equal(safe.code, '[redacted]');
+  assert.equal(safe.state, '[redacted]');
   assert.equal(safe.nested.passwordHash, '[redacted]');
   assert.equal(safe.nested.value, 'visible');
   assert.equal(safe.values.length, 31);

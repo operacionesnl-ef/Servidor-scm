@@ -27,7 +27,9 @@ Las plantillas y cada agencia admiten hasta 20 direcciones CC y 20 CCO; al envia
 
 Las plantillas también indican cuáles archivos individuales de agencia son opcionales. El servidor omite esos archivos cuando la agencia no los tiene y sigue rechazando el envío si falta un archivo marcado como obligatorio.
 
-El front solicita los permisos `gmail.send` y `drive.readonly`, valida los destinatarios y crea un trabajo en `POST /api/mail-jobs` con la sesión autenticada y el access token temporal de Google. La sesión se envía mediante cookie segura. El servidor comprueba que la cuenta Google verificada coincide con la cuenta de sesión y que los permisos necesarios estén concedidos.
+El front solicita los permisos `gmail.send` y `drive`, valida los destinatarios y crea un trabajo en `POST /api/mail-jobs` con la sesión autenticada y el access token temporal de Google. La sesión se envía mediante cookie segura. El servidor comprueba que la cuenta Google verificada coincide con la cuenta de sesión y que los permisos necesarios estén concedidos. El permiso `drive` es amplio; el proyecto OAuth de Google puede requerir configuración o verificación adicional.
+
+Los adjuntos que exceden 25 MiB, o que harían que el total adjunto exceda ese límite, se copian una sola vez a `Copias_auxiliares` dentro de `GOOGLE_DRIVE_ROOT_FOLDER_ID`. Solo la copia recibe permiso `anyone` de lector y el correo incluye su enlace; el original no se modifica. Las copias y sus enlaces públicos se conservan indefinidamente. Cualquier persona que obtenga el enlace podrá ver la copia; revisa las políticas de Google Workspace antes de habilitar el permiso.
 
 Los trabajos y su avance se guardan en MongoDB. `GET /api/mail-jobs/active` recupera el trabajo activo y `GET /api/mail-jobs/:jobId` consulta uno específico; ambas rutas están limitadas al usuario dueño del trabajo. El navegador conserva solo el ID del trabajo para volver a consultar el estado después de recargar. El access token se cifra con AES-256-GCM usando una clave derivada de `JWT_SECRET`, no se devuelve por las rutas ni se escribe en logs, y el registro terminal se elimina después de 30 días.
 
@@ -37,6 +39,12 @@ Mantén `JWT_SECRET` como secreto aleatorio, privado y estable entre reinicios. 
 
 ## Actualización de archivos de agencias
 El front solicita el permiso `https://www.googleapis.com/auth/drive.readonly` y crea una tarea con `POST /api/agencies/refresh-jobs`, enviando los IDs de agencia, el período y el access token temporal de Google. El servidor valida el permiso, cifra el token y recorre las carpetas de Drive desde Node; los descendientes ya no se envían desde el navegador.
+
+Los archivos se guardan únicamente en `AgencyMonthlyFiles`, una colección separada con un registro único por agencia y período (`YYYY-MM`). Se almacena metadata y referencia de Drive, nunca copias binarias. `Agency.archivos` contiene solamente `carpetaPrincipal` y `carpetaBase`; los documentos mensuales no duplican esos campos. El expediente usa `GET/PUT /api/agencies/:id/monthly-files/:period`; la lectura respeta el período global y la escritura está reservada a administradores/desarrolladores. `GET /api/agencies?period=YYYY-MM` incluye los archivos del período en un campo de respuesta separado `periodFiles`.
+
+Antes del despliegue, haz respaldo de MongoDB y revisa el diagnóstico con `node src/scripts/migrateAgencyMonthlyFiles.js` (solo lectura). La migración idempotente infiere el período en este orden: año/mes almacenados, ruta o nombre, y fecha `modifiedTime`; archivos ambiguos o en conflicto se reportan y se dejan intactos en el documento legado para revisión manual. Aplica cambios solo después de revisar el reporte con `node src/scripts/migrateAgencyMonthlyFiles.js --apply`. El modo de aplicación traslada los archivos inferibles, elimina sus duplicados legados y retira las carpetas redundantes de los documentos mensuales. El proceso no conecta ni modifica MongoDB sin ejecutarlo explícitamente con `--apply`.
+
+Los lectores de correo, recordatorios, verificaciones y paneles consultan `AgencyMonthlyFiles` por agencia y período. No se copian slots de archivos de regreso a `Agency`.
 
 Los trabajos y su progreso se guardan en MongoDB. `GET /api/agencies/refresh-jobs/active` recupera la tarea activa del usuario y `GET /api/agencies/refresh-jobs/:jobId` consulta el estado; al reiniciar Node, las tareas en proceso se reanudan. El token no se devuelve en respuestas ni se escribe en logs. Los trabajos sin incidencias caducan después de 30 días; los que registran fallos se conservan como historial. La actualización individual también usa `POST /api/agencies/:id/refresh-files` con `year`, `month`, `folderId` opcional y `googleAccessToken`.
 

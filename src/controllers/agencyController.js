@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const { google } = require('googleapis');
 const Agency = require('../models/Agency');
 const AgencyMonthlyInspection = require('../models/AgencyMonthlyInspection');
+const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
 const AgencyNote = require('../models/AgencyNote');
 const AgencyPersonalization = require('../models/AgencyPersonalization');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
@@ -20,6 +21,7 @@ const { normalizeEmailList } = require('../utils/emailList');
 const { getMexicoPeriod } = require('../utils/notificationUtils');
 const { logEvent } = require('../utils/consoleLogger');
 const { recordAgencyHistory } = require('../services/agencyHistory');
+const { notifyConsultant } = require('../services/consultantNotifications');
 
 const AGENCY_SEARCH_PERIOD_SETTING = 'agency-search-period';
 
@@ -73,8 +75,10 @@ const updateAgencySearchPeriod = async (req, res, next) => {
 
 const ALLOWED_FIELDS = new Set([
   'nombre',
-  'nombreEmpresa',
+  'razonSocial',
   'direccion',
+  'longitud',
+  'latitud',
   'correo',
   'gerente',
   'telefonoGerente',
@@ -93,8 +97,10 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const REQUIRED_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 const AGENCY_HISTORY_FIELD_LABELS = {
   nombre: 'Nombre',
-  nombreEmpresa: 'Empresa',
+  razonSocial: 'Razon Social',
   direccion: 'Dirección',
+  longitud: 'Longitud',
+  latitud: 'Latitud',
   correo: 'Correo',
   gerente: 'Gerente',
   telefonoGerente: 'Teléfono del gerente',
@@ -158,11 +164,15 @@ function serializeAgencyRefreshJob(job) {
           correo: result.correo,
           entidadFederativa: result.entidadFederativa,
           status: result.agencyStatus,
-          archivos: result.files || {},
+          archivos: {
+            ...(result.files || {}),
+            ...(result.carpetaPrincipal ? { carpetaPrincipal: result.carpetaPrincipal } : {}),
+          },
         },
         missingKeys: result.missingKeys,
         files: result.files || {},
         selectedFiles: {},
+        period: result.period || '',
         error: result.error,
         missingRoot: result.missingRoot,
         checks: result.checks || [],
@@ -177,6 +187,15 @@ function serializeAgencyRefreshJob(job) {
 
 const validationFailure = (res, errors) =>
   res.status(400).json({ success: false, message: 'Validation failed', errors });
+
+function removeNullAgencyFileSlots(archivos) {
+  if (!archivos || typeof archivos !== 'object' || Array.isArray(archivos)) return archivos;
+  const result = { ...archivos };
+  FILE_FIELDS.forEach((field) => {
+    if (result[field] === null || result[field] === undefined) delete result[field];
+  });
+  return result;
+}
 
 const validateAgencyInput = (body, partial) => {
   const errors = {};
@@ -223,6 +242,31 @@ const validateAgencyInput = (body, partial) => {
     }
   }
 
+  for (const field of ['razonSocial', 'direccion']) {
+    if (body[field] === undefined) continue;
+    if (typeof body[field] !== 'string') {
+      errors[field] = 'Must be a string';
+    } else {
+      value[field] = body[field].trim();
+    }
+  }
+
+  for (const [field, minimum, maximum] of [
+    ['longitud', -180, 180],
+    ['latitud', -90, 90],
+  ]) {
+    if (body[field] === undefined) continue;
+    if (body[field] === null) {
+      value[field] = null;
+    } else if (typeof body[field] !== 'number' || !Number.isFinite(body[field])) {
+      errors[field] = 'Must be a number or null';
+    } else if (body[field] < minimum || body[field] > maximum) {
+      errors[field] = `Must be between ${minimum} and ${maximum}`;
+    } else {
+      value[field] = body[field];
+    }
+  }
+
   if (body.consultantId !== undefined) {
     if (body.consultantId === null || body.consultantId === '') value.consultantId = null;
     else if (!mongoose.isValidObjectId(body.consultantId)) {
@@ -256,80 +300,15 @@ const validateAgencyInput = (body, partial) => {
       const archivos = {};
       for (const [field, file] of Object.entries(body.archivos)) {
         if (field === 'carpetaPrincipal' || field === 'carpetaBase') {
-          if (typeof file !== 'string' || !file.trim() || file.trim().length > 2048) {
-            errors[`archivos.${field}`] = 'Must be a non-empty string of at most 2048 characters';
+          if (typeof file !== 'string' || file.trim().length > 2048) {
+            errors[`archivos.${field}`] = 'Must be a string of at most 2048 characters';
           } else {
             archivos[field] = file.trim();
           }
           continue;
         }
 
-        if (!FILE_FIELDS.has(field)) {
-          errors[`archivos.${field}`] = 'Unknown field';
-          continue;
-        }
-        if (file === null) {
-          archivos[field] = null;
-          continue;
-        }
-        if (!file || typeof file !== 'object' || Array.isArray(file)) {
-          errors[`archivos.${field}`] = 'Must be an object';
-          continue;
-        }
-
-        for (const key of Object.keys(file)) {
-          if (!['nombre', 'ruta', 'driveId', 'pseudoPath', 'path'].includes(key)) {
-            errors[`archivos.${field}.${key}`] = 'Unknown field';
-          }
-        }
-
-        const nombre = typeof file.nombre === 'string' ? file.nombre.trim() : '';
-        const ruta = typeof file.ruta === 'string' ? file.ruta.trim() : '';
-        if (!nombre || nombre.length > 255) {
-          errors[`archivos.${field}.nombre`] = 'A name of at most 255 characters is required';
-        }
-        if (!ruta || ruta.length > 2048) {
-          errors[`archivos.${field}.ruta`] = 'A path of at most 2048 characters is required';
-        }
-
-        let driveId;
-        if (file.driveId !== undefined) {
-          if (typeof file.driveId !== 'string' || file.driveId.trim().length > 2048) {
-            errors[`archivos.${field}.driveId`] = 'Must be a string of at most 2048 characters';
-          } else if (file.driveId.trim()) {
-            driveId = file.driveId.trim();
-          }
-        }
-
-        let pseudoPath;
-        if (file.pseudoPath !== undefined) {
-          if (!Array.isArray(file.pseudoPath) || file.pseudoPath.length > 100 || file.pseudoPath.some((part) => (
-            typeof part !== 'string' || !part.trim() || part.trim().length > 255
-          ))) {
-            errors[`archivos.${field}.pseudoPath`] = 'Must be an array of up to 100 non-empty strings of at most 255 characters';
-          } else {
-            pseudoPath = file.pseudoPath.map((part) => part.trim());
-          }
-        }
-
-        let path;
-        if (file.path !== undefined) {
-          if (typeof file.path !== 'string' || !file.path.trim() || file.path.trim().length > 4096) {
-            errors[`archivos.${field}.path`] = 'Must be a non-empty string of at most 4096 characters';
-          } else {
-            path = file.path.trim();
-          }
-        }
-
-        if (nombre && ruta && nombre.length <= 255 && ruta.length <= 2048) {
-          archivos[field] = {
-            nombre,
-            ruta,
-            ...(driveId !== undefined ? { driveId } : {}),
-            ...(pseudoPath !== undefined ? { pseudoPath } : {}),
-            ...(path !== undefined ? { path } : {}),
-          };
-        }
+        errors[`archivos.${field}`] = 'Only carpetaPrincipal and carpetaBase belong to an agency';
       }
       value.archivos = archivos;
     }
@@ -381,15 +360,6 @@ const getMissingAgencyFields = (agency) => {
   const files = agency.archivos || {};
   if (typeof files.carpetaPrincipal !== 'string' || !files.carpetaPrincipal.trim()) {
     missingFields.push('archivos.carpetaPrincipal');
-  }
-  for (const field of FILE_FIELDS) {
-    const file = files[field] || {};
-    if (typeof file.nombre !== 'string' || !file.nombre.trim()) {
-      missingFields.push(`archivos.${field}.nombre`);
-    }
-    if (typeof file.ruta !== 'string' || !file.ruta.trim()) {
-      missingFields.push(`archivos.${field}.ruta`);
-    }
   }
   return missingFields;
 };
@@ -457,8 +427,28 @@ const getAgencies = async (req, res, next) => {
     if (req.query.status && !ALLOWED_STATUSES.has(req.query.status)) {
       return validationFailure(res, { status: `Must be one of: ${[...ALLOWED_STATUSES].join(', ')}` });
     }
-    const filter = req.query.status ? { status: req.query.status } : {};
-    const agencies = await Agency.find(filter).sort({ createdAt: -1 });
+    const period = req.query.period || '';
+    if (period && !/^(20\d{2})-(0[1-9]|1[0-2])$/.test(period)) {
+      return validationFailure(res, { period: 'Must be a period in YYYY-MM format' });
+    }
+    const filter = {
+      ...(req.query.status ? { status: req.query.status } : {}),
+      ...(req.user.rol === 'consultor' ? { consultantId: req.user._id } : {}),
+    };
+    const agencies = await Agency.find(filter).sort({ createdAt: -1 }).lean();
+    if (period) {
+      const records = await AgencyMonthlyFiles.find({
+        agencyId: { $in: agencies.map((agency) => agency._id) },
+        period,
+      }).select('agencyId archivos').lean();
+      const filesByAgency = new Map(records.map((record) => [
+        String(record.agencyId),
+        record.archivos || {},
+      ]));
+      agencies.forEach((agency) => {
+        agency.periodFiles = filesByAgency.get(String(agency._id)) || {};
+      });
+    }
     return success(res, agencies, 'Agencies fetched');
   } catch (err) {
     return next(err);
@@ -491,6 +481,17 @@ const createAgency = async (req, res, next) => {
       return validationFailure(res, { consultantId: 'Active consultant not found' });
     }
     const agency = await Agency.create(value);
+    if (agency.consultantId) {
+      await notifyConsultant({
+        consultantId: agency.consultantId,
+        title: 'Nueva agencia asignada',
+        message: `Se te asignó la agencia ${agency.nombre}. Consulta sus detalles.`,
+        notificationType: 'agency_assigned',
+        actionUrl: `/agencias/${agency._id}`,
+        agencyId: agency._id,
+        idempotencyKey: `agency:${agency._id}:assigned:${agency.updatedAt.getTime()}`,
+      });
+    }
     await recordAgencyHistory({
       agencyId: agency._id,
       actor: req.user,
@@ -509,6 +510,15 @@ const updateAgency = async (req, res, next) => {
   const partial = req.method === 'PATCH';
   const { errors, value } = validateAgencyInput(req.body, partial);
   if (Object.keys(errors).length) return validationFailure(res, errors);
+  if (
+    ['longitud', 'latitud'].some((field) => Object.hasOwn(req.body || {}, field))
+    && req.user?.rol !== 'developer'
+  ) {
+    return res.status(403).json({
+      success: false,
+      message: 'Solo un developer puede editar las coordenadas de la agencia.',
+    });
+  }
   if (value.consultantId !== undefined && !['admin', 'developer'].includes(req.user.rol)) {
     return res.status(403).json({
       success: false,
@@ -524,14 +534,14 @@ const updateAgency = async (req, res, next) => {
     if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
 
     const historyFields = [
-      'nombre', 'nombreEmpresa', 'direccion', 'correo', 'gerente', 'telefonoGerente',
+      'nombre', 'razonSocial', 'direccion', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente',
       'seguimiento', 'cc', 'cco', 'entidadFederativa', 'status', 'consultantId', 'archivos',
     ];
     const previousValues = Object.fromEntries(
       historyFields.map((field) => [field, historyValue(getAgencyField(agency, field))]),
     );
     for (const field of [
-      'nombre','nombreEmpresa','direccion', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
+      'nombre','razonSocial','direccion', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
       'cc', 'cco', 'entidadFederativa', 'status', 'consultantId',
     ]) {
       if (value[field] !== undefined) agency.set(field, value[field]);
@@ -554,6 +564,46 @@ const updateAgency = async (req, res, next) => {
         ? []
         : [{ field, label: AGENCY_HISTORY_FIELD_LABELS[field], from, to }];
     });
+    const previousConsultantId = previousValues.consultantId ? String(previousValues.consultantId) : '';
+    const nextConsultantId = agency.consultantId ? String(agency.consultantId) : '';
+    const notificationKey = `agency:${agency._id}:${agency.updatedAt.getTime()}`;
+    if (previousConsultantId && previousConsultantId !== nextConsultantId) {
+      await notifyConsultant({
+        consultantId: previousConsultantId,
+        title: 'Agencia reasignada',
+        message: `La agencia ${agency.nombre} ya no está asignada a tu cuenta.`,
+        notificationType: 'agency_unassigned',
+        actionUrl: '/agencias',
+        agencyId: agency._id,
+        idempotencyKey: `${notificationKey}:unassigned:${previousConsultantId}`,
+      });
+    }
+    if (nextConsultantId && previousConsultantId !== nextConsultantId) {
+      await notifyConsultant({
+        consultantId: nextConsultantId,
+        title: 'Nueva agencia asignada',
+        message: `Se te asignó la agencia ${agency.nombre}. Consulta sus detalles.`,
+        notificationType: 'agency_assigned',
+        actionUrl: `/agencias/${agency._id}`,
+        agencyId: agency._id,
+        idempotencyKey: `${notificationKey}:assigned:${nextConsultantId}`,
+      });
+    } else if (nextConsultantId) {
+      const relevantChanges = changes.filter(({ field }) => (
+        ['nombre', 'direccion', 'gerente', 'telefonoGerente', 'seguimiento', 'status'].includes(field)
+      ));
+      if (relevantChanges.length) {
+        await notifyConsultant({
+          consultantId: nextConsultantId,
+          title: 'Cambios en una agencia asignada',
+          message: `Se actualizaron datos de ${agency.nombre} que pueden afectar tu trabajo.`,
+          notificationType: 'agency_updated',
+          actionUrl: `/agencias/${agency._id}`,
+          agencyId: agency._id,
+          idempotencyKey: `${notificationKey}:updated:${nextConsultantId}`,
+        });
+      }
+    }
     if (changes.length) {
       await recordAgencyHistory({
         agencyId: agency._id,
@@ -594,6 +644,7 @@ const deleteAgency = async (req, res, next) => {
     await Promise.all([
       CalendarEvent.deleteMany({ agencyId: agency._id }),
       AgencyMonthlyInspection.deleteMany({ agencyId: agency._id }),
+      AgencyMonthlyFiles.deleteMany({ agencyId: agency._id }),
       AgencyNote.deleteMany({ agencyId: agency._id }),
       AgencyPersonalization.deleteMany({ agencyId: agency._id }),
     ]);
@@ -697,6 +748,7 @@ const refreshAgencyFiles = async (req, res, next) => {
       const period = `${String(month).padStart(2, '0')}/${year}`;
       const note = update.notices?.[0] || '';
       await Notification.create({
+        agencyId: agency._id,
         title: 'Resultado de actualización de archivos',
         message: summary.missingRequired
           ? `No se completaron los ${summary.requiredTotal} archivos requeridos para ${agency.nombre} en ${period}.${note ? ` ${note}` : ''}`
@@ -894,4 +946,5 @@ module.exports = {
   getAgencyMaintenanceHistory,
   getAgencyRefreshJob,
   validateAgencyInput,
+  removeNullAgencyFileSlots,
 };

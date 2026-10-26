@@ -2,6 +2,7 @@
 
 const mongoose = require('mongoose');
 const Agency = require('../models/Agency');
+const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
 const MailJob = require('../models/MailJob');
 const Notification = require('../models/Notification');
@@ -91,15 +92,25 @@ async function getNotifications(req, res, next) {
   try {
     const userId = req.user._id;
     const isAdmin = ['admin', 'developer'].includes(req.user.rol);
+    const isConsultant = req.user.rol === 'consultor';
     const now = new Date();
     const period = getMexicoPeriod(now);
-    const [agencies, announcements, refreshJobs, mailJobs] = await Promise.all([
-      Agency.find({ status: 'activa' })
+    const [agencies, monthlyRecords, announcements, refreshJobs, mailJobs] = await Promise.all([
+      Agency.find({
+        status: 'activa',
+        ...(isConsultant ? { consultantId: userId } : {}),
+      })
         .select('_id nombre status archivos')
         .lean(),
+      AgencyMonthlyFiles.find({
+        period: `${period.year}-${String(period.month).padStart(2, '0')}`,
+      }).select('agencyId archivos').lean(),
       Notification.find({
         expiresAt: { $gt: now },
-        audience: isAdmin ? { $in: ['all', 'admin'] } : 'all',
+        $or: [
+          { audience: isAdmin ? { $in: ['all', 'admin'] } : 'all' },
+          { audience: 'personal', recipientUserId: userId },
+        ],
       }).sort({ createdAt: -1 }).limit(100).lean(),
       AgencyRefreshJob.find({
         ...(isAdmin ? {} : { owner: userId }),
@@ -119,11 +130,23 @@ async function getNotifications(req, res, next) {
         .sort({ updatedAt: -1 }).limit(30).lean(),
     ]);
 
+    const filesByAgency = new Map(monthlyRecords.map((record) => [
+      String(record.agencyId),
+      record.archivos || {},
+    ]));
     const feed = buildNotificationFeed({
-      agencies,
-      announcements,
-      refreshJobs,
-      mailJobs,
+      agencies: agencies.map((agency) => ({
+        ...agency,
+        archivos: filesByAgency.get(String(agency._id)) || {},
+      })),
+      announcements: isConsultant
+        ? announcements.filter((item) => item.audience === 'personal'
+          ? String(item.recipientUserId) === String(userId)
+          : item.agencyId
+            && agencies.some((agency) => String(agency._id) === String(item.agencyId)))
+        : announcements,
+      refreshJobs: isConsultant ? [] : refreshJobs,
+      mailJobs: isConsultant ? [] : mailJobs,
       userId,
       period,
       now,
@@ -138,7 +161,7 @@ async function getNotifications(req, res, next) {
         : item
     ));
     const unreadCount = items.filter((item) => (
-      item.category === 'reminder' && !item.read
+      ['reminder', 'personal'].includes(item.category) && !item.read
     )).length + feed.counts.unreadAnnouncements;
     const visibleItems = req.query?.view === 'quick'
       ? [
@@ -177,7 +200,10 @@ async function markNotificationRead(req, res, next) {
     const notification = await Notification.findOneAndUpdate(
       {
         _id: notificationId,
-        audience: { $in: ['all', ...(['admin', 'developer'].includes(req.user.rol) ? ['admin'] : [])] },
+        $or: [
+          { audience: { $in: ['all', ...(['admin', 'developer'].includes(req.user.rol) ? ['admin'] : [])] } },
+          { audience: 'personal', recipientUserId: req.user._id },
+        ],
       },
       { $addToSet: { readBy: req.user._id } },
       { new: true },
@@ -214,7 +240,13 @@ async function markAllNotificationsRead(req, res, next) {
   try {
     const isAdmin = ['admin', 'developer'].includes(req.user.rol);
     const result = await Notification.updateMany(
-      { audience: isAdmin ? { $in: ['all', 'admin'] } : 'all', readBy: { $ne: req.user._id } },
+      {
+        readBy: { $ne: req.user._id },
+        $or: [
+          { audience: isAdmin ? { $in: ['all', 'admin'] } : 'all' },
+          { audience: 'personal', recipientUserId: req.user._id },
+        ],
+      },
       { $addToSet: { readBy: req.user._id } },
     );
     return res.json({ success: true, updated: result.modifiedCount });

@@ -8,7 +8,7 @@ const userSchema = new mongoose.Schema(
     telefono: { type: String, required: false, unique: true, sparse: true, trim: true },
     rol: {
       type: String,
-      enum: ['developer', 'admin', 'user', 'consultor'],
+      enum: ['developer', 'admin', 'user', 'consultor', 'organizador'],
       default: 'user',
     },
     status: {

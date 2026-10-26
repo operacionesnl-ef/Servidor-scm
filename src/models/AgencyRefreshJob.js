@@ -9,6 +9,8 @@ const agencyRefreshResultSchema = new mongoose.Schema({
   correo: { type: String, default: '' },
   entidadFederativa: { type: String, default: '' },
   agencyStatus: { type: String, default: 'activa' },
+  carpetaPrincipal: { type: String, default: '' },
+  period: { type: String, default: '' },
   status: { type: String, enum: ['updated', 'issues', 'failed', 'skipped'], required: true },
   missingKeys: { type: [String], default: [] },
   files: { type: mongoose.Schema.Types.Mixed, default: {} },

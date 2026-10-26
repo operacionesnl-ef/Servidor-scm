@@ -12,18 +12,38 @@ const templateRoutes = require('./templateRoutes');
 const notificationRoutes = require('./notificationRoutes');
 const adminRoutes = require('./adminRoutes');
 const calendarRoutes = require('./calendarRoutes');
+const googleDriveRoutes = require('./googleDriveRoutes');
+const forReportRoutes = require('./forReportRoutes');
+const requireAuth = require('../middlewares/requireAuth');
 
+const denyConsultor = (req, res, next) => {
+  if (req.user?.rol === 'consultor') {
+    return res.status(403).json({ success: false, message: 'Tu rol no tiene acceso a esta sección.' });
+  }
+  return next();
+};
 
-router.use('/templates', templateRoutes);
+router.use('/templates', requireAuth, denyConsultor, templateRoutes);
 router.use('/auth', authRoutes);
+router.use(requireAuth, (req, res, next) => {
+  if (req.user?.rol === 'organizador' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    return res.status(403).json({
+      success: false,
+      message: 'El rol Organizador solo tiene permisos de lectura.',
+    });
+  }
+  return next();
+});
 router.use('/agencies', agencyRoutes);
-router.use('/activity', activityRoutes);
-router.use('/gmail', gmailRoutes);
-router.use('/mail-jobs', mailJobRoutes);
-router.use('/maillogs', maillogRoutes);
-router.use('/users', userRoutes);
+router.use('/activity', requireAuth, denyConsultor, activityRoutes);
+router.use('/gmail', requireAuth, denyConsultor, gmailRoutes);
+router.use('/mail-jobs', requireAuth, denyConsultor, mailJobRoutes);
+router.use('/maillogs', requireAuth, denyConsultor, maillogRoutes);
+router.use('/users', requireAuth, denyConsultor, userRoutes);
 router.use('/notifications', notificationRoutes);
-router.use('/admin', adminRoutes);
+router.use('/admin', requireAuth, denyConsultor, adminRoutes);
 router.use('/calendar', calendarRoutes);
+router.use('/google-drive', googleDriveRoutes);
+router.use('/for-aud-amb', forReportRoutes);
 
 module.exports = router;

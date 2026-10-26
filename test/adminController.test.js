@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const mongoose = require('mongoose');
 const Agency = require('../src/models/Agency');
+const AgencyMonthlyFiles = require('../src/models/AgencyMonthlyFiles');
 const AgencyRefreshJob = require('../src/models/AgencyRefreshJob');
 const MailLog = require('../src/models/Maillog');
 const User = require('../src/models/User');
@@ -24,6 +25,7 @@ function createResponse() {
 
 test('dashboard summarizes mail, missing agency email, file data, and Drive verification', async () => {
   const originalAgencyFind = Agency.find;
+  const originalMonthlyFilesFind = AgencyMonthlyFiles.find;
   const originalMailFind = MailLog.find;
   const originalAggregate = AgencyRefreshJob.aggregate;
   let mailFilter;
@@ -38,17 +40,29 @@ test('dashboard summarizes mail, missing agency email, file data, and Drive veri
             nombre: 'Agencia Uno',
             correo: 'uno@example.com',
             status: 'activa',
-            archivos: {
-              archivo1: { nombre: 'ANX.pdf', ruta: 'drive-1', periodYear: 2026, periodMonth: 10 },
-              archivo2: { nombre: 'FOR.pdf', ruta: 'drive-2', periodYear: 2026, periodMonth: 9 },
-              archivo3: { nombre: 'REP.pdf', ruta: 'drive-3', pseudoPath: ['2026', 'Octubre'] },
-            },
+            archivos: { carpetaPrincipal: 'root-1' },
           },
           { _id: 'agency-2', nombre: 'Agencia Dos', correo: '', status: 'inactiva' },
         ],
       };
     },
   });
+  AgencyMonthlyFiles.find = (filter) => {
+    assert.equal(filter.period, '2026-10');
+    return {
+      select() {
+        return {
+          lean: async () => [{
+            agencyId: 'agency-1',
+            archivos: {
+              archivo1: { nombre: 'ANX.pdf', ruta: 'drive-1' },
+              archivo3: { nombre: 'REP.pdf', ruta: 'drive-3' },
+            },
+          }],
+        };
+      },
+    };
+  };
   MailLog.find = (filter) => {
     mailFilter = filter;
     return {
@@ -108,6 +122,7 @@ test('dashboard summarizes mail, missing agency email, file data, and Drive veri
     });
   } finally {
     Agency.find = originalAgencyFind;
+    AgencyMonthlyFiles.find = originalMonthlyFilesFind;
     MailLog.find = originalMailFind;
     AgencyRefreshJob.aggregate = originalAggregate;
   }

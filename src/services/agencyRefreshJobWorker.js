@@ -3,6 +3,7 @@
 const { google } = require('googleapis');
 const Agency = require('../models/Agency');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
+const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
 const Notification = require('../models/Notification');
 const { decryptGoogleToken } = require('../utils/mailJobCrypto');
 const {
@@ -18,11 +19,11 @@ const { sendPushToUser } = require('./pushNotificationService');
 let workerPromise = null;
 let pollTimer = null;
 
-function isVerifiedForPeriod(agency, year, month) {
-  const policy = getAgencyFileRequirementPolicy(agency);
+function isVerifiedForPeriod(agency, year, month, archivos = agency.archivos) {
+  const policy = getAgencyFileRequirementPolicy(agency, archivos);
   if (!policy.requirementSatisfied) return false;
   return FILE_TYPES.every(({ key }) => {
-    const file = agency.archivos?.[key];
+    const file = archivos?.[key];
     if (!file?.driveId) return true;
     return Boolean(
       file.periodYear === year &&
@@ -75,16 +76,24 @@ async function processJob(job) {
       continue;
     }
 
-    if (job.jobType === 'refresh' && isVerifiedForPeriod(agency, job.year, job.month)) {
+    const period = `${job.year}-${String(job.month).padStart(2, '0')}`;
+    const monthlyRecord = await AgencyMonthlyFiles.findOne({
+      agencyId: agency._id,
+      period,
+    }).lean();
+    const periodFiles = monthlyRecord?.archivos || {};
+
+    if (job.jobType === 'refresh' && isVerifiedForPeriod(agency, job.year, job.month, periodFiles)) {
       job.results.push({
         agencyId: String(agency._id),
         agencyName: agency.nombre,
+        period,
         correo: agency.correo,
         entidadFederativa: agency.entidadFederativa,
         agencyStatus: agency.status || 'activa',
         status: 'skipped',
         missingKeys: [],
-        files: agency.archivos?.toObject?.() || agency.archivos || {},
+        files: periodFiles,
         checks: [],
       });
       job.completed += 1;
@@ -104,24 +113,30 @@ async function processJob(job) {
     await job.save();
 
     try {
+      const periodAgency = agency.toObject();
+      periodAgency.archivos = periodFiles;
       const update = job.jobType === 'integrity'
-        ? await inspectAgencyIntegrity(drive, agency, { year: job.year, month: job.month })
+        ? await inspectAgencyIntegrity(drive, periodAgency, { year: job.year, month: job.month })
         : await refreshAgencyFromDrive(agency, drive, job.year, job.month);
-      const policy = getAgencyFileRequirementPolicy(agency, update.archivos || agency.archivos);
+      const policy = getAgencyFileRequirementPolicy(agency, update.archivos || periodFiles);
       const missingKeys = job.jobType === 'integrity'
         ? update.missingKeys
         : policy.missingKeys;
       job.results.push({
         agencyId: String(agency._id),
         agencyName: agency.nombre,
+        period: update.period
+          ? `${update.period.year}-${String(update.period.month).padStart(2, '0')}`
+          : period,
         correo: agency.correo,
         entidadFederativa: agency.entidadFederativa,
         agencyStatus: agency.status || 'activa',
+        carpetaPrincipal: agency.archivos?.carpetaPrincipal || '',
         status: update.status === 'issues' || missingKeys.length ? 'issues' : 'updated',
         missingKeys,
         optionalMissingKeys: update.optionalMissingKeys || policy.optionalMissingKeys,
         notices: update.notices || (policy.optionalMessage ? [policy.optionalMessage] : []),
-        files: update.archivos || agency.archivos?.toObject?.() || agency.archivos || {},
+        files: update.archivos || periodFiles,
         checks: update.checks || [],
       });
       job.scannedFiles += update.scannedFiles || update.checks?.length || 0;
@@ -130,12 +145,14 @@ async function processJob(job) {
       job.results.push({
         agencyId: String(agency._id),
         agencyName: agency.nombre,
+        period,
         correo: agency.correo,
         entidadFederativa: agency.entidadFederativa,
         agencyStatus: agency.status || 'activa',
+        carpetaPrincipal: agency.archivos?.carpetaPrincipal || '',
         status: 'failed',
         missingKeys: FILE_TYPES.map(({ key }) => key),
-        files: agency.archivos?.toObject?.() || agency.archivos || {},
+        files: periodFiles,
         checks: [],
         error: error.message || 'No se pudo recorrer la carpeta de Drive.',
         missingRoot: Boolean(error.missingRoot),

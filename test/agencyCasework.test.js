@@ -5,12 +5,15 @@ const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
 const Agency = require('../src/models/Agency');
 const AgencyMonthlyInspection = require('../src/models/AgencyMonthlyInspection');
+const AgencyMonthlyFiles = require('../src/models/AgencyMonthlyFiles');
 const AgencyNote = require('../src/models/AgencyNote');
 const AgencyPersonalization = require('../src/models/AgencyPersonalization');
 const CalendarEvent = require('../src/models/CalendarEvent');
 const SentEmail = require('../src/models/SentEmail');
 const User = require('../src/models/User');
 const AgencyHistory = require('../src/models/AgencyHistory');
+const Notification = require('../src/models/Notification');
+const Subscription = require('../src/models/Subscription');
 const { deleteAgency } = require('../src/controllers/agencyController');
 const {
   scheduleMonthlyVisit,
@@ -35,7 +38,7 @@ function response() {
   };
 }
 
-test('agency creation accepts the requested minimum and retains optional legacy fields', () => {
+test('agency input keeps folder references but rejects file slots outside monthly records', () => {
   const minimal = validateAgencyInput({
     nombre: 'Agencia Nueva',
     entidadFederativa: 'Nuevo León',
@@ -66,11 +69,24 @@ test('agency creation accepts the requested minimum and retains optional legacy 
     entidadFederativa: 'Nuevo León',
     correo: 'LEGACY@example.com',
     archivos: {
-      archivo1: { nombre: 'ANX.pdf', ruta: 'drive-file-id' },
+      carpetaPrincipal: 'drive-root',
+      carpetaBase: 'drive-base',
     },
   }, false);
   assert.deepEqual(legacy.errors, {});
   assert.equal(legacy.value.correo, 'legacy@example.com');
+  assert.deepEqual(legacy.value.archivos, {
+    carpetaPrincipal: 'drive-root',
+    carpetaBase: 'drive-base',
+  });
+  const fileSlot = validateAgencyInput({
+    nombre: 'Agencia Legacy',
+    entidadFederativa: 'Nuevo León',
+    archivos: { archivo1: { nombre: 'ANX.pdf', ruta: 'drive-file-id' } },
+  }, false);
+  assert.ok(fileSlot.errors['archivos.archivo1']);
+  assert.equal(Agency.schema.path('archivos.archivo1'), undefined);
+  assert.equal(AgencyMonthlyFiles.schema.path('archivos.archivo1'), undefined);
   assert.equal(Agency.schema.path('consultantId').options.ref, 'User');
   assert.equal(Agency.schema.path('correo').isRequired, false);
 });
@@ -128,15 +144,19 @@ test('monthly visit uses agency consultant relation and creates exactly one cale
   const originals = {
     agencyFindById: Agency.findById,
     inspectionUpdateOne: AgencyMonthlyInspection.updateOne,
+    inspectionFindOneAndUpdate: AgencyMonthlyInspection.findOneAndUpdate,
     inspectionFindOne: AgencyMonthlyInspection.findOne,
     inspectionFindById: AgencyMonthlyInspection.findById,
     calendarExists: CalendarEvent.exists,
     calendarCreate: CalendarEvent.create,
+    notificationFindOneAndUpdate: Notification.findOneAndUpdate,
+    subscriptionExists: Subscription.exists,
   };
   const agencyId = new mongoose.Types.ObjectId();
   const consultantId = new mongoose.Types.ObjectId();
   const recordId = new mongoose.Types.ObjectId();
   let createdEvent;
+  let createdNotification;
   let reserveCount = 0;
   Agency.findById = () => ({ select: async () => ({
     _id: agencyId,
@@ -148,6 +168,14 @@ test('monthly visit uses agency consultant relation and creates exactly one cale
     reserveCount += 1;
     return { modifiedCount: 1 };
   };
+  AgencyMonthlyInspection.findOneAndUpdate = async () => ({
+    _id: recordId,
+    agencyId,
+    period: '2026-10',
+    authorizationStatus: 'authorized',
+    visitStatus: 'scheduled',
+    calendarEventId: null,
+  });
   AgencyMonthlyInspection.findOne = async () => ({
     _id: recordId,
     agencyId,
@@ -173,6 +201,11 @@ test('monthly visit uses agency consultant relation and creates exactly one cale
     createdEvent = input;
     return input;
   };
+  Notification.findOneAndUpdate = async (_filter, update) => {
+    createdNotification = update.$setOnInsert;
+    return { _id: new mongoose.Types.ObjectId(), ...createdNotification };
+  };
+  Subscription.exists = async () => false;
   try {
     const res = response();
     await scheduleMonthlyVisit({
@@ -188,14 +221,21 @@ test('monthly visit uses agency consultant relation and creates exactly one cale
     assert.deepEqual(createdEvent.consultantId, consultantId);
     assert.equal(createdEvent.type, 'agency_visit');
     assert.equal(res.body.data.record.calendarEventId, String(createdEvent._id));
+    assert.equal(createdNotification.audience, 'personal');
+    assert.deepEqual(createdNotification.recipientUserId, consultantId);
+    assert.equal(createdNotification.notificationType, 'visit_scheduled');
+    assert.equal(createdNotification.actionUrl, `/agencias/${agencyId}?tab=inspections`);
     assert.equal(reserveCount, 2);
   } finally {
     Agency.findById = originals.agencyFindById;
     AgencyMonthlyInspection.updateOne = originals.inspectionUpdateOne;
+    AgencyMonthlyInspection.findOneAndUpdate = originals.inspectionFindOneAndUpdate;
     AgencyMonthlyInspection.findOne = originals.inspectionFindOne;
     AgencyMonthlyInspection.findById = originals.inspectionFindById;
     CalendarEvent.exists = originals.calendarExists;
     CalendarEvent.create = originals.calendarCreate;
+    Notification.findOneAndUpdate = originals.notificationFindOneAndUpdate;
+    Subscription.exists = originals.subscriptionExists;
   }
 });
 
@@ -246,7 +286,6 @@ test('rescheduling a completed inspection with a stale event link reopens its mo
     createdEvent = input;
     return input;
   };
-
   try {
     const res = response();
     await scheduleMonthlyVisit({
@@ -273,7 +312,7 @@ test('rescheduling a completed inspection with a stale event link reopens its mo
 
 test('monthly visit cannot be scheduled before the monthly authorization is approved', async () => {
   const originalAgencyFindById = Agency.findById;
-  const originalInspectionFindOne = AgencyMonthlyInspection.findOne;
+  const originalInspectionFindOneAndUpdate = AgencyMonthlyInspection.findOneAndUpdate;
   const agencyId = new mongoose.Types.ObjectId();
   Agency.findById = () => ({
     select: async () => ({
@@ -282,7 +321,9 @@ test('monthly visit cannot be scheduled before the monthly authorization is appr
       consultantId: new mongoose.Types.ObjectId(),
     }),
   });
-  AgencyMonthlyInspection.findOne = async () => ({
+  AgencyMonthlyInspection.findOneAndUpdate = async () => ({
+    _id: new mongoose.Types.ObjectId(),
+    calendarEventId: null,
     authorizationStatus: 'unauthorized',
   });
 
@@ -301,7 +342,7 @@ test('monthly visit cannot be scheduled before the monthly authorization is appr
     assert.match(res.body.message, /autorización.*autorizada/i);
   } finally {
     Agency.findById = originalAgencyFindById;
-    AgencyMonthlyInspection.findOne = originalInspectionFindOne;
+    AgencyMonthlyInspection.findOneAndUpdate = originalInspectionFindOneAndUpdate;
   }
 });
 
@@ -314,7 +355,7 @@ test('monthly visit cannot be marked complete without a linked calendar event', 
     const res = response();
     await updateMonthlyVisitStatus({
       params: { id: new mongoose.Types.ObjectId().toString(), period: '2026-10' },
-      user: { _id: new mongoose.Types.ObjectId() },
+      user: { _id: new mongoose.Types.ObjectId(), rol: 'admin' },
       body: { status: 'completed' },
     }, res, (error) => { throw error; });
     assert.equal(res.statusCode, 400);
@@ -343,7 +384,7 @@ test('monthly visit completion is persisted only against its linked calendar eve
     const res = response();
     await updateMonthlyVisitStatus({
       params: { id: new mongoose.Types.ObjectId().toString(), period: '2026-10' },
-      user: { _id: new mongoose.Types.ObjectId() },
+      user: { _id: new mongoose.Types.ObjectId(), rol: 'admin' },
       body: { status: 'completed' },
     }, res, (error) => { throw error; });
     assert.equal(saved, true);
@@ -440,6 +481,7 @@ test('deleting an agency also removes its calendar and monthly inspection record
     sentEmailExists: SentEmail.exists,
     eventDeleteMany: CalendarEvent.deleteMany,
     inspectionDeleteMany: AgencyMonthlyInspection.deleteMany,
+    monthlyFilesDeleteMany: AgencyMonthlyFiles.deleteMany,
     noteDeleteMany: AgencyNote.deleteMany,
     personalizationDeleteMany: AgencyPersonalization.deleteMany,
   };
@@ -457,6 +499,7 @@ test('deleting an agency also removes its calendar and monthly inspection record
     assert.equal(String(query.agencyId), String(agencyId));
   };
   AgencyMonthlyInspection.deleteMany = async () => { deleted.push('inspections'); };
+  AgencyMonthlyFiles.deleteMany = async () => { deleted.push('monthly-files'); };
   AgencyNote.deleteMany = async () => { deleted.push('notes'); };
   AgencyPersonalization.deleteMany = async () => { deleted.push('personalization'); };
 
@@ -467,12 +510,13 @@ test('deleting an agency also removes its calendar and monthly inspection record
       user: { _id: new mongoose.Types.ObjectId() },
     }, res, (error) => { throw error; });
     assert.equal(res.statusCode, 200);
-    assert.deepEqual(new Set(deleted), new Set(['events', 'inspections', 'notes', 'personalization', 'agency']));
+    assert.deepEqual(new Set(deleted), new Set(['events', 'inspections', 'monthly-files', 'notes', 'personalization', 'agency']));
   } finally {
     Agency.findById = originals.agencyFindById;
     SentEmail.exists = originals.sentEmailExists;
     CalendarEvent.deleteMany = originals.eventDeleteMany;
     AgencyMonthlyInspection.deleteMany = originals.inspectionDeleteMany;
+    AgencyMonthlyFiles.deleteMany = originals.monthlyFilesDeleteMany;
     AgencyNote.deleteMany = originals.noteDeleteMany;
     AgencyPersonalization.deleteMany = originals.personalizationDeleteMany;
   }

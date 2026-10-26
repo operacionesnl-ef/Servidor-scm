@@ -137,6 +137,7 @@ test('creates a recurrence series with one shared series ID and returns its size
 
 test('calendar listing overlaps date ranges, scopes non-admins to authorized events and supports mine', async () => {
   const originalFind = CalendarEventModel.find;
+  const originalAgencyFind = Agency.find;
   const userId = new mongoose.Types.ObjectId();
   let filter;
   CalendarEventModel.find = (query) => {
@@ -147,6 +148,7 @@ test('calendar listing overlaps date ranges, scopes non-admins to authorized eve
       lean: async () => [],
     };
   };
+  Agency.find = () => ({ distinct: async () => [] });
   try {
     const res = response();
     await getCalendarEvents({
@@ -159,11 +161,13 @@ test('calendar listing overlaps date ranges, scopes non-admins to authorized eve
     }, res, (error) => { throw error; });
     assert.equal(filter.authorized, true);
     assert.deepEqual(filter.consultantId, userId);
+    assert.deepEqual(filter.agencyId, { $in: [] });
     assert.equal(filter.startAt.$lt.toISOString(), '2026-10-15T00:00:00.000Z');
     assert.equal(filter.endAt.$gt.toISOString(), '2026-10-14T00:00:00.000Z');
     assert.deepEqual(res.body.data.events, []);
   } finally {
     CalendarEventModel.find = originalFind;
+    Agency.find = originalAgencyFind;
   }
 });
 
