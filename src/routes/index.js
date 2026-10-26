@@ -25,6 +25,15 @@ const denyConsultor = (req, res, next) => {
 
 router.use('/templates', requireAuth, denyConsultor, templateRoutes);
 router.use('/auth', authRoutes);
+router.use(requireAuth, (req, res, next) => {
+  if (req.user?.rol === 'organizador' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    return res.status(403).json({
+      success: false,
+      message: 'El rol Organizador solo tiene permisos de lectura.',
+    });
+  }
+  return next();
+});
 router.use('/agencies', agencyRoutes);
 router.use('/activity', requireAuth, denyConsultor, activityRoutes);
 router.use('/gmail', requireAuth, denyConsultor, gmailRoutes);

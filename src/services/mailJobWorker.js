@@ -15,7 +15,7 @@ const GOOGLE_EXPORT_TYPES = {
   'application/vnd.google-apps.drawing': 'image/png',
 };
 const MAX_DIRECT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-const MAX_GMAIL_RAW_BYTES = 35 * 1024 * 1024;
+const MAX_GMAIL_RAW_BYTES = 25 * 1024 * 1024;
 
 let workerPromise = null;
 let pollTimer = null;
@@ -27,6 +27,45 @@ function assertGmailRawMessageSize(raw) {
 function assertGmailRawMessageBytes(messageBytes) {
   if (messageBytes > MAX_GMAIL_RAW_BYTES) {
     throw new Error('El correo excede el límite de tamaño que acepta Gmail después de codificar los adjuntos. Reduce el tamaño de los archivos o envíalos mediante un enlace de Google Drive.');
+  }
+}
+
+async function buildRawMessageWithinLimit(drive, { to, cc, cco, subject, message, preparedAttachments }) {
+  const attachments = preparedAttachments.filter((attachment) => attachment.content);
+  const driveLinks = preparedAttachments.filter((attachment) => attachment.driveLink);
+  while (true) {
+    const linkText = driveLinks.length
+      ? `\n\nArchivos disponibles en Google Drive:\n${driveLinks.map((file) => `${file.nombre}: ${file.driveLink}`).join('\n')}`
+      : '';
+    const raw = buildRawMessage({
+      to,
+      cc,
+      cco,
+      subject,
+      text: message + linkText,
+      attachments,
+    });
+    if (Buffer.from(raw, 'base64url').length <= MAX_GMAIL_RAW_BYTES) {
+      return { raw, preparedAttachments };
+    }
+    if (!attachments.length) assertGmailRawMessageSize(raw);
+
+    const attachment = attachments.pop();
+    const auxiliaryFolder = await findOrCreateAuxiliaryFolder(drive);
+    const copy = await createOrGetPublicDriveCopy(drive, {
+      sourceDriveId: attachment.driveId,
+      folderId: auxiliaryFolder.id,
+      fileName: attachment.nombre,
+    });
+    const driveLink = {
+      nombre: copy.name || attachment.nombre,
+      driveId: copy.id,
+      driveLink: copy.webViewLink,
+      code: attachment.code,
+    };
+    driveLinks.push(driveLink);
+    const preparedIndex = preparedAttachments.indexOf(attachment);
+    preparedAttachments[preparedIndex] = driveLink;
   }
 }
 
@@ -213,22 +252,16 @@ async function processJob(job) {
       let result;
       try {
         const preparedAttachments = await buildAttachments(drive, recipient, job.globalAttachments);
-        const attachments = preparedAttachments.filter((attachment) => attachment.content);
-        const driveLinks = preparedAttachments.filter((attachment) => attachment.driveLink);
         const subject = resolveText(job.subject, { month: job.month, year: job.year, agencyName: recipient.agencyName });
-        const linkText = driveLinks.length
-          ? `\n\nArchivos disponibles en Google Drive:\n${driveLinks.map((file) => `${file.nombre}: ${file.driveLink}`).join('\n')}`
-          : '';
-        const text = resolveText(job.message, { month: job.month, year: job.year, agencyName: recipient.agencyName }) + linkText;
-        const raw = buildRawMessage({
+        const message = resolveText(job.message, { month: job.month, year: job.year, agencyName: recipient.agencyName });
+        const { raw, preparedAttachments: finalAttachments } = await buildRawMessageWithinLimit(drive, {
           to: recipient.correo,
           cc: recipient.cc,
           cco: recipient.cco,
           subject,
-          text,
-          attachments,
+          message,
+          preparedAttachments,
         });
-        assertGmailRawMessageSize(raw);
         const { data } = await gmail.users.messages.send({
           userId: 'me',
           requestBody: { raw },
@@ -241,7 +274,7 @@ async function processJob(job) {
           cco: recipient.cco,
           status: 'sent',
           gmailMessageId: data.id || '',
-          attachedFiles: preparedAttachments.map(({ code, driveId, nombre }) => ({ code, driveId, nombre })).filter((file) => file.code),
+          attachedFiles: finalAttachments.map(({ code, driveId, nombre }) => ({ code, driveId, nombre })).filter((file) => file.code),
         };
       } catch (error) {
         result = {
@@ -351,4 +384,11 @@ function kickMailJobWorker() {
   processQueuedJobs().catch((error) => logEvent('mail_job_worker_failed', { message: error.message }));
 }
 
-module.exports = { assertGmailRawMessageBytes, assertGmailRawMessageSize, buildAttachments, startMailJobWorker, kickMailJobWorker };
+module.exports = {
+  assertGmailRawMessageBytes,
+  assertGmailRawMessageSize,
+  buildAttachments,
+  buildRawMessageWithinLimit,
+  startMailJobWorker,
+  kickMailJobWorker,
+};

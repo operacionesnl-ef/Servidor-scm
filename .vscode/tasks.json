@@ -1,0 +1,19 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Pruebas de copias auxiliares de Drive",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"--test",
+				"--test-force-exit",
+				"test/mailJobWorker.test.js",
+				"test/googleDriveService.test.js",
+				"test/mailJobController.test.js"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}

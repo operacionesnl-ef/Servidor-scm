@@ -3,14 +3,18 @@
 const assert = require('node:assert/strict');
 const { Readable } = require('node:stream');
 const { test } = require('node:test');
-const { assertGmailRawMessageBytes, buildAttachments } = require('../src/services/mailJobWorker');
+const {
+  assertGmailRawMessageBytes,
+  buildAttachments,
+  buildRawMessageWithinLimit,
+} = require('../src/services/mailJobWorker');
 
 test('rejects encoded Gmail messages above the API size limit before sending', () => {
   assert.throws(
-    () => assertGmailRawMessageBytes(35 * 1024 * 1024 + 1),
+    () => assertGmailRawMessageBytes(25 * 1024 * 1024 + 1),
     /excede el límite de tamaño que acepta Gmail/,
   );
-  assert.doesNotThrow(() => assertGmailRawMessageBytes(1024));
+  assert.doesNotThrow(() => assertGmailRawMessageBytes(25 * 1024 * 1024));
 });
 
 test('copies oversized files to the auxiliary folder and shares only the copy', async (context) => {
@@ -71,6 +75,66 @@ test('copies oversized files to the auxiliary folder and shares only the copy', 
     role: 'reader',
     allowFileDiscovery: false,
   });
+});
+
+test('moves an attachment to Drive when MIME encoding would exceed the 25 MiB message limit', async (context) => {
+  const originalRoot = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
+  process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID = 'root-folder';
+  context.after(() => {
+    if (originalRoot === undefined) delete process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
+    else process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID = originalRoot;
+  });
+
+  const drive = {
+    files: {
+      async list() {
+        return { data: { files: [] } };
+      },
+      async create() {
+        return { data: { id: 'aux-folder', name: 'Copias_auxiliares' } };
+      },
+      async copy() {
+        return {
+          data: {
+            id: 'copy-2',
+            name: 'medium.pdf',
+            webViewLink: 'https://drive.google.com/file/d/copy-2/view',
+          },
+        };
+      },
+    },
+    permissions: {
+      async list() {
+        return { data: { permissions: [] } };
+      },
+      async create() {
+        return { data: { id: 'public-reader', type: 'anyone', role: 'reader' } };
+      },
+    },
+  };
+  const { raw, preparedAttachments } = await buildRawMessageWithinLimit(drive, {
+    to: 'recipient@example.com',
+    subject: 'Test',
+    message: 'Body',
+    preparedAttachments: [{
+      code: 'FOR',
+      driveId: 'source-2',
+      nombre: 'medium.pdf',
+      mimeType: 'application/pdf',
+      content: Buffer.alloc(19 * 1024 * 1024),
+    }],
+  });
+
+  assert.ok(Buffer.from(raw, 'base64url').length <= 25 * 1024 * 1024);
+  const mimeMessage = Buffer.from(raw, 'base64url').toString('utf8');
+  const encodedText = mimeMessage.match(/Content-Transfer-Encoding: base64\r\n\r\n([\s\S]*?)\r\n--/)[1];
+  assert.match(Buffer.from(encodedText.replace(/\r\n/g, ''), 'base64').toString('utf8'), /https:\/\/drive\.google\.com\/file\/d\/copy-2\/view/);
+  assert.deepEqual(preparedAttachments, [{
+    code: 'FOR',
+    driveId: 'copy-2',
+    nombre: 'medium.pdf',
+    driveLink: 'https://drive.google.com/file/d/copy-2/view',
+  }]);
 });
 
 test('continues preparing attachments when an optional Drive file cannot be read', async () => {
