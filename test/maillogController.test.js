@@ -73,6 +73,62 @@ test('history list is scoped to the authenticated sender and returns paginated r
   }
 });
 
+test('developer can list reports sent by all users', async () => {
+  const originalCount = MailLog.countDocuments;
+  const originalFind = MailLog.find;
+  let countFilter;
+  let findFilter;
+  MailLog.countDocuments = async (filter) => { countFilter = filter; return 0; };
+  MailLog.find = (filter) => {
+    findFilter = filter;
+    return {
+      sort() { return this; },
+      skip() { return this; },
+      limit() { return this; },
+      select: async () => [],
+    };
+  };
+
+  try {
+    const response = createResponse();
+    await getMailLogs({
+      user: { correo: 'developer@example.com', rol: 'developer' },
+      query: { page: '1', limit: '20' },
+    }, response);
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(countFilter, {});
+    assert.deepEqual(findFilter, {});
+  } finally {
+    MailLog.countDocuments = originalCount;
+    MailLog.find = originalFind;
+  }
+});
+
+test('organizer can list reports sent by all users', async () => {
+  const originalCount = MailLog.countDocuments;
+  const originalFind = MailLog.find;
+  let countFilter;
+  MailLog.countDocuments = async (filter) => { countFilter = filter; return 0; };
+  MailLog.find = (filter) => ({
+    sort() { return this; },
+    skip() { return this; },
+    limit() { return this; },
+    select: async () => { assert.deepEqual(filter, {}); return []; },
+  });
+  try {
+    const response = createResponse();
+    await getMailLogs({
+      user: { correo: 'organizador@example.com', rol: 'organizador' },
+      query: { page: '1', limit: '20' },
+    }, response);
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(countFilter, {});
+  } finally {
+    MailLog.countDocuments = originalCount;
+    MailLog.find = originalFind;
+  }
+});
+
 test('history rejects invalid page size and status before querying the database', async () => {
   const originalCount = MailLog.countDocuments;
   MailLog.countDocuments = async () => { throw new Error('Should not query on invalid filters'); };
@@ -90,7 +146,7 @@ test('history rejects invalid page size and status before querying the database'
   }
 });
 
-test('mail-log detail is only retrievable by its authenticated sender', async () => {
+test('mail-log detail is scoped to regular users but accessible to developers', async () => {
   const originalFindOne = MailLog.findOne;
   let query;
   MailLog.findOne = async (filter) => {
@@ -99,13 +155,27 @@ test('mail-log detail is only retrievable by its authenticated sender', async ()
   };
 
   try {
-    const response = createResponse();
+    const userResponse = createResponse();
     await getMailLogById({
-      user: { correo: 'other@example.com' },
+      user: { correo: 'other@example.com', rol: 'user' },
       params: { id: '507f1f77bcf86cd799439011' },
-    }, response);
-    assert.equal(query.sentBy, 'other@example.com');
-    assert.equal(response.statusCode, 404);
+    }, userResponse);
+    assert.deepEqual(query, { _id: '507f1f77bcf86cd799439011', sentBy: 'other@example.com' });
+    assert.equal(userResponse.statusCode, 404);
+
+    const developerResponse = createResponse();
+    await getMailLogById({
+      user: { correo: 'developer@example.com', rol: 'developer' },
+      params: { id: '507f1f77bcf86cd799439011' },
+    }, developerResponse);
+    assert.deepEqual(query, { _id: '507f1f77bcf86cd799439011' });
+    assert.equal(developerResponse.statusCode, 404);
+
+    await getMailLogById({
+      user: { correo: 'organizador@example.com', rol: 'organizador' },
+      params: { id: '507f1f77bcf86cd799439011' },
+    }, createResponse());
+    assert.deepEqual(query, { _id: '507f1f77bcf86cd799439011' });
   } finally {
     MailLog.findOne = originalFindOne;
   }
