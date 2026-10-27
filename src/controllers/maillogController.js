@@ -176,7 +176,9 @@ async function getMailLogs(req, res) {
       return res.status(400).json({ message: 'from debe ser anterior o igual a to.' });
     }
 
-    const filter = { sentBy: req.user.correo };
+    const filter = ['admin', 'developer', 'organizador'].includes(req.user.rol)
+      ? {}
+      : { sentBy: req.user.correo };
     if (templateKey)  filter.templateKey  = templateKey;
     if (batchStatus)  filter.batchStatus  = batchStatus;
     if (year)         filter.year         = Number(year);
@@ -230,7 +232,11 @@ async function getMailLogById(req, res) {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(404).json({ message: 'No se encontró el registro de envío.' });
     }
-    const log = await MailLog.findOne({ _id: req.params.id, sentBy: req.user.correo });
+    const filter = { _id: req.params.id };
+    if (!['admin', 'developer', 'organizador'].includes(req.user.rol)) {
+      filter.sentBy = req.user.correo;
+    }
+    const log = await MailLog.findOne(filter);
     if (!log) return res.status(404).json({ message: 'No se encontró el registro de envío.' });
     return res.json(serializeHistoryDetail(log));
   } catch (err) {

@@ -23,10 +23,20 @@ const denyConsultor = (req, res, next) => {
   return next();
 };
 
-router.use('/templates', requireAuth, denyConsultor, templateRoutes);
 router.use('/auth', authRoutes);
 router.use(requireAuth, (req, res, next) => {
-  if (req.user?.rol === 'organizador' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+  const isOrganizer = req.user?.rol === 'organizador';
+  const path = req.path;
+  const canUpdateOrganizerNotification = isOrganizer
+    && req.method === 'PATCH'
+    && /^\/notifications\/(?:read|quick\/[^/]+\/hide|[^/]+\/read)$/.test(path);
+  const canAddOrganizerAgencyNote = isOrganizer
+    && req.method === 'POST'
+    && /^\/agencies\/[a-f\d]{24}\/notes$/.test(path);
+  if (isOrganizer
+    && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+    && !canUpdateOrganizerNotification
+    && !canAddOrganizerAgencyNote) {
     return res.status(403).json({
       success: false,
       message: 'El rol Organizador solo tiene permisos de lectura.',
@@ -34,6 +44,7 @@ router.use(requireAuth, (req, res, next) => {
   }
   return next();
 });
+router.use('/templates', requireAuth, denyConsultor, templateRoutes);
 router.use('/agencies', agencyRoutes);
 router.use('/activity', requireAuth, denyConsultor, activityRoutes);
 router.use('/gmail', requireAuth, denyConsultor, gmailRoutes);
