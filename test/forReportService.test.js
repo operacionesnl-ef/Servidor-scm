@@ -28,6 +28,32 @@ test('accepts a partial draft with a valid inspection date', () => {
   assert.equal(result.value.generalData.inspectionDate, '2026-10-23');
 });
 
+test('validates and preserves the agency legal name and visit number', () => {
+  const result = validateReportPayload(makePayload({
+    generalData: {
+      companyName: 'Sucursal Norte',
+      legalName: 'Empresa Norte S.A. de C.V.',
+      visitNumber: 9,
+      inspectionDate: '2026-10-23',
+      observations: '',
+    },
+  }));
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.value.generalData.companyName, 'Sucursal Norte');
+  assert.equal(result.value.generalData.legalName, 'Empresa Norte S.A. de C.V.');
+  assert.equal(result.value.generalData.visitNumber, 9);
+
+  const invalid = validateReportPayload(makePayload({
+    generalData: {
+      inspectionDate: '2026-10-23',
+      observations: '',
+      visitNumber: 0,
+    },
+  }));
+  assert.ok(invalid.errors.some((error) => error.includes('número de visita')));
+});
+
 test('rejects invalid dates, duplicate aspects, and unsupported answers', () => {
   const aspect = ASPECTS[0];
   const result = validateReportPayload(makePayload({

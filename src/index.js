@@ -12,6 +12,7 @@ const { startMailJobWorker } = require('./services/mailJobWorker');
 const { startAgencyRefreshJobWorker } = require('./services/agencyRefreshJobWorker');
 const { startActivityLogCleanupWorker } = require('./services/activityLogCleanupWorker');
 const { startCalendarReminderWorker } = require('./services/calendarReminderWorker');
+const { startForReportExcelWorker } = require('./services/forReportExcelWorker');
 const { logServerEvent } = require('./utils/serverLogger');
 const { logStartup } = require('./utils/consoleLogger');
 const { getHealth } = require('./controllers/healthController');
@@ -173,6 +174,7 @@ app.use(errorHandler);
 connectDB().then(async () => {
   await startMailJobWorker();
   await startAgencyRefreshJobWorker();
+  await startForReportExcelWorker();
   startActivityLogCleanupWorker();
   startCalendarReminderWorker();
 

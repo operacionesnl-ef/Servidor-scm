@@ -25,8 +25,13 @@ const {
   uploadDriveFile,
 } = require('../services/googleDriveService');
 const { ImageProcessingError, processForReportImage } = require('../services/forReportImageProcessor');
+const {
+  getGeneratedForReportExcelPath,
+} = require('../services/forReportExcelFileStore');
+const { kickForReportExcelWorker } = require('../services/forReportExcelWorker');
 
-const WRITABLE_ROLES = new Set(['admin', 'developer', 'user', 'consultor']);
+const ACCESS_ROLES = new Set(['admin', 'developer', 'consultor']);
+const ADMIN_ROLES = new Set(['admin', 'developer']);
 const IMAGE_EXTENSIONS = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 
 class RequestError extends Error {
@@ -53,12 +58,24 @@ async function getAccessibleAgency(user, agencyId) {
     throw new RequestError(400, 'El identificador de agencia no es válido.');
   }
   const role = String(user?.rol || '').toLowerCase();
-  if (!WRITABLE_ROLES.has(role)) throw new RequestError(403, 'Tu cuenta no puede acceder a este formulario.');
+  if (!ACCESS_ROLES.has(role)) throw new RequestError(403, 'Tu cuenta no puede acceder a este formulario.');
   const filter = { _id: agencyId };
   if (role === 'consultor') filter.consultantId = user._id;
-  const agency = await Agency.findOne(filter).select('_id nombre').lean();
+  const agency = await Agency.findOne(filter).select('_id nombre razonSocial').lean();
   if (!agency) throw new RequestError(404, 'No se encontró la agencia o no tienes acceso asignado.');
   return agency;
+}
+
+function requireAdmin(req) {
+  const role = String(req.user?.rol || '').trim().toLowerCase();
+  if (!ADMIN_ROLES.has(role)) throw new RequestError(403, 'Solo un administrador puede modificar reportes guardados o sus imágenes.');
+}
+
+function requireCanCreate(req) {
+  const role = String(req.user?.rol || '').trim().toLowerCase();
+  if (!ADMIN_ROLES.has(role) && role !== 'consultor') {
+    throw new RequestError(403, 'Solo un administrador o consultor puede crear un reporte.');
+  }
 }
 
 async function loadReport(req, res, next, reportId) {
@@ -135,7 +152,7 @@ async function listForReports(req, res, next) {
       'generalData.inspectionDate': inspectionDate,
       status: { $ne: 'archived' },
     })
-      .select('reportId agencyNameSnapshot status revision templateVersion createdAt updatedAt')
+      .select('reportId agencyNameSnapshot status revision templateVersion generalData.visitNumber createdAt updatedAt')
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();
@@ -149,8 +166,102 @@ async function getForReport(req, res) {
   res.json({ success: true, data: { report: serializeReport(req.forReport) } });
 }
 
+function canRequestReportExcel(req) {
+  const role = String(req.user?.rol || '').trim().toLowerCase();
+  return ADMIN_ROLES.has(role)
+    || (role === 'consultor' && String(req.forReport.createdBy) === String(req.user._id));
+}
+
+async function queueForReportExcel(req, res, next) {
+  try {
+    if (!canRequestReportExcel(req)) {
+      throw new RequestError(403, 'Solo el creador consultor o un administrador puede generar el Excel.');
+    }
+    if (!Number.isInteger(req.body.expectedRevision) || req.body.expectedRevision !== req.forReport.revision) {
+      throw new RequestError(409, 'El reporte cambió antes de solicitar el Excel. Guarda nuevamente para regenerarlo.');
+    }
+    const report = req.forReport;
+    const generatedExcel = report.generatedExcel || {};
+    if (generatedExcel.status === 'ready' && generatedExcel.reportRevision === report.revision) {
+      return res.json({ success: true, data: { generatedExcel } });
+    }
+    if (generatedExcel.status === 'queued' || generatedExcel.status === 'processing') {
+      return res.status(202).json({ success: true, data: { generatedExcel } });
+    }
+    report.generatedExcel = {
+      status: 'queued',
+      reportRevision: report.revision,
+      templateVersion: '1.0',
+      storageProvider: 'local',
+      localFileName: '',
+      driveFileId: '',
+      queuedAt: new Date(),
+      startedAt: null,
+      generatedAt: null,
+      error: '',
+    };
+    await report.save();
+    kickForReportExcelWorker();
+    return res.status(202).json({
+      success: true,
+      data: { generatedExcel: report.generatedExcel },
+    });
+  } catch (error) {
+    return respondWithError(error, res, next);
+  }
+}
+
+async function getForReportExcelStatus(req, res, next) {
+  try {
+    if (!canRequestReportExcel(req)) {
+      throw new RequestError(403, 'No tienes permiso para consultar el estado del Excel.');
+    }
+    const stored = req.forReport.generatedExcel?.toObject
+      ? req.forReport.generatedExcel.toObject()
+      : req.forReport.generatedExcel;
+    const generatedExcel = stored
+      ? {
+        status: stored.status,
+        reportRevision: stored.reportRevision,
+        templateVersion: stored.templateVersion,
+        storageProvider: stored.storageProvider,
+        queuedAt: stored.queuedAt,
+        startedAt: stored.startedAt,
+        generatedAt: stored.generatedAt,
+        error: stored.error,
+      }
+      : null;
+    return res.json({ success: true, data: { generatedExcel } });
+  } catch (error) {
+    return respondWithError(error, res, next);
+  }
+}
+
+async function downloadForReportExcel(req, res, next) {
+  try {
+    requireAdmin(req);
+    const generatedExcel = req.forReport.generatedExcel;
+    if (generatedExcel?.status !== 'ready'
+      || generatedExcel.reportRevision !== req.forReport.revision
+      || generatedExcel.storageProvider !== 'local'
+      || !generatedExcel.localFileName) {
+      throw new RequestError(404, 'No hay un Excel validado para la revisión actual del reporte.');
+    }
+    const filePath = await getGeneratedForReportExcelPath(generatedExcel.localFileName);
+    return res.download(filePath, generatedExcel.localFileName, (error) => {
+      if (error && !res.headersSent) next(error);
+    });
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return res.status(404).json({ success: false, message: 'El archivo Excel local ya no está disponible.' });
+    }
+    return respondWithError(error, res, next);
+  }
+}
+
 async function saveReportContent(req, res, next) {
   try {
+    requireCanCreate(req);
     const { errors, value } = validateReportPayload(req.body);
     if (errors.length) throw new RequestError(422, 'El contenido del reporte no es válido.', errors);
     const idempotencyKey = req.get('Idempotency-Key');
@@ -158,6 +269,8 @@ async function saveReportContent(req, res, next) {
       throw new RequestError(400, 'Falta una clave de idempotencia válida.');
     }
     const agency = await getAccessibleAgency(req.user, req.body.agencyId);
+    value.generalData.companyName = agency.nombre;
+    value.generalData.legalName = agency.razonSocial || '';
     let report = await ForReport.findOne({ idempotencyKey }).select('+idempotencyKey');
     if (report && String(report.createdBy) !== String(req.user._id)) {
       throw new RequestError(409, 'La clave de solicitud ya está asociada a otro reporte.');
@@ -170,6 +283,14 @@ async function saveReportContent(req, res, next) {
     }
     const isNew = !report;
     if (!report) {
+      const previousReport = await ForReport.findOne({
+        agencyId: agency._id,
+        'generalData.inspectionDate': value.generalData.inspectionDate,
+        status: { $ne: 'archived' },
+      }).sort({ 'generalData.visitNumber': -1, createdAt: -1 }).select('generalData.visitNumber').lean();
+      value.generalData.visitNumber = Number.isInteger(previousReport?.generalData?.visitNumber)
+        ? previousReport.generalData.visitNumber + 1
+        : 1;
       report = new ForReport({
         reportId: `FOR-${crypto.randomUUID()}`,
         idempotencyKey,
@@ -181,6 +302,8 @@ async function saveReportContent(req, res, next) {
         updatedBy: req.user._id,
         generalData: {
           companyName: agency.nombre,
+          legalName: agency.razonSocial || '',
+          visitNumber: value.generalData.visitNumber,
           inspectionDate: value.generalData.inspectionDate,
           observations: '',
         },
@@ -188,7 +311,23 @@ async function saveReportContent(req, res, next) {
         drive: {},
       });
     }
-    reconcileReportContent(report, value, req.user._id);
+    const previousRevision = report.revision;
+    const contentChanged = reconcileReportContent(report, value, req.user._id);
+    if (!isNew && String(req.user.rol || '').toLowerCase() === 'consultor') {
+      if (contentChanged) {
+        throw new RequestError(403, 'Los consultores solo pueden crear reportes; no pueden modificarlos después de guardarlos.');
+      }
+      return res.json({
+        success: true,
+        data: { report: serializeReport(report) },
+      });
+    }
+    if (report.revision !== previousRevision) {
+      report.generatedExcel.status = 'not_requested';
+      report.generatedExcel.localFileName = '';
+      report.generatedExcel.driveFileId = '';
+      report.generatedExcel.error = '';
+    }
     if (isNew) report.revision = 1;
     try {
       await report.save();
@@ -212,6 +351,7 @@ async function saveReportContent(req, res, next) {
 
 async function updateForReport(req, res, next) {
   try {
+    requireAdmin(req);
     const { errors, value } = validateReportPayload(req.body);
     if (errors.length) throw new RequestError(422, 'El contenido del reporte no es válido.', errors);
     if (!Number.isInteger(req.body.expectedRevision) || req.body.expectedRevision !== req.forReport.revision) {
@@ -222,11 +362,21 @@ async function updateForReport(req, res, next) {
       throw new RequestError(400, 'El estado del reporte no es válido.');
     }
     const report = req.forReport;
+    const agency = await getAccessibleAgency(req.user, report.agencyId);
+    value.generalData.companyName = agency.nombre;
+    value.generalData.legalName = agency.razonSocial || '';
+    value.generalData.visitNumber = report.generalData.visitNumber || 1;
     const previousStatus = report.status;
     const previousRevision = report.revision;
     reconcileReportContent(report, value, req.user._id);
     report.status = requestedStatus;
     if (report.status !== previousStatus && report.revision === previousRevision) report.revision += 1;
+    if (report.revision !== previousRevision) {
+      report.generatedExcel.status = 'not_requested';
+      report.generatedExcel.localFileName = '';
+      report.generatedExcel.driveFileId = '';
+      report.generatedExcel.error = '';
+    }
 
     if (requestedStatus === 'completed') {
       const completion = validateReportCompletion(report);
@@ -272,6 +422,11 @@ function receiveEvidenceFile(req, res, next) {
 
 async function uploadReportImage(req, res, next) {
   try {
+    const role = String(req.user?.rol || '').trim().toLowerCase();
+    const canUploadAsCreator = role === 'consultor'
+      && req.forReport.status === 'draft'
+      && String(req.forReport.createdBy) === String(req.user._id);
+    if (!ADMIN_ROLES.has(role) && !canUploadAsCreator) requireAdmin(req);
     const { evidenceId, imageId } = req.params;
     if (!IDENTIFIER_PATTERN.test(evidenceId) || !IDENTIFIER_PATTERN.test(imageId)) {
       throw new RequestError(400, 'El identificador de evidencia o imagen no es válido.');
@@ -336,6 +491,11 @@ async function uploadReportImage(req, res, next) {
     image.status = 'active';
     image.uploadedAt = new Date();
     report.revision += 1;
+    report.generatedExcel.status = 'not_requested';
+    report.generatedExcel.reportRevision = 0;
+    report.generatedExcel.localFileName = '';
+    report.generatedExcel.driveFileId = '';
+    report.generatedExcel.error = '';
     report.updatedBy = req.user._id;
     await report.save();
     return res.status(201).json({
@@ -375,6 +535,7 @@ async function streamReportImage(req, res, next) {
 
 async function removeReportImage(req, res, next) {
   try {
+    requireAdmin(req);
     const evidence = req.forReport.evidence.find((entry) => (
       entry.evidenceId === req.params.evidenceId && entry.status === 'active'
     ));
@@ -383,6 +544,11 @@ async function removeReportImage(req, res, next) {
     if (image.status !== 'removed') {
       image.status = 'removed';
       req.forReport.revision += 1;
+      req.forReport.generatedExcel.status = 'not_requested';
+      req.forReport.generatedExcel.reportRevision = 0;
+      req.forReport.generatedExcel.localFileName = '';
+      req.forReport.generatedExcel.driveFileId = '';
+      req.forReport.generatedExcel.error = '';
       req.forReport.updatedBy = req.user._id;
       await req.forReport.save();
     }
@@ -396,9 +562,12 @@ async function removeReportImage(req, res, next) {
 }
 
 module.exports = {
+  downloadForReportExcel,
   getForReport,
+  getForReportExcelStatus,
   listForReports,
   loadReport,
+  queueForReportExcel,
   receiveEvidenceFile,
   removeReportImage,
   saveReportContent,

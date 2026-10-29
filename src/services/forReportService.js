@@ -34,6 +34,14 @@ function validateReportPayload(payload) {
   if (typeof generalData?.observations !== 'string' || generalData.observations.length > 2000) {
     errors.push('Las observaciones generales deben ser texto de hasta 2000 caracteres.');
   }
+  if (generalData?.legalName !== undefined
+    && (typeof generalData.legalName !== 'string' || generalData.legalName.length > 200)) {
+    errors.push('La razón social debe ser texto de hasta 200 caracteres.');
+  }
+  if (generalData?.visitNumber !== undefined
+    && (!Number.isInteger(generalData.visitNumber) || generalData.visitNumber < 1)) {
+    errors.push('El número de visita debe ser un entero positivo.');
+  }
 
   const aspects = payload.environmentalAspects;
   if (!Array.isArray(aspects) || aspects.length > ASPECTS.length) {
@@ -83,6 +91,9 @@ function validateReportPayload(payload) {
     errors,
     value: {
       generalData: {
+        companyName: typeof generalData.companyName === 'string' ? generalData.companyName.trim() : '',
+        legalName: typeof generalData.legalName === 'string' ? generalData.legalName.trim() : '',
+        visitNumber: generalData.visitNumber,
         inspectionDate: generalData.inspectionDate,
         observations: generalData.observations.trim(),
       },
@@ -123,7 +134,11 @@ function reconcileReportContent(report, value, userId) {
   const nextEvidenceIds = new Set();
 
   report.generalData = {
-    companyName: report.agencyNameSnapshot,
+    companyName: value.generalData.companyName || report.agencyNameSnapshot,
+    legalName: typeof value.generalData.legalName === 'string'
+      ? value.generalData.legalName
+      : report.generalData.legalName || '',
+    visitNumber: value.generalData.visitNumber || report.generalData.visitNumber || 1,
     inspectionDate: value.generalData.inspectionDate,
     observations: value.generalData.observations,
   };

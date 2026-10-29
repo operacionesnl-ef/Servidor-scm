@@ -76,6 +76,16 @@ test('does not load a report when the consultant is not assigned to its agency',
   assert.match(res.body.message, /no tienes acceso asignado/i);
 });
 
+test('does not allow a regular user role to update a report', async () => {
+  const res = makeResponse();
+  await controller.updateForReport({
+    body: {},
+    forReport: { revision: 1 },
+    user: { _id: '507f1f77bcf86cd799439011', rol: 'user' },
+  }, res, (error) => { throw error; });
+  assert.equal(res.statusCode, 403);
+});
+
 test('rejects an update with a stale revision without saving', async () => {
   let saveCalled = false;
   const report = {
@@ -96,10 +106,23 @@ test('rejects an update with a stale revision without saving', async () => {
       evidence: [],
     },
     forReport: report,
-    user: { _id: '507f1f77bcf86cd799439011' },
+    user: { _id: '507f1f77bcf86cd799439011', rol: 'admin' },
   }, res, (error) => { throw error; });
 
   assert.equal(res.statusCode, 409);
   assert.match(res.body.message, /cambió desde que lo abriste/i);
+  assert.equal(saveCalled, false);
+});
+
+test('rejects consultant updates to an existing report', async () => {
+  let saveCalled = false;
+  const res = makeResponse();
+  await controller.updateForReport({
+    body: {},
+    forReport: { revision: 1, save: async () => { saveCalled = true; } },
+    user: { _id: '507f1f77bcf86cd799439011', rol: 'consultor' },
+  }, res, (error) => { throw error; });
+
+  assert.equal(res.statusCode, 403);
   assert.equal(saveCalled, false);
 });
