@@ -16,6 +16,7 @@ const { startForReportExcelWorker } = require('./services/forReportExcelWorker')
 const { logServerEvent } = require('./utils/serverLogger');
 const { logStartup } = require('./utils/consoleLogger');
 const { getHealth } = require('./controllers/healthController');
+const { startResourceMonitor } = require('./services/resourceMonitor');
 const { allowedOrigins } = require('./config/security');
 const Subscription = require('./models/Subscription');
 
@@ -172,6 +173,7 @@ app.use(errorHandler);
 
 // ====== ARRANQUE ======
 connectDB().then(async () => {
+  startResourceMonitor();
   await startMailJobWorker();
   await startAgencyRefreshJobWorker();
   await startForReportExcelWorker();

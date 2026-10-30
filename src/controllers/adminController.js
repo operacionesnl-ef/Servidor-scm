@@ -3,6 +3,7 @@
 const os = require('node:os');
 const { once } = require('node:events');
 const mongoose = require('mongoose');
+const { getResourceMetrics } = require('../services/resourceMonitor');
 const Agency = require('../models/Agency');
 const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
@@ -218,6 +219,7 @@ async function getSystemMetrics(req, res, next) {
         totalMemoryBytes: os.totalmem(),
         freeMemoryBytes: os.freemem(),
       },
+      resources: getResourceMetrics(),
       database: {
         name: mongoose.connection.name,
         state: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',

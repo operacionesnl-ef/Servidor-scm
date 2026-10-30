@@ -21,6 +21,8 @@ const userSchema = new mongoose.Schema(
       passwordHash: { type: String },
       ultimoAcceso: { type: Date },
     },
+    // Solo un developer lo habilita (desde Mongo) para que un consultor edite reportes FOR guardados.
+    canEditForReports: { type: Boolean, default: false },
     readNotificationIds: { type: [String], default: [] },
     quickViewHiddenNotifications: { type: [String], default: [] },
     lastPushReminderPeriod: { type: String, default: '' },

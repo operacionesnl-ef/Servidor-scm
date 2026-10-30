@@ -8,12 +8,14 @@ const sharp = require('sharp');
 const { ASPECTS } = require('../formats/forAudAmb');
 const { isValidInspectionDate, sanitizeOriginalName } = require('./forReportService');
 
-const TEMPLATE_VERSION = '1.0';
+const TEMPLATE_VERSION = '1.1';
 const DEFAULT_TEMPLATE_PATH = path.join(__dirname, '../templates/FOR-AUD-AMB-v1.xlsx');
 const EXPECTED_SHEETS = ['DATOS', 'EVIDENCIA', 'APLICA'];
 const EVIDENCE_COUNT = 20;
 const MAX_IMAGES_PER_EVIDENCE = 4;
 const EMU_PER_PIXEL = 9525;
+const MAX_IMAGE_SIDE_PX = 1600;
+const IMAGE_JPEG_QUALITY = 82;
 const CATEGORY_CODES = {
   'carpeta-ambiental': { answer: 'a', comment: 'ca' },
   taller: { answer: 'b', comment: 'cb' },
@@ -138,7 +140,8 @@ function buildReportValues(report) {
   const aspects = new Map((report.environmentalAspects || []).map((aspect) => [aspect.aspectId, aspect]));
   for (const [aspectId, markers] of buildAspectMarkerMap()) {
     const aspect = aspects.get(aspectId);
-    values.set(markers.answer, aspect?.answer || '');
+    const answer = aspect?.answer;
+    values.set(markers.answer, answer === '1' ? 1 : answer === '0' ? 0 : answer || '');
     values.set(markers.observation, aspect?.observation || '');
   }
   const evidence = (report.evidence || []).filter((entry) => entry.status === 'active');
@@ -167,6 +170,30 @@ function buildReportValues(report) {
     evidenceById.push(used ? { entry, images: activeImages } : null);
   }
   return { values, evidence: evidenceById };
+}
+
+function safeFileNamePart(value, fallback) {
+  const cleaned = String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  return cleaned || fallback;
+}
+
+function buildDownloadFileName(report) {
+  const date = report.generalData.inspectionDate;
+  const day = date.slice(8, 10);
+  const month = date.slice(5, 7);
+  const year = date.slice(0, 4);
+  const endDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  endDate.setUTCMonth(endDate.getUTCMonth() + 1);
+  if (endDate.getUTCDate() !== Number(day)) endDate.setUTCDate(0);
+  const endToken = `(${String(endDate.getUTCDate()).padStart(2, '0')}-${String(endDate.getUTCMonth() + 1).padStart(2, '0')}-${endDate.getUTCFullYear()})`;
+  const startToken = `(${day}-${month}-${year})`;
+  const agencyCode = safeFileNamePart(report.agencyFileNameCodeSnapshot, 'SIN-CODIGO');
+  return `FOR-AUD-AMB-${agencyCode}-${startToken}-${endToken}.xlsx`;
 }
 
 function xmlEscape(value) {
@@ -375,26 +402,38 @@ function buildPictureAnchor(worksheet, area, tile, imageRelationshipId, imageInd
   const height = tile.height;
   const from = anchorPosition(worksheet, area, x, y);
   const to = anchorPosition(worksheet, area, x + width, y + height);
-  return `<xdr:twoCellAnchor editAs="oneCell"><xdr:from><xdr:col>${from.col}</xdr:col><xdr:colOff>${from.colOff}</xdr:colOff><xdr:row>${from.row}</xdr:row><xdr:rowOff>${from.rowOff}</xdr:rowOff></xdr:from><xdr:to><xdr:col>${to.col}</xdr:col><xdr:colOff>${to.colOff}</xdr:colOff><xdr:row>${to.row}</xdr:row><xdr:rowOff>${to.rowOff}</xdr:rowOff></xdr:to><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${imageIndex}" name="${xmlEscape(name)}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="${imageRelationshipId}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${Math.round(width * EMU_PER_PIXEL)}" cy="${Math.round(height * EMU_PER_PIXEL)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>`;
+  return `<xdr:twoCellAnchor editAs="oneCell"><xdr:from><xdr:col>${from.col}</xdr:col><xdr:colOff>${from.colOff}</xdr:colOff><xdr:row>${from.row}</xdr:row><xdr:rowOff>${from.rowOff}</xdr:rowOff></xdr:from><xdr:to><xdr:col>${to.col}</xdr:col><xdr:colOff>${to.colOff}</xdr:colOff><xdr:row>${to.row}</xdr:row><xdr:rowOff>${to.rowOff}</xdr:rowOff></xdr:to><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${imageIndex}" name="${xmlEscape(name)}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="${imageRelationshipId}" cstate="print"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${Math.round(width * EMU_PER_PIXEL)}" cy="${Math.round(height * EMU_PER_PIXEL)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>`;
 }
 
 function splitEvidenceTiles(images, area) {
   const margin = 4;
   const width = area.width;
   const height = area.height;
-  let slots;
-  if (images.length === 2 && images.every((image) => image.width > image.height)) {
-    slots = [
-      { x: 0, y: 0, width, height: height / 2 },
-      { x: 0, y: height / 2, width, height: height / 2 },
-    ];
-  } else {
-    slots = Array.from({ length: images.length }, (_, index) => ({
-      x: (width / images.length) * index,
-      y: 0,
-      width: width / images.length,
-      height,
-    }));
+  const buildSlots = (columns) => {
+    const rows = Math.ceil(images.length / columns);
+    const slotHeight = height / rows;
+    return Array.from({ length: images.length }, (_, index) => {
+      const row = Math.floor(index / columns);
+      const inRow = Math.min(columns, images.length - row * columns);
+      const slotWidth = width / inRow;
+      return { x: slotWidth * (index - row * columns), y: slotHeight * row, width: slotWidth, height: slotHeight };
+    });
+  };
+  const fittedArea = (slots) => slots.reduce((total, slot, index) => {
+    const ratio = images[index].width / images[index].height;
+    const w = Math.min(Math.max(1, slot.width - margin * 2), Math.max(1, slot.height - margin * 2) * ratio);
+    return total + w * (w / ratio);
+  }, 0);
+  // Elige la cuadrícula que aproveche más espacio (p. ej. 2x2 para 4 imágenes).
+  let slots = buildSlots(1);
+  let bestArea = fittedArea(slots);
+  for (let columns = 2; columns <= images.length; columns += 1) {
+    const candidate = buildSlots(columns);
+    const area = fittedArea(candidate);
+    if (area > bestArea) {
+      slots = candidate;
+      bestArea = area;
+    }
   }
   return slots.map((slot, index) => {
     const availableWidth = Math.max(1, slot.width - margin * 2);
@@ -447,7 +486,9 @@ async function insertEvidencePictures({ zip, drive, report, evidence, markerLoca
       const source = await loadDriveImage(drive, image.driveFileId);
       const processed = await sharp(source, { limitInputPixels: 100_000_000 })
         .rotate()
-        .png()
+        .resize({ width: MAX_IMAGE_SIDE_PX, height: MAX_IMAGE_SIDE_PX, fit: 'inside', withoutEnlargement: true })
+        .flatten({ background: '#ffffff' })
+        .jpeg({ quality: IMAGE_JPEG_QUALITY, mozjpeg: true, chromaSubsampling: '4:4:4' })
         .toBuffer({ resolveWithObject: true });
       images.push({ buffer: processed.data, width: processed.info.width, height: processed.info.height });
     }
@@ -478,7 +519,7 @@ async function insertEvidencePictures({ zip, drive, report, evidence, markerLoca
   for (const item of items) {
     for (const [imageIndex, image] of item.images.entries()) {
       const relationshipId = `rId${nextRelationship}`;
-      const fileName = `${report.reportId}-e${item.evidenceNumber}-i${imageIndex + 1}-${nextPictureId}.png`;
+      const fileName = `image${nextPictureId}.png`;
       const target = `../media/${fileName}`;
       zip.file(path.posix.join(path.posix.dirname(drawingPath), '..', 'media', fileName), image.buffer);
       imageRelations.push(`<Relationship Id="${relationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="${target}"/>`);
@@ -498,7 +539,7 @@ async function insertEvidencePictures({ zip, drive, report, evidence, markerLoca
   zip.file(drawingPath, drawingXml);
   drawingRelationships = drawingRelationships.replace('</Relationships>', `${imageRelations.join('')}</Relationships>`);
   zip.file(drawingRelationshipsPath, drawingRelationships);
-  await addContentTypeDefault(zip, 'png', 'image/png');
+  await addContentTypeDefault(zip, 'jpeg', 'image/jpeg');
 }
 
 async function addContentTypeDefault(zip, extension, contentType) {
@@ -512,16 +553,6 @@ async function addContentTypeDefault(zip, extension, contentType) {
     xml = xml.replace('</Types>', `<Default Extension="${extension}" ContentType="${contentType}"/></Types>`);
     zip.file(pathName, xml);
   }
-}
-
-function getDrawingShapeColumns(drawingXml) {
-  const columns = new Set();
-  for (const anchor of drawingXml.matchAll(/<xdr:(?:oneCellAnchor|twoCellAnchor)\b[\s\S]*?<\/xdr:(?:oneCellAnchor|twoCellAnchor)>/g)) {
-    if (!anchor[0].includes('<xdr:sp>')) continue;
-    const col = anchor[0].match(/<xdr:from>[\s\S]*?<xdr:col>(\d+)<\/xdr:col>/)?.[1];
-    if (col != null) columns.add(Number(col) + 1);
-  }
-  return columns;
 }
 
 function compressColumns(columns) {
@@ -568,7 +599,10 @@ function updateColumnVisibility(sheetXml, hiddenColumns) {
     const comparable = (item) => JSON.stringify(Object.fromEntries(
       Object.entries(item).filter(([key]) => key !== 'min' && key !== 'max'),
     ));
-    if (last && last.max + 1 === min && comparable(last.attrs) === comparable(attrs)) last.max = max;
+    if (last && last.max + 1 === min && comparable(last.attrs) === comparable(attrs)) {
+      last.max = max;
+      last.attrs.max = String(max);
+    }
     else segments.push({ min, max, attrs });
   }
   const cols = `<cols>${segments.map(({ attrs }) => (
@@ -578,35 +612,54 @@ function updateColumnVisibility(sheetXml, hiddenColumns) {
   return sheetXml.replace('<sheetData', `${cols}<sheetData`);
 }
 
+function updateRowVisibility(sheetXml, hiddenRows) {
+  if (!hiddenRows.size) return sheetXml;
+  return sheetXml.replace(/<row\b([^>]*)>/g, (rowXml, attributes) => {
+    const rowNumber = Number(attributes.match(/\br="(\d+)"/)?.[1]);
+    if (!hiddenRows.has(rowNumber)) return rowXml;
+    const updatedAttributes = /\bhidden="[^"]*"/.test(attributes)
+      ? attributes.replace(/\bhidden="[^"]*"/, 'hidden="1"')
+      : `${attributes} hidden="1"`;
+    return `<row${updatedAttributes}>`;
+  });
+}
+
+async function hideNotApplicableCategoryRows({ zip, markerLocations, sheetFiles, notApplicableCategories }) {
+  const hiddenRows = new Set();
+  for (const categoryId of notApplicableCategories) {
+    const category = CATEGORY_CODES[categoryId];
+    if (!category) throw new ForReportExcelError(`La sección no aplicable ${categoryId} no es válida.`);
+    const matchingMarkers = [...markerLocations.keys()].filter((marker) => (
+      new RegExp(`^\\{${category.answer}\\d+\\}$`).test(marker)
+    ));
+    if (!matchingMarkers.length) throw new ForReportExcelError(`No se encontraron preguntas para ${categoryId}.`);
+    const rows = matchingMarkers.map((marker) => markerLocations.get(marker)[0].address)
+      .map((address) => Number(address.match(/\d+$/)[0]));
+    for (let row = Math.min(...rows); row <= Math.max(...rows); row += 1) hiddenRows.add(row);
+  }
+  if (!hiddenRows.size) return;
+  const sheetPath = sheetFiles.get('APLICA');
+  const sheetXml = await zip.file(sheetPath)?.async('string');
+  if (!sheetXml) throw new ForReportExcelError('No se pudo leer la hoja APLICA de la plantilla.');
+  zip.file(sheetPath, updateRowVisibility(sheetXml, hiddenRows));
+}
+
 async function hideUnusedEvidenceColumns({ zip, evidence, markerLocations, sheetFiles }) {
   const sheetPath = sheetFiles.get('EVIDENCIA');
   const worksheet = await zip.file(sheetPath)?.async('string');
   if (!worksheet) throw new ForReportExcelError('No se pudo leer la hoja EVIDENCIA.');
-  const worksheetRelationshipsPath = path.posix.join(path.posix.dirname(sheetPath), '_rels', `${path.posix.basename(sheetPath)}.rels`);
-  const worksheetRelationships = await zip.file(worksheetRelationshipsPath)?.async('string');
-  const drawingRelation = [...(worksheetRelationships || '').matchAll(/<Relationship\b([^>]*)\/>/g)]
-    .map((match) => getAttributes(match[1]))
-    .find((attrs) => attrs.Type?.endsWith('/drawing'));
-  const drawingPath = drawingRelation ? getRelationshipTargetPath(worksheetRelationshipsPath, drawingRelation.Target) : '';
-  const drawingXml = drawingPath ? await zip.file(drawingPath)?.async('string') : '';
-  const shapeColumns = getDrawingShapeColumns(drawingXml || '');
   const hiddenColumns = new Set();
-  const worksheetModel = new ExcelJS.Workbook();
-  const templateBuffer = await zip.generateAsync({ type: 'nodebuffer' });
-  await worksheetModel.xlsx.load(templateBuffer);
-  const worksheetModelEvidence = worksheetModel.getWorksheet('EVIDENCIA');
   for (let index = 1; index <= EVIDENCE_COUNT; index += 1) {
     if (evidence[index - 1]) continue;
     const markerCell = markerLocations.get(`{evidencia${index}}`)?.[0];
     if (!markerCell) throw new ForReportExcelError(`No se encontró el bloque de evidencia ${index}.`);
-    const range = mergeRangeForCell(worksheetModelEvidence, markerCell.address);
+    const range = mergeRangeForCell(markerCell.worksheet, markerCell.address);
     const first = columnNumber(columnName(range.startCol));
     const last = columnNumber(columnName(range.endCol));
     const separator = index < EVIDENCE_COUNT ? last + 1 : null;
     const blockColumns = Array.from({ length: last - first + 1 }, (_, offset) => first + offset);
-    if (blockColumns.some((column) => shapeColumns.has(column))) continue;
     blockColumns.forEach((column) => hiddenColumns.add(column));
-    if (separator && !shapeColumns.has(separator)) hiddenColumns.add(separator);
+    if (separator) hiddenColumns.add(separator);
   }
   zip.file(sheetPath, updateColumnVisibility(worksheet, hiddenColumns));
 }
@@ -620,6 +673,10 @@ async function verifyGeneratedWorkbook(buffer, expectedValues, expectedImageCoun
   }
   const missingSheets = EXPECTED_SHEETS.filter((name) => !workbook.getWorksheet(name));
   if (missingSheets.length) throw new ForReportExcelError(`El Excel generado no contiene: ${missingSheets.join(', ')}.`);
+  const loadedImageCount = workbook.getWorksheet('EVIDENCIA').getImages().length;
+  if (loadedImageCount !== expectedImageCount) {
+    throw new ForReportExcelError('El libro Excel no reconoce todas las fotografías de evidencia incorporadas.');
+  }
   for (const [sheetName, cellValues] of expectedValues) {
     const worksheet = workbook.getWorksheet(sheetName);
     for (const [address, expected] of cellValues) {
@@ -739,6 +796,12 @@ async function generateForReportExcelBuffer(report, drive, options = {}) {
     sheetFiles,
   });
   await hideUnusedEvidenceColumns({ zip, evidence, markerLocations, sheetFiles });
+  await hideNotApplicableCategoryRows({
+    zip,
+    markerLocations,
+    sheetFiles,
+    notApplicableCategories: report.notApplicableCategories || [],
+  });
   const outputBuffer = await zip.generateAsync({
     type: 'nodebuffer',
     compression: 'DEFLATE',
@@ -751,6 +814,7 @@ async function generateForReportExcelBuffer(report, drive, options = {}) {
     templateVersion: TEMPLATE_VERSION,
     imageCount: expectedImageCount,
     fileName: `${report.reportId}-rev-${report.revision}.xlsx`,
+    downloadFileName: buildDownloadFileName(report),
   };
 }
 
@@ -758,6 +822,7 @@ module.exports = {
   DEFAULT_TEMPLATE_PATH,
   ForReportExcelError,
   TEMPLATE_VERSION,
+  buildDownloadFileName,
   buildReportValues,
   generateForReportExcelBuffer,
   markerInventory,

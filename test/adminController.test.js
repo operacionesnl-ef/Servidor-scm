@@ -157,6 +157,10 @@ test('system metrics compare MongoDB storage to the configured limit', async () 
     assert.equal(response.body.database.storageUsagePercentage, 50);
     assert.equal(response.body.database.storageLimitBytes, 1024);
     assert.equal(response.body.process.nodeVersion, process.version);
+    assert.ok(response.body.resources.memory);
+    assert.ok(response.body.resources.disk.totalBytes > 0);
+    assert.ok(response.body.resources.cpu.cores > 0);
+    assert.equal(typeof response.body.resources.complexJobs.paused, 'boolean');
   } finally {
     mongoose.connection.db = originalDb;
     if (originalStorageLimit === undefined) delete process.env.STORAGE_LIMIT_BYTES;

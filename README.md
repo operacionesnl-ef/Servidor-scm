@@ -9,6 +9,14 @@ npm install
 
 Configura UptimeRobot con un monitor **HTTP(s)** para `https://<tu-dominio>/health`, método `GET` y un intervalo de revisión adecuado para tu plan. La ruta es pública y devuelve `200` con `status: "ok"` cuando el proceso está activo y conectado a MongoDB; si la conexión a la base de datos se pierde, devuelve `503` con `status: "degraded"` para que el monitor marque el servicio como no disponible. La respuesta incluye `timestamp`, `uptimeSeconds` y el estado de MongoDB.
 
+## Recursos y protección de trabajos
+
+`GET /api/admin/system` (solo administrador, developer u organizador) incluye métricas actuales de memoria, disco y CPU en `resources`. En Linux toma el límite y el consumo de memoria del cgroup del contenedor, que es la referencia adecuada para Render; también informa la memoria RSS del proceso. Si no hay límite de cgroup disponible, configura `MEMORY_LIMIT_BYTES` con el límite real de memoria del servicio en Render para que el porcentaje y la protección sean efectivos. La capacidad del disco corresponde al sistema de archivos donde se ejecuta la aplicación.
+
+El monitor comprueba los recursos cada cinco segundos y también antes de tomar cada trabajo complejo. Al llegar a `MEMORY_PAUSE_THRESHOLD_PERCENT` (90 por defecto), deja en cola los nuevos envíos masivos, actualizaciones/verificaciones de agencias y generación de Excel. Los procesos ya iniciados terminan normalmente, y las rutas de consulta y operaciones breves siguen atendiendo solicitudes. Los trabajos en cola se reanudan automáticamente cuando el uso baja a `MEMORY_RESUME_THRESHOLD_PERCENT` (80 por defecto). La reanudación debe ser menor que el umbral de pausa; ambos valores aceptan números de 0 a 100.
+
+La aplicación no termina procesos ni fuerza la recolección de basura: hacerlo podría corromper o interrumpir trabajos. Si un trabajo activo por sí solo consume demasiada memoria, la pausa solo evitará iniciar más trabajos; considera reducir su carga o aumentar el plan. El control es por instancia y no reemplaza los límites ni las alertas configurados en Render.
+
 ## Variables de entorno
 Copia `.env.example` a `.env` y configura tus variables.
 

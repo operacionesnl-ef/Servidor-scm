@@ -103,6 +103,60 @@ test('refuses to assign a tag that is not permitted for the current user role', 
   }
 });
 
+test('preserves already assigned tags unavailable to the user while adding an allowed tag', async () => {
+  const originalMethods = {
+    findAgencies: Agency.find,
+    findAgencyById: Agency.findById,
+    findTags: AgencyTag.find,
+    findPreferences: AgencyPersonalization.find,
+  };
+  const agencyId = new mongoose.Types.ObjectId();
+  const restrictedTagId = new mongoose.Types.ObjectId();
+  const allowedTagId = new mongoose.Types.ObjectId();
+  const agency = {
+    _id: agencyId,
+    favorite: false,
+    tags: [restrictedTagId],
+    save: async () => {},
+  };
+  Agency.find = () => ({
+    select() { return this; },
+    lean: async () => [],
+  });
+  AgencyPersonalization.find = () => ({
+    select() {
+      return { lean: async () => [] };
+    },
+  });
+  Agency.findById = () => ({ select: async () => agency });
+  AgencyTag.find = (query) => {
+    if (query.allowedRoles?.$ne) {
+      return { distinct: async () => [restrictedTagId] };
+    }
+    return {
+      select() { return this; },
+      lean: async () => [{ _id: allowedTagId }],
+    };
+  };
+
+  try {
+    const res = response();
+    await updateAgencyPersonalization({
+      params: { id: String(agencyId) },
+      user: { _id: new mongoose.Types.ObjectId(), rol: 'user' },
+      body: { tagIds: [String(restrictedTagId), String(allowedTagId)] },
+    }, res, (error) => { throw error; });
+
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(agency.tags.map(String), [String(restrictedTagId), String(allowedTagId)]);
+  } finally {
+    Agency.find = originalMethods.findAgencies;
+    Agency.findById = originalMethods.findAgencyById;
+    AgencyTag.find = originalMethods.findTags;
+    AgencyPersonalization.find = originalMethods.findPreferences;
+  }
+});
+
 test('stores favorite changes directly on the shared agency record', async () => {
   const originalMethods = {
     find: Agency.find,

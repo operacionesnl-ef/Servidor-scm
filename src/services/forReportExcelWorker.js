@@ -1,59 +1,27 @@
 'use strict';
 
-const fs = require('node:fs/promises');
 const ForReport = require('../models/ForReport');
+const Agency = require('../models/Agency');
+const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
 const { createGoogleDriveClient } = require('../config/googleDrive');
 const {
   generateForReportExcelBuffer,
+  ForReportExcelError,
   TEMPLATE_VERSION,
 } = require('./forReportExcelGenerator');
 const {
-  getOutputDirectory,
-  removeGeneratedForReportExcel,
-  storeGeneratedForReportExcel,
-} = require('./forReportExcelFileStore');
+  ensureGeneratedExcelFolder,
+  ForReportDriveStorageError,
+  uploadGeneratedExcelToDrive,
+} = require('./forReportDriveStorage');
 const { logConsoleEvent } = require('../utils/serverLogger');
+const { shouldPauseComplexJobs } = require('./resourceMonitor');
 
 const POLL_INTERVAL_MS = 1500;
 const STALE_PROCESSING_MS = 5 * 60 * 1000;
-const MAX_LOCAL_REVISIONS_PER_REPORT = 5;
 
 let workerPromise = null;
 let pollTimer = null;
-
-function reportHasDriveImages(report) {
-  return (report.evidence || []).some((entry) => (
-    entry.status === 'active'
-    && (entry.images || []).some((image) => image.status === 'active' && image.driveFileId)
-  ));
-}
-
-async function pruneOldRevisions(reportId, currentFileName) {
-  const directory = getOutputDirectory();
-  const filenamePrefix = `${reportId}-rev-`;
-  let names;
-  try {
-    names = await fs.readdir(directory);
-  } catch (error) {
-    if (error.code === 'ENOENT') return;
-    throw error;
-  }
-  const files = names
-    .filter((name) => name.startsWith(filenamePrefix) && name.endsWith('.xlsx'))
-    .map((name) => ({
-      name,
-      revision: Number(name.slice(filenamePrefix.length, -5)),
-    }))
-    .filter(({ revision }) => Number.isInteger(revision))
-    .sort((left, right) => right.revision - left.revision);
-  const retained = new Set([currentFileName, ...files
-    .filter(({ name }) => name !== currentFileName)
-    .slice(0, MAX_LOCAL_REVISIONS_PER_REPORT - 1)
-    .map(({ name }) => name)]);
-  for (const { name } of files) {
-    if (!retained.has(name)) await removeGeneratedForReportExcel(name);
-  }
-}
 
 async function recordGenerationFailure(report, revision, error) {
   const message = String(error?.message || 'No se pudo generar y verificar el archivo Excel.').slice(0, 1000);
@@ -62,12 +30,16 @@ async function recordGenerationFailure(report, revision, error) {
       _id: report._id,
       revision,
       'generatedExcel.reportRevision': revision,
-      'generatedExcel.status': 'processing',
+      'generatedExcel.status': { $in: ['processing', 'ready'] },
     },
     {
       $set: {
         'generatedExcel.status': 'failed',
         'generatedExcel.error': message,
+        'generatedExcel.localFileName': '',
+        'generatedExcel.driveFileId': '',
+        'generatedExcel.downloadFileName': '',
+        'generatedExcel.generatedAt': null,
         'generatedExcel.startedAt': null,
       },
     },
@@ -101,16 +73,32 @@ async function processClaimedReport(report) {
   }, 60_000);
   heartbeat.unref?.();
 
-  let storedFileName = '';
   try {
     if (report.revision !== revision) return;
-    const drive = reportHasDriveImages(report) ? createGoogleDriveClient() : null;
+    if (!report.agencyStateSnapshot || !report.agencyFileNameCodeSnapshot || !report.agencyBrandSnapshot) {
+      const agency = await Agency.findById(report.agencyId)
+        .select('entidadFederativa fileNameCode marca')
+        .lean();
+      report.agencyStateSnapshot ||= agency?.entidadFederativa || '';
+      report.agencyFileNameCodeSnapshot ||= agency?.fileNameCode || '';
+      report.agencyBrandSnapshot ||= agency?.marca || '';
+    }
+    if (!report.agencyBrandSnapshot) {
+      throw new ForReportDriveStorageError('Configura la marca de la agencia desde el modo Debug antes de generar el Excel.');
+    }
+    const drive = createGoogleDriveClient();
     const generated = await generateForReportExcelBuffer(report, drive);
     if (generated.templateVersion !== TEMPLATE_VERSION) {
       throw new Error('La versión de plantilla generada no coincide con la versión activa.');
     }
-    const stored = await storeGeneratedForReportExcel(generated.fileName, generated.buffer);
-    storedFileName = stored.localFileName;
+    const folderId = await ensureGeneratedExcelFolder(drive, report);
+    const stored = await uploadGeneratedExcelToDrive(drive, {
+      folderId,
+      reportId: report.reportId,
+      revision,
+      fileName: generated.downloadFileName,
+      buffer: generated.buffer,
+    });
     const result = await ForReport.updateOne(
       {
         _id: report._id,
@@ -122,40 +110,70 @@ async function processClaimedReport(report) {
         $set: {
           'generatedExcel.status': 'ready',
           'generatedExcel.templateVersion': generated.templateVersion,
-          'generatedExcel.storageProvider': stored.storageProvider,
-          'generatedExcel.localFileName': stored.localFileName,
-          'generatedExcel.driveFileId': '',
+          'generatedExcel.storageProvider': 'drive',
+          'generatedExcel.localFileName': '',
+          'generatedExcel.downloadFileName': generated.downloadFileName,
+          'generatedExcel.driveFileId': stored.driveFileId,
           'generatedExcel.generatedAt': new Date(),
           'generatedExcel.startedAt': null,
           'generatedExcel.error': '',
+          'drive.generatedFolderId': stored.folderId,
         },
       },
     );
     if (result.modifiedCount !== 1) {
-      await removeGeneratedForReportExcel(stored.localFileName);
-      storedFileName = '';
-      return;
+      throw new Error('El reporte cambió durante la generación del Excel; solicita la generación nuevamente.');
     }
-    await pruneOldRevisions(report.reportId, stored.localFileName);
+    const monthlyUpdate = await AgencyMonthlyFiles.updateOne(
+      {
+        agencyId: report.agencyId,
+        period: report.agencyPeriod || report.generalData.inspectionDate.slice(0, 7),
+        'archivos.archivo2.systemReportId': report.reportId,
+        'archivos.archivo2.reportRevision': revision,
+        'archivos.archivo2.generatedExcelStatus': { $in: ['queued', 'processing'] },
+      },
+      {
+        $set: {
+          'archivos.archivo2.nombre': generated.downloadFileName,
+          'archivos.archivo2.driveId': stored.driveFileId,
+          'archivos.archivo2.ruta': stored.folderId,
+          'archivos.archivo2.generatedExcelStatus': 'ready',
+          'archivos.archivo2.generatedExcelRevision': revision,
+          'archivos.archivo2.generatedExcelError': '',
+          'archivos.archivo2.generatedExcelTemplateVersion': generated.templateVersion,
+        },
+      },
+    );
+    if (monthlyUpdate.matchedCount === 0) {
+      throw new Error('No se encontró el archivo mensual correspondiente al reporte generado.');
+    }
     logConsoleEvent('for_report_excel_ready', {
       reportId: report.reportId,
       reportRevision: revision,
       imageCount: generated.imageCount,
     });
   } catch (error) {
-    if (storedFileName) {
-      try {
-        await removeGeneratedForReportExcel(storedFileName);
-      } catch (cleanupError) {
-        logConsoleEvent('for_report_excel_cleanup_failed', {
-          reportId: report.reportId,
-          reportRevision: revision,
-          message: cleanupError.message,
-        });
-      }
-    }
+    const message = String(error?.message || 'No se pudo generar y verificar el archivo Excel.').slice(0, 1000);
+    const publicMessage = error instanceof ForReportExcelError || error instanceof ForReportDriveStorageError
+      ? message
+      : 'Error interno al generar el Excel. Revisa los registros del servidor.';
     try {
       await recordGenerationFailure(report, revision, error);
+      await AgencyMonthlyFiles.updateOne(
+        {
+          agencyId: report.agencyId,
+          period: report.agencyPeriod || report.generalData.inspectionDate.slice(0, 7),
+          'archivos.archivo2.systemReportId': report.reportId,
+          'archivos.archivo2.reportRevision': revision,
+          'archivos.archivo2.generatedExcelStatus': { $in: ['queued', 'processing'] },
+        },
+        {
+          $set: {
+            'archivos.archivo2.generatedExcelStatus': 'failed',
+            'archivos.archivo2.generatedExcelError': publicMessage,
+          },
+        },
+      );
     } catch (recordError) {
       logConsoleEvent('for_report_excel_failure_state_failed', {
         reportId: report.reportId,
@@ -185,10 +203,62 @@ async function requeueStaleProcessingReports() {
   );
 }
 
+async function invalidateStaleGeneratedExcels() {
+  const staleReports = await ForReport.find({
+    'generatedExcel.status': 'ready',
+    'generatedExcel.templateVersion': { $ne: TEMPLATE_VERSION },
+  }).select('_id reportId').lean();
+  if (!staleReports.length) return 0;
+
+  const reportIds = staleReports.map(({ reportId }) => reportId);
+  const reportResult = await ForReport.updateMany(
+    {
+      _id: { $in: staleReports.map(({ _id }) => _id) },
+      'generatedExcel.status': 'ready',
+      'generatedExcel.templateVersion': { $ne: TEMPLATE_VERSION },
+    },
+    {
+      $set: {
+        'generatedExcel.status': 'not_requested',
+        'generatedExcel.reportRevision': 0,
+        'generatedExcel.templateVersion': TEMPLATE_VERSION,
+        'generatedExcel.storageProvider': 'drive',
+        'generatedExcel.localFileName': '',
+        'generatedExcel.driveFileId': '',
+        'generatedExcel.downloadFileName': '',
+        'generatedExcel.queuedAt': null,
+        'generatedExcel.startedAt': null,
+        'generatedExcel.generatedAt': null,
+        'generatedExcel.error': '',
+      },
+    },
+  );
+  await AgencyMonthlyFiles.updateMany(
+    { 'archivos.archivo2.systemReportId': { $in: reportIds } },
+    {
+      $set: {
+        'archivos.archivo2.nombre': '',
+        'archivos.archivo2.driveId': '',
+        'archivos.archivo2.ruta': '',
+        'archivos.archivo2.generatedExcelStatus': 'not_requested',
+        'archivos.archivo2.generatedExcelRevision': 0,
+        'archivos.archivo2.generatedExcelError': '',
+        'archivos.archivo2.generatedExcelTemplateVersion': '',
+      },
+    },
+  );
+  logConsoleEvent('for_report_excel_template_invalidated', {
+    count: reportResult.modifiedCount,
+    templateVersion: TEMPLATE_VERSION,
+  });
+  return reportResult.modifiedCount;
+}
+
 async function processQueuedReports() {
   if (workerPromise) return workerPromise;
   workerPromise = (async () => {
     while (true) {
+      if (shouldPauseComplexJobs()) break;
       const report = await ForReport.findOneAndUpdate(
         { 'generatedExcel.status': 'queued' },
         {
@@ -215,6 +285,7 @@ function kickForReportExcelWorker() {
 
 async function startForReportExcelWorker() {
   await requeueStaleProcessingReports();
+  await invalidateStaleGeneratedExcels();
   kickForReportExcelWorker();
   if (!pollTimer) {
     pollTimer = setInterval(async () => {
@@ -231,5 +302,6 @@ async function startForReportExcelWorker() {
 
 module.exports = {
   kickForReportExcelWorker,
+  invalidateStaleGeneratedExcels,
   startForReportExcelWorker,
 };

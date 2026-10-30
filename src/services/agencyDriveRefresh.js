@@ -75,6 +75,7 @@ function buildAgencyRefresh(agency, descendants, year, month) {
       ? file.folderPath
       : String(file.path || '').split(/[\\/]/).map((part) => part.trim()).filter(Boolean).slice(0, -1);
     const persistedFile = {
+      mode: 'drive',
       nombre: file.name.trim(),
       ruta: file.parents?.[0] || file.id,
       driveId: file.id,
@@ -137,6 +138,29 @@ async function refreshAgencyFromDrive(agency, drive, year, month, folderId) {
   const update = buildAgencyRefresh(agency, descendants, year, month);
   const detectedPeriod = update.period;
   const period = `${detectedPeriod.year}-${String(detectedPeriod.month).padStart(2, '0')}`;
+  const existingRecord = await AgencyMonthlyFiles.findOne({
+    agencyId: agency._id,
+    period,
+  }).lean();
+  for (const { key } of FILE_TYPES) {
+    const existing = existingRecord?.archivos?.[key];
+    if (existing?.mode !== 'system' || !existing.systemReportId) continue;
+    update.archivos[key] = existing;
+    update.results[key] = { status: 'system', file: existing };
+  }
+  const policy = getAgencyFileRequirementPolicy(agency, update.archivos);
+  update.status = policy.requirementSatisfied ? 'updated' : 'issues';
+  update.optionalMissingKeys = policy.optionalMissingKeys;
+  update.notices = policy.optionalMessage ? [policy.optionalMessage] : [];
+  update.summary = {
+    ...update.summary,
+    system: FILE_TYPES.filter(({ key }) => update.results[key].status === 'system').length,
+    requiredFound: policy.isChihuahua
+      ? Number(policy.requirementSatisfied)
+      : (policy.requirementSatisfied ? 3 : 3 - policy.missingKeys.length),
+    missingRequired: !policy.requirementSatisfied,
+    optionalMissingKeys: policy.optionalMissingKeys,
+  };
   await AgencyMonthlyFiles.findOneAndUpdate(
     { agencyId: agency._id, period },
     {

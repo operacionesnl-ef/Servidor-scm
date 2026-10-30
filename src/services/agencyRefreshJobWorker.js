@@ -15,6 +15,7 @@ const { inspectAgencyIntegrity } = require('./agencyIntegrityCheck');
 const { logServerEvent } = require('../utils/serverLogger');
 const { logEvent } = require('../utils/consoleLogger');
 const { sendPushToUser } = require('./pushNotificationService');
+const { shouldPauseComplexJobs } = require('./resourceMonitor');
 
 let workerPromise = null;
 let pollTimer = null;
@@ -241,6 +242,7 @@ async function processQueuedJobs() {
   if (workerPromise) return workerPromise;
   workerPromise = (async () => {
     while (true) {
+      if (shouldPauseComplexJobs()) break;
       const job = await AgencyRefreshJob.findOneAndUpdate(
         { status: 'queued' },
         { $set: { status: 'processing' } },

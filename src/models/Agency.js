@@ -31,6 +31,8 @@ const agencySchema = new mongoose.Schema(
     cc: { type: [String], default: [] },
     cco: { type: [String], default: [] },
     entidadFederativa: { type: String, required: true, trim: true },
+    marca: { type: String, trim: true, maxlength: 80, default: '' },
+    fileNameCode: { type: String, trim: true, maxlength: 60, default: '' },
     status: {
       type: String,
       enum: ['activa', 'inactiva', 'suspendida'],

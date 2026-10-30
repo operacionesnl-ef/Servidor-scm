@@ -180,17 +180,19 @@ const updateAgencyPersonalization = async (req, res, next) => {
     const previousTagIds = (agency.tags || []).map(String).sort();
     if (body.tagIds !== undefined) {
       const tagIds = [...new Set(body.tagIds)];
-      const matchingTags = tagIds.length
-        ? await AgencyTag.find({ _id: { $in: tagIds }, allowedRoles: req.user.rol }).select('_id').lean()
-        : [];
-      if (matchingTags.length !== tagIds.length) {
-        return validationFailure(res, { tagIds: 'One or more tags are unavailable for your role' });
-      }
-
       const inaccessibleTagIds = agency.tags?.length
         ? await AgencyTag.find({ _id: { $in: agency.tags }, allowedRoles: { $ne: req.user.rol } })
           .distinct('_id')
         : [];
+      const inaccessibleTagIdSet = new Set(inaccessibleTagIds.map(String));
+      const editableTagIds = tagIds.filter((tagId) => !inaccessibleTagIdSet.has(tagId));
+      const matchingTags = editableTagIds.length
+        ? await AgencyTag.find({ _id: { $in: editableTagIds }, allowedRoles: req.user.rol }).select('_id').lean()
+        : [];
+      if (matchingTags.length !== editableTagIds.length) {
+        return validationFailure(res, { tagIds: 'One or more tags are unavailable for your role' });
+      }
+
       agency.tags = [...new Set([...inaccessibleTagIds.map(String), ...tagIds])];
     }
     if (body.favorite !== undefined) agency.favorite = body.favorite;

@@ -153,8 +153,21 @@ async function inspectAgencyIntegrity(drive, agency, expectedPeriod) {
   const checks = [];
   const policy = getAgencyFileRequirementPolicy(agency);
   for (const fileType of FILE_TYPES) {
-    const check = await inspectFile(drive, agency, fileType);
     const file = agency.archivos?.[fileType.key];
+    if (file?.mode === 'system' && file.systemReportId) {
+      checks.push({
+        key: fileType.key,
+        code: fileType.code,
+        fileName: file.nombre || '',
+        fileId: '',
+        status: 'system',
+        problems: [],
+        period: null,
+        expectedPeriod,
+      });
+      continue;
+    }
+    const check = await inspectFile(drive, agency, fileType);
     const fileIsBlank = !file?.nombre && !file?.ruta && !file?.driveId;
     if (policy.optionalMissingKeys.includes(fileType.key) && fileIsBlank) {
       check.status = 'optional';
