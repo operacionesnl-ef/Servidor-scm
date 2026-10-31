@@ -44,6 +44,7 @@ async function completeGoogleLogin(payload, req, res, next) {
         correo: user.correo,
         rol: user.rol,
         status: user.status,
+        canEditForReports: user.canEditForReports === true,
       },
       token,
     });
@@ -80,6 +81,7 @@ async function completeGoogleWebLogin(payload, req, res, next) {
         correo: user.correo,
         rol: user.rol,
         status: user.status,
+        canEditForReports: user.canEditForReports === true,
       },
     });
   } catch (error) {
@@ -148,6 +150,7 @@ const getCurrentSession = (req, res) => {
       correo: req.user.correo,
       rol: req.user.rol,
       status: req.user.status,
+      canEditForReports: req.user.canEditForReports === true,
     },
   });
 };

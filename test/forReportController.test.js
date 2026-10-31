@@ -1,17 +1,29 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const { afterEach, test } = require('node:test');
 const Agency = require('../src/models/Agency');
+const AgencyMonthlyFiles = require('../src/models/AgencyMonthlyFiles');
 const ForReport = require('../src/models/ForReport');
 const controller = require('../src/controllers/forReportController');
 
 const originalAgencyFindOne = Agency.findOne;
 const originalReportFindOne = ForReport.findOne;
+const originalReportFindOneAndUpdate = ForReport.findOneAndUpdate;
+const originalMonthlyFindOneAndUpdate = AgencyMonthlyFiles.findOneAndUpdate;
 
 afterEach(() => {
   Agency.findOne = originalAgencyFindOne;
   ForReport.findOne = originalReportFindOne;
+  ForReport.findOneAndUpdate = originalReportFindOneAndUpdate;
+  AgencyMonthlyFiles.findOneAndUpdate = originalMonthlyFindOneAndUpdate;
+});
+
+test('allows reportRevision zero while Excel generation has not been requested', () => {
+  const revisionPath = ForReport.schema.path('generatedExcel.reportRevision');
+  assert.equal(revisionPath.options.min, 0);
+  assert.equal(revisionPath.options.default, 0);
 });
 
 function makeResponse() {
@@ -76,6 +88,16 @@ test('does not load a report when the consultant is not assigned to its agency',
   assert.match(res.body.message, /no tienes acceso asignado/i);
 });
 
+test('does not allow a regular user role to update a report', async () => {
+  const res = makeResponse();
+  await controller.updateForReport({
+    body: {},
+    forReport: { revision: 1 },
+    user: { _id: '507f1f77bcf86cd799439011', rol: 'user' },
+  }, res, (error) => { throw error; });
+  assert.equal(res.statusCode, 403);
+});
+
 test('rejects an update with a stale revision without saving', async () => {
   let saveCalled = false;
   const report = {
@@ -96,10 +118,150 @@ test('rejects an update with a stale revision without saving', async () => {
       evidence: [],
     },
     forReport: report,
-    user: { _id: '507f1f77bcf86cd799439011' },
+    user: { _id: '507f1f77bcf86cd799439011', rol: 'admin' },
   }, res, (error) => { throw error; });
 
   assert.equal(res.statusCode, 409);
   assert.match(res.body.message, /cambió desde que lo abriste/i);
   assert.equal(saveCalled, false);
+});
+
+test('rejects consultant updates to an existing report', async () => {
+  let saveCalled = false;
+  const res = makeResponse();
+  await controller.updateForReport({
+    body: {},
+    forReport: { revision: 1, save: async () => { saveCalled = true; } },
+    user: { _id: '507f1f77bcf86cd799439011', rol: 'consultor' },
+  }, res, (error) => { throw error; });
+
+  assert.equal(res.statusCode, 403);
+  assert.equal(saveCalled, false);
+});
+
+test('requeues a ready report when its generated Excel file is missing', async () => {
+  const reportId = `FOR-${crypto.randomUUID()}`;
+  const report = {
+    _id: '507f1f77bcf86cd799439099',
+    reportId,
+    agencyId: '507f1f77bcf86cd799439012',
+    agencyPeriod: '2026-10',
+    agencyNameSnapshot: 'Agencia Norte',
+    agencyFileNameCodeSnapshot: 'HYN-SAN-NL',
+    revision: 6,
+    createdBy: '507f1f77bcf86cd799439011',
+    updatedBy: '507f1f77bcf86cd799439011',
+    generalData: { inspectionDate: '2026-10-01' },
+    generatedExcel: {
+      status: 'ready',
+      reportRevision: 6,
+      templateVersion: '1.1',
+      storageProvider: 'local',
+      localFileName: `${reportId}-rev-6.xlsx`,
+    },
+    save: async () => {},
+  };
+  const monthlyUpdates = [];
+  AgencyMonthlyFiles.findOneAndUpdate = async (...args) => {
+    monthlyUpdates.push(args);
+    return {};
+  };
+  ForReport.findOneAndUpdate = async () => null;
+  const res = makeResponse();
+
+  await controller.queueForReportExcel({
+    body: { expectedRevision: 6 },
+    forReport: report,
+    user: { _id: report.createdBy, rol: 'admin' },
+  }, res, (error) => { throw error; });
+
+  assert.equal(res.statusCode, 202);
+  assert.equal(report.generatedExcel.status, 'queued');
+  assert.equal(report.generatedExcel.storageProvider, 'drive');
+  assert.equal(report.generatedExcel.localFileName, '');
+  assert.equal(monthlyUpdates.length, 1);
+  assert.equal(monthlyUpdates[0][1].$set['archivos.archivo2'].generatedExcelStatus, 'queued');
+});
+
+test('requeues a ready report generated with an older template version', async () => {
+  const reportId = `FOR-${crypto.randomUUID()}`;
+  const report = {
+    _id: '507f1f77bcf86cd799439098',
+    reportId,
+    agencyId: '507f1f77bcf86cd799439012',
+    agencyPeriod: '2026-10',
+    agencyNameSnapshot: 'Agencia Norte',
+    agencyFileNameCodeSnapshot: 'HYN-SAN-NL',
+    revision: 6,
+    createdBy: '507f1f77bcf86cd799439011',
+    updatedBy: '507f1f77bcf86cd799439011',
+    generalData: { inspectionDate: '2026-10-01' },
+    generatedExcel: {
+      status: 'ready',
+      reportRevision: 6,
+      templateVersion: '1.0',
+      storageProvider: 'drive',
+      driveFileId: 'old-drive-file',
+    },
+    save: async () => {},
+  };
+  const monthlyUpdates = [];
+  AgencyMonthlyFiles.findOneAndUpdate = async (...args) => {
+    monthlyUpdates.push(args);
+    return {};
+  };
+  ForReport.findOneAndUpdate = async () => null;
+  const res = makeResponse();
+
+  await controller.queueForReportExcel({
+    body: { expectedRevision: 6 },
+    forReport: report,
+    user: { _id: report.createdBy, rol: 'admin' },
+  }, res, (error) => { throw error; });
+
+  assert.equal(res.statusCode, 202);
+  assert.equal(report.generatedExcel.status, 'queued');
+  assert.equal(report.generatedExcel.templateVersion, '1.1');
+  assert.equal(monthlyUpdates[0][1].$set['archivos.archivo2'].generatedExcelStatus, 'queued');
+});
+test('requeues a ready report created with an older generator version', async () => {
+  const reportId = `FOR-${crypto.randomUUID()}`;
+  const report = {
+    _id: '507f1f77bcf86cd799439098',
+    reportId,
+    agencyId: '507f1f77bcf86cd799439012',
+    agencyPeriod: '2026-10',
+    agencyNameSnapshot: 'Agencia Norte',
+    agencyFileNameCodeSnapshot: 'HYN-SAN-NL',
+    revision: 6,
+    createdBy: '507f1f77bcf86cd799439011',
+    updatedBy: '507f1f77bcf86cd799439011',
+    generalData: { inspectionDate: '2026-10-01' },
+    generatedExcel: {
+      status: 'ready',
+      reportRevision: 6,
+      templateVersion: '1.0',
+      storageProvider: 'drive',
+      driveFileId: 'old-drive-file',
+    },
+    save: async () => {},
+  };
+  const monthlyUpdates = [];
+  AgencyMonthlyFiles.findOneAndUpdate = async (...args) => {
+    monthlyUpdates.push(args);
+    return {};
+  };
+  ForReport.findOneAndUpdate = async () => null;
+  const res = makeResponse();
+
+  await controller.queueForReportExcel({
+    body: { expectedRevision: 6 },
+    forReport: report,
+    user: { _id: report.createdBy, rol: 'admin' },
+  }, res, (error) => { throw error; });
+
+  assert.equal(res.statusCode, 202);
+  assert.equal(report.generatedExcel.status, 'queued');
+  assert.equal(report.generatedExcel.templateVersion, '1.1');
+  assert.equal(monthlyUpdates[0][1].$set['archivos.archivo2'].generatedExcelStatus, 'queued');
 });

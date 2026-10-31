@@ -3,6 +3,7 @@ const { google } = require('googleapis');
 const Agency = require('../models/Agency');
 const AgencyMonthlyInspection = require('../models/AgencyMonthlyInspection');
 const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
+const ForReport = require('../models/ForReport');
 const AgencyNote = require('../models/AgencyNote');
 const AgencyPersonalization = require('../models/AgencyPersonalization');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
@@ -86,6 +87,8 @@ const ALLOWED_FIELDS = new Set([
   'cc',
   'cco',
   'entidadFederativa',
+  'marca',
+  'fileNameCode',
   'status',
   'archivos',
   'consultantId',
@@ -108,8 +111,10 @@ const AGENCY_HISTORY_FIELD_LABELS = {
   cc: 'CC',
   cco: 'CCO',
   entidadFederativa: 'Entidad federativa',
+  marca: 'Marca para carpeta de recorridos',
   status: 'Estado',
   consultantId: 'Consultor responsable',
+  fileNameCode: 'Código de nombre de archivos',
   archivos: 'Archivos asociados',
 };
 
@@ -248,6 +253,28 @@ const validateAgencyInput = (body, partial) => {
       errors[field] = 'Must be a string';
     } else {
       value[field] = body[field].trim();
+    }
+
+  }
+
+  if (body.fileNameCode !== undefined) {
+    if (typeof body.fileNameCode !== 'string'
+      || body.fileNameCode.trim().length > 60
+      || (body.fileNameCode.trim() && !/^[A-Za-z0-9_-]+$/.test(body.fileNameCode.trim()))) {
+      errors.fileNameCode = 'Must contain at most 60 letters, numbers, underscores, or hyphens';
+    } else {
+      value.fileNameCode = body.fileNameCode.trim().toUpperCase();
+    }
+  }
+
+  if (body.marca !== undefined) {
+    const marca = typeof body.marca === 'string' ? body.marca.trim().replace(/\s+/g, ' ') : null;
+    if (marca === null
+      || marca.length > 80
+      || /[<>:"/\\|?*\u0000-\u001f]/.test(marca)) {
+      errors.marca = 'Must be at most 80 characters and cannot contain path or control characters';
+    } else {
+      value.marca = marca.toLocaleUpperCase('es-MX');
     }
   }
 
@@ -469,6 +496,15 @@ const getAgencyById = async (req, res, next) => {
 const createAgency = async (req, res, next) => {
   const { errors, value } = validateAgencyInput(req.body, false);
   if (Object.keys(errors).length) return validationFailure(res, errors);
+  if (
+    ['fileNameCode', 'marca'].some((field) => Object.hasOwn(req.body || {}, field))
+    && req.user?.rol !== 'developer'
+  ) {
+    return res.status(403).json({
+      success: false,
+      message: 'Solo un developer puede editar la marca o el código de nombre de archivo.',
+    });
+  }
   if (value.consultantId !== undefined && !['admin', 'developer'].includes(req.user.rol)) {
     return res.status(403).json({
       success: false,
@@ -519,6 +555,15 @@ const updateAgency = async (req, res, next) => {
       message: 'Solo un developer puede editar las coordenadas de la agencia.',
     });
   }
+  if (
+    ['fileNameCode', 'marca'].some((field) => Object.hasOwn(req.body || {}, field))
+    && req.user?.rol !== 'developer'
+  ) {
+    return res.status(403).json({
+      success: false,
+      message: 'Solo un developer puede editar la marca o el código de nombre de archivo.',
+    });
+  }
   if (value.consultantId !== undefined && !['admin', 'developer'].includes(req.user.rol)) {
     return res.status(403).json({
       success: false,
@@ -535,7 +580,8 @@ const updateAgency = async (req, res, next) => {
 
     const historyFields = [
       'nombre', 'razonSocial', 'direccion', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente',
-      'seguimiento', 'cc', 'cco', 'entidadFederativa', 'status', 'consultantId', 'archivos',
+      'seguimiento', 'cc', 'cco', 'entidadFederativa', 'status', 'consultantId', 'fileNameCode', 'archivos',
+      'marca',
     ];
     const previousValues = Object.fromEntries(
       historyFields.map((field) => [field, historyValue(getAgencyField(agency, field))]),
@@ -543,6 +589,8 @@ const updateAgency = async (req, res, next) => {
     for (const field of [
       'nombre','razonSocial','direccion', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
       'cc', 'cco', 'entidadFederativa', 'status', 'consultantId',
+      'marca',
+      'fileNameCode',
     ]) {
       if (value[field] !== undefined) agency.set(field, value[field]);
     }
@@ -557,6 +605,42 @@ const updateAgency = async (req, res, next) => {
     }
 
     await agency.save();
+    if (previousValues.fileNameCode !== agency.fileNameCode || previousValues.marca !== agency.marca) {
+      await Promise.all([
+        ForReport.updateMany(
+          { agencyId: agency._id },
+          {
+            $set: {
+              agencyFileNameCodeSnapshot: agency.fileNameCode || '',
+              agencyBrandSnapshot: agency.marca || '',
+              'generatedExcel.status': 'not_requested',
+              'generatedExcel.reportRevision': 0,
+              'generatedExcel.storageProvider': 'drive',
+              'generatedExcel.localFileName': '',
+              'generatedExcel.driveFileId': '',
+              'generatedExcel.downloadFileName': '',
+              'generatedExcel.generatedAt': null,
+              'generatedExcel.error': '',
+              'drive.generatedFolderId': '',
+            },
+          },
+        ),
+        AgencyMonthlyFiles.updateMany(
+          { agencyId: agency._id, 'archivos.archivo2.mode': 'system' },
+          {
+            $set: {
+              'archivos.archivo2.nombre': '',
+              'archivos.archivo2.driveId': '',
+              'archivos.archivo2.ruta': '',
+              'archivos.archivo2.generatedExcelStatus': 'not_requested',
+              'archivos.archivo2.generatedExcelRevision': 0,
+              'archivos.archivo2.generatedExcelError': '',
+              'archivos.archivo2.generatedExcelTemplateVersion': '',
+            },
+          },
+        ),
+      ]);
+    }
     const changes = historyFields.flatMap((field) => {
       const from = previousValues[field];
       const to = historyValue(getAgencyField(agency, field));

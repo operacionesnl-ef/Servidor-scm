@@ -7,6 +7,7 @@ const { createOrGetPublicDriveCopy, findOrCreateAuxiliaryFolder } = require('./g
 const { logConsoleEvent, logServerEvent } = require('../utils/serverLogger');
 const { logEvent } = require('../utils/consoleLogger');
 const { sendPushToUser } = require('./pushNotificationService');
+const { shouldPauseComplexJobs } = require('./resourceMonitor');
 
 const GOOGLE_EXPORT_TYPES = {
   'application/vnd.google-apps.document': 'application/pdf',
@@ -351,6 +352,7 @@ async function processQueuedJobs() {
   if (workerPromise) return workerPromise;
   workerPromise = (async () => {
     while (true) {
+      if (shouldPauseComplexJobs()) break;
       const job = await MailJob.findOneAndUpdate(
         { status: 'queued' },
         { $set: { status: 'processing' } },

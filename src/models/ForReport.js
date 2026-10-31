@@ -33,17 +33,53 @@ const forReportSchema = new mongoose.Schema({
   type: { type: String, required: true, enum: ['FOR'], default: 'FOR' },
   agencyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Agency', required: true, index: true },
   agencyNameSnapshot: { type: String, required: true, trim: true, maxlength: 200 },
+  agencyStateSnapshot: { type: String, trim: true, maxlength: 100, default: '' },
+  agencyBrandSnapshot: { type: String, trim: true, maxlength: 80, default: '' },
+  agencyFileNameCodeSnapshot: { type: String, trim: true, maxlength: 60, default: '' },
+  agencyPeriod: { type: String, trim: true, match: /^\d{4}-(0[1-9]|1[0-2])$/, default: undefined },
   capturedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   status: { type: String, enum: ['draft', 'completed', 'archived'], default: 'draft', index: true },
   revision: { type: Number, min: 1, default: 1 },
-  templateVersion: { type: String, required: true, default: '1.0' },
+  templateVersion: { type: String, required: true, default: '1.1' },
   generalData: {
     companyName: { type: String, required: true, trim: true, maxlength: 200 },
+    legalName: { type: String, trim: true, maxlength: 200, default: '' },
+    visitNumber: { type: Number, min: 1, validate: Number.isInteger, default: 1 },
     inspectionDate: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
     observations: { type: String, trim: true, maxlength: 2000, default: '' },
   },
   environmentalAspects: { type: [environmentalAspectSchema], default: [] },
+  notApplicableCategories: {
+    type: [{
+      type: String,
+      enum: [
+        'carpeta-ambiental',
+        'taller',
+        'area-lavado',
+        'almacen-temporal-residuos-peligrosos',
+        'almacen-temporal-manejo-especial',
+      ],
+    }],
+    default: [],
+  },
   evidence: { type: [evidenceSchema], default: [] },
+  generatedExcel: {
+    status: {
+      type: String,
+      enum: ['not_requested', 'queued', 'processing', 'ready', 'failed'],
+      default: 'not_requested',
+    },
+    reportRevision: { type: Number, min: 0, default: 0 },
+    templateVersion: { type: String, trim: true, default: '1.1' },
+    storageProvider: { type: String, enum: ['local', 'drive'], default: 'drive' },
+    localFileName: { type: String, trim: true, default: '' },
+    downloadFileName: { type: String, trim: true, default: '' },
+    driveFileId: { type: String, trim: true, default: '' },
+    queuedAt: { type: Date, default: null },
+    startedAt: { type: Date, default: null },
+    generatedAt: { type: Date, default: null },
+    error: { type: String, trim: true, maxlength: 1000, default: '' },
+  },
   drive: {
     evidenceFolderId: { type: String, trim: true, default: '' },
     generatedFolderId: { type: String, trim: true, default: '' },
@@ -53,5 +89,9 @@ const forReportSchema = new mongoose.Schema({
 }, { timestamps: true, optimisticConcurrency: true });
 
 forReportSchema.index({ agencyId: 1, 'generalData.inspectionDate': 1, createdAt: -1 });
+forReportSchema.index(
+  { agencyId: 1, agencyPeriod: 1 },
+  { unique: true, partialFilterExpression: { agencyPeriod: { $type: 'string', $gt: '' } } },
+);
 
 module.exports = mongoose.model('ForReport', forReportSchema);

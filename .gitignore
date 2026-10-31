@@ -4,3 +4,4 @@ node_modules/
 logs/*.log
 dist/
 .github/
+storage/for-report-excels/

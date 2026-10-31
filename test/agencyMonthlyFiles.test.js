@@ -4,14 +4,20 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const mongoose = require('mongoose');
 const Agency = require('../src/models/Agency');
+const AgencyHistory = require('../src/models/AgencyHistory');
 const AgencyMonthlyFiles = require('../src/models/AgencyMonthlyFiles');
+const ForReport = require('../src/models/ForReport');
 const {
   getAgencyMonthlyFiles,
+  preserveSystemGeneratedFiles,
   saveAgencyMonthlyFiles,
   validateMonthlyFiles,
 } = require('../src/controllers/agencyMonthlyFilesController');
 const agencyRoutes = require('../src/routes/agencyRoutes');
 const { migrate } = require('../src/scripts/migrateAgencyMonthlyFiles');
+const { validateAgencyInput } = require('../src/controllers/agencyController');
+const agencyController = require('../src/controllers/agencyController');
+const { TEMPLATE_VERSION } = require('../src/services/forReportExcelGenerator');
 
 const sampleFile = {
   nombre: 'Reporte.xlsx',
@@ -54,6 +60,125 @@ test('rejects invalid periods, unknown file metadata, and negative sizes', () =>
   assert.ok(errors['archivos.archivo3.unexpected']);
 });
 
+test('validates a system-generated FOR reference and the developer agency filename code', () => {
+  const generatedFile = {
+    mode: 'system',
+    systemReportId: 'FOR-12345678-1234-1234-1234-123456789012',
+    nombre: 'FOR-AUD-AMB-HYN-SAN-NL-(22-10-2026)-(22-11-2026).xlsx',
+    generatedExcelStatus: 'queued',
+    reportRevision: 2,
+    generatedExcelRevision: 0,
+  };
+  const monthly = validateMonthlyFiles({
+    archivos: {
+      archivo1: null,
+      archivo2: generatedFile,
+      archivo3: null,
+      archivo4: null,
+    },
+  }, '2026-10');
+  assert.deepEqual(monthly.errors, {});
+  assert.equal(monthly.value.archivos.archivo2.mode, 'system');
+  assert.equal(monthly.value.archivos.archivo2.systemReportId, generatedFile.systemReportId);
+
+  const validCode = validateAgencyInput({
+    nombre: 'Sucursal Norte',
+    entidadFederativa: 'Nuevo León',
+    fileNameCode: 'hyn-san-nl',
+  }, false);
+  assert.deepEqual(validCode.errors, {});
+  assert.equal(validCode.value.fileNameCode, 'HYN-SAN-NL');
+
+  const invalidCode = validateAgencyInput({
+    nombre: 'Sucursal Norte',
+    entidadFederativa: 'Nuevo León',
+    fileNameCode: 'HYN/SAN',
+  }, false);
+  assert.ok(invalidCode.errors.fileNameCode);
+
+  const validBrand = validateAgencyInput({
+    nombre: 'Sucursal Norte',
+    entidadFederativa: 'Nuevo León',
+    marca: 'Hyundai Motor',
+  }, false);
+  assert.equal(validBrand.value.marca, 'HYUNDAI MOTOR');
+
+  const invalidBrand = validateAgencyInput({
+    nombre: 'Sucursal Norte',
+    entidadFederativa: 'Nuevo León',
+    marca: 'HYUNDAI/SONATA',
+  }, false);
+  assert.ok(invalidBrand.errors.marca);
+});
+
+test('persists the developer filename code through the agency debug update route', async () => {
+  const originalFindById = Agency.findById;
+  const originalHistoryCreate = AgencyHistory.create;
+  const originalReportUpdateMany = ForReport.updateMany;
+  const originalMonthlyUpdateMany = AgencyMonthlyFiles.updateMany;
+  const agencyId = new mongoose.Types.ObjectId();
+  const setCalls = [];
+  const agency = {
+    _id: agencyId,
+    fileNameCode: 'OLD-CODE',
+    marca: 'OLD-MARK',
+    nombre: 'Sucursal Norte',
+    updatedAt: new Date(),
+    set(field, value) {
+      setCalls.push([field, value]);
+      this[field] = value;
+    },
+    async save() {},
+  };
+  Agency.findById = async () => agency;
+  AgencyHistory.create = async () => ({});
+  ForReport.updateMany = async () => ({ modifiedCount: 0 });
+  AgencyMonthlyFiles.updateMany = async () => ({ modifiedCount: 0 });
+  const res = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return this; },
+  };
+
+  try {
+    await agencyController.updateAgency({
+      method: 'PATCH',
+      params: { id: agencyId.toString() },
+      body: { fileNameCode: 'HYN-SAN-NL', marca: 'Hyundai' },
+      user: { _id: new mongoose.Types.ObjectId(), rol: 'developer' },
+    }, res, (error) => { throw error; });
+
+    assert.ok(setCalls.some(([field, value]) => field === 'fileNameCode' && value === 'HYN-SAN-NL'));
+    assert.equal(agency.fileNameCode, 'HYN-SAN-NL');
+    assert.equal(agency.marca, 'HYUNDAI');
+    assert.equal(res.statusCode, 200);
+  } finally {
+    Agency.findById = originalFindById;
+    AgencyHistory.create = originalHistoryCreate;
+    ForReport.updateMany = originalReportUpdateMany;
+    AgencyMonthlyFiles.updateMany = originalMonthlyUpdateMany;
+  }
+});
+
+test('preserves a system-generated slot when saving Drive metadata for another slot', () => {
+  const generatedFile = {
+    mode: 'system',
+    systemReportId: 'FOR-12345678-1234-1234-1234-123456789012',
+    nombre: 'FOR-AUD-AMB-HYN-SAN-NL.xlsx',
+    generatedExcelStatus: 'ready',
+    reportRevision: 1,
+    generatedExcelRevision: 1,
+    periodYear: 2026,
+    periodMonth: 10,
+  };
+  const files = preserveSystemGeneratedFiles(
+    { archivo2: generatedFile },
+    { archivo2: null, archivo3: { ...sampleFile, mode: 'drive' } },
+  );
+  assert.equal(files.archivo2.systemReportId, generatedFile.systemReportId);
+  assert.equal(files.archivo3.mode, 'drive');
+});
+
 test('enforces one monthly file record per agency and period', () => {
   const indexes = AgencyMonthlyFiles.schema.indexes();
   assert.ok(indexes.some(([fields, options]) => (
@@ -85,6 +210,49 @@ test('reads a missing monthly record without creating a database row', async () 
     }, res, (error) => { throw error; });
     assert.equal(res.statusCode, 200);
     assert.equal(res.body.data.record, null);
+  } finally {
+    Agency.findById = originalFindById;
+    AgencyMonthlyFiles.findOne = originalFindOne;
+  }
+});
+
+test('exposes the active Excel template version for existing system files', async () => {
+  const originalFindById = Agency.findById;
+  const originalFindOne = AgencyMonthlyFiles.findOne;
+  const agencyId = new mongoose.Types.ObjectId();
+  Agency.findById = () => ({
+    select() { return this; },
+    lean: async () => ({ archivos: {} }),
+  });
+  AgencyMonthlyFiles.findOne = () => ({
+    lean: async () => ({
+      agencyId,
+      period: '2026-10',
+      archivos: {
+        archivo2: {
+          mode: 'system',
+          systemReportId: 'FOR-12345678-1234-1234-1234-123456789012',
+          generatedExcelStatus: 'ready',
+          reportRevision: 3,
+          generatedExcelRevision: 3,
+          generatedExcelTemplateVersion: '1.0',
+        },
+      },
+    }),
+  });
+  const res = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return this; },
+  };
+
+  try {
+    await getAgencyMonthlyFiles({
+      params: { id: agencyId.toString(), period: '2026-10' },
+    }, res, (error) => { throw error; });
+
+    assert.equal(res.body.data.record.archivos.archivo2.currentGeneratedExcelTemplateVersion, TEMPLATE_VERSION);
+    assert.equal(res.body.data.record.archivos.archivo2.generatedExcelTemplateVersion, '1.0');
   } finally {
     Agency.findById = originalFindById;
     AgencyMonthlyFiles.findOne = originalFindOne;

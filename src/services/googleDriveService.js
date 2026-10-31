@@ -120,8 +120,11 @@ async function findDriveFileByAppProperties(drive, folderId, appProperties) {
   const propertyQuery = Object.entries(appProperties)
     .map(([key, value]) => `appProperties has { key='${escapeDriveQuery(key)}' and value='${escapeDriveQuery(value)}' }`)
     .join(' and ');
+  const parentQuery = folderId
+    ? `'${escapeDriveQuery(folderId)}' in parents and `
+    : '';
   const { data } = await drive.files.list({
-    q: `'${escapeDriveQuery(folderId)}' in parents and ${propertyQuery} and trashed = false`,
+    q: `${parentQuery}${propertyQuery} and trashed = false`,
     spaces: 'drive',
     pageSize: 10,
     fields: 'files(id,name,mimeType,parents,size,md5Checksum,appProperties)',
@@ -167,6 +170,7 @@ async function uploadDriveFile(drive, { folderId, fileName, mimeType, body, appP
     },
     media: { mimeType, body },
     fields: 'id,name,mimeType,parents,size,md5Checksum',
+    supportsAllDrives: true,
   });
   return data;
 }
@@ -176,6 +180,7 @@ async function getDriveFileMetadata(drive, fileId) {
   const { data } = await drive.files.get({
     fileId,
     fields: 'id,name,mimeType,parents,size,md5Checksum,trashed',
+    supportsAllDrives: true,
   });
   return data;
 }

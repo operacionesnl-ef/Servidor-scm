@@ -10,6 +10,7 @@ const IDENTIFIER_PATTERN = /^[A-Za-z0-9_-]{8,100}$/;
 const MAX_EVIDENCE_COUNT = 20;
 const MAX_IMAGES_PER_EVIDENCE = 4;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const CATEGORY_IDS = new Set(ASPECTS.map(({ categoryId }) => categoryId));
 
 function isValidInspectionDate(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -34,12 +35,34 @@ function validateReportPayload(payload) {
   if (typeof generalData?.observations !== 'string' || generalData.observations.length > 2000) {
     errors.push('Las observaciones generales deben ser texto de hasta 2000 caracteres.');
   }
+  const agencyPeriod = payload.agencyPeriod === undefined
+    ? (isValidInspectionDate(generalData?.inspectionDate) ? generalData.inspectionDate.slice(0, 7) : '')
+    : payload.agencyPeriod;
+  if (!/^(202\d|203\d|2040)-(0[1-9]|1[0-2])$/.test(agencyPeriod)) {
+    errors.push('El período del reporte debe tener formato AAAA-MM entre 2020 y 2040.');
+  }
+  if (generalData?.legalName !== undefined
+    && (typeof generalData.legalName !== 'string' || generalData.legalName.length > 200)) {
+    errors.push('La razón social debe ser texto de hasta 200 caracteres.');
+  }
+  if (generalData?.visitNumber !== undefined
+    && (!Number.isInteger(generalData.visitNumber) || generalData.visitNumber < 1)) {
+    errors.push('El número de visita debe ser un entero positivo.');
+  }
 
   const aspects = payload.environmentalAspects;
   if (!Array.isArray(aspects) || aspects.length > ASPECTS.length) {
     errors.push('La lista de aspectos ambientales no es válida.');
   } else {
     errors.push(...validateEnvironmentalAspects(aspects));
+  }
+  const notApplicableCategories = payload.notApplicableCategories === undefined
+    ? []
+    : payload.notApplicableCategories;
+  if (!Array.isArray(notApplicableCategories)
+    || notApplicableCategories.some((categoryId) => !CATEGORY_IDS.has(categoryId))
+    || new Set(notApplicableCategories).size !== notApplicableCategories.length) {
+    errors.push('Las secciones marcadas como no aplicables no son válidas.');
   }
 
   const evidence = payload.evidence;
@@ -83,15 +106,20 @@ function validateReportPayload(payload) {
     errors,
     value: {
       generalData: {
+        companyName: typeof generalData.companyName === 'string' ? generalData.companyName.trim() : '',
+        legalName: typeof generalData.legalName === 'string' ? generalData.legalName.trim() : '',
+        visitNumber: generalData.visitNumber,
         inspectionDate: generalData.inspectionDate,
         observations: generalData.observations.trim(),
       },
+      agencyPeriod,
       environmentalAspects: aspects.map((aspect) => ({
         categoryId: aspect.categoryId,
         aspectId: aspect.aspectId,
         answer: aspect.answer || null,
         observation: aspect.observation.trim(),
       })),
+      notApplicableCategories: [...notApplicableCategories],
       evidence: evidence.map((entry) => ({
         evidenceId: entry.evidenceId,
         description: entry.description.trim(),
@@ -109,6 +137,7 @@ function getReportContentSnapshot(report) {
   return JSON.stringify({
     generalData: report.generalData,
     environmentalAspects: report.environmentalAspects,
+    notApplicableCategories: report.notApplicableCategories || [],
     evidence: report.evidence,
     status: report.status,
   });
@@ -123,11 +152,16 @@ function reconcileReportContent(report, value, userId) {
   const nextEvidenceIds = new Set();
 
   report.generalData = {
-    companyName: report.agencyNameSnapshot,
+    companyName: value.generalData.companyName || report.agencyNameSnapshot,
+    legalName: typeof value.generalData.legalName === 'string'
+      ? value.generalData.legalName
+      : report.generalData.legalName || '',
+    visitNumber: value.generalData.visitNumber || report.generalData.visitNumber || 1,
     inspectionDate: value.generalData.inspectionDate,
     observations: value.generalData.observations,
   };
   report.environmentalAspects = value.environmentalAspects;
+  report.notApplicableCategories = value.notApplicableCategories;
   report.evidence = value.evidence.map((entry) => {
     nextEvidenceIds.add(entry.evidenceId);
     const previous = existingEvidence.get(entry.evidenceId);

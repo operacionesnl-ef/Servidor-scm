@@ -132,11 +132,12 @@ function validateEnvironmentalAspects(aspects) {
 
 function validateReportCompletion(report) {
   const aspectsById = new Map((report.environmentalAspects || []).map((aspect) => [aspect.aspectId, aspect]));
+  const notApplicableCategories = new Set(report.notApplicableCategories || []);
   const missingAspects = ASPECTS
-    .filter((aspect) => aspect.required)
+    .filter((aspect) => aspect.required && !notApplicableCategories.has(aspect.categoryId))
     .filter(({ id }) => {
       const answer = aspectsById.get(id);
-      return !answer?.answer || (answer.answer !== 'NA' && !String(answer.observation || '').trim());
+      return !answer?.answer;
     })
     .map(({ id }) => id);
   const hasCompleteEvidence = (report.evidence || []).some((entry) => (

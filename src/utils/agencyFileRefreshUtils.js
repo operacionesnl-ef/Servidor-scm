@@ -209,13 +209,16 @@ function getAgencyFileRequirementPolicy(agency, files = agency?.archivos || {}) 
   const linkedKeys = FILE_TYPES
     .filter(({ key }) => {
       const file = files?.[key];
-      return Boolean(file?.nombre && file?.ruta && file?.driveId);
+      return Boolean(
+        (file?.mode === 'system' && file?.systemReportId)
+        || (file?.nombre && file?.ruta && file?.driveId),
+      );
     })
     .map(({ key }) => key);
   const blankKeys = FILE_TYPES
     .filter(({ key }) => {
       const file = files?.[key];
-      return !file?.nombre && !file?.ruta && !file?.driveId;
+      return !file?.systemReportId && !file?.nombre && !file?.ruta && !file?.driveId;
     })
     .map(({ key }) => key);
 

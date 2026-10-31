@@ -5,24 +5,40 @@ const Agency = require('../models/Agency');
 const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
 const { success } = require('../utils/response');
 const { recordAgencyHistory } = require('../services/agencyHistory');
+const { TEMPLATE_VERSION } = require('../services/forReportExcelGenerator');
 
 const FILE_FIELDS = new Set(['archivo1', 'archivo2', 'archivo3', 'archivo4']);
 const FILE_PROPERTIES = new Set([
   'nombre', 'ruta', 'driveId', 'pseudoPath', 'path', 'sizeBytes', 'mimeType', 'modifiedTime',
+  'mode', 'systemReportId', 'generatedExcelStatus', 'reportRevision',
+  'generatedExcelRevision', 'generatedExcelTemplateVersion',
 ]);
 const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/;
 
 function serializeMonthlyRecord(record, agency) {
   if (!record) return null;
-  return {
+  const serialized = {
     ...record,
     carpetaPrincipal: agency.archivos?.carpetaPrincipal || '',
     carpetaBase: agency.archivos?.carpetaBase || '',
   };
+  if (serialized.archivos?.archivo2?.mode === 'system') {
+    serialized.archivos.archivo2.currentGeneratedExcelTemplateVersion = TEMPLATE_VERSION;
+  }
+  return serialized;
 }
 
 function validationFailure(res, errors) {
   return res.status(400).json({ success: false, message: 'Validation failed', errors });
+}
+
+function preserveSystemGeneratedFiles(existingFiles = {}, requestedFiles = {}) {
+  const result = { ...requestedFiles };
+  for (const key of FILE_FIELDS) {
+    const current = existingFiles[key];
+    if (current?.mode === 'system' && current.systemReportId) result[key] = current;
+  }
+  return result;
 }
 
 function validateMonthlyFiles(body, period) {
@@ -72,19 +88,29 @@ function validateMonthlyFiles(body, period) {
         continue;
       }
 
+      const mode = file.mode || 'drive';
+      if (!['drive', 'system'].includes(mode)) {
+        errors[`archivos.${key}.mode`] = 'Must be drive or system';
+        continue;
+      }
+
       for (const property of Object.keys(file)) {
         if (!FILE_PROPERTIES.has(property)) {
           errors[`archivos.${key}.${property}`] = 'Unknown field';
         }
       }
-      if (typeof file.nombre !== 'string' || !file.nombre.trim() || file.nombre.trim().length > 255) {
-        errors[`archivos.${key}.nombre`] = 'A name of at most 255 characters is required';
-      }
-      if (typeof file.ruta !== 'string' || !file.ruta.trim() || file.ruta.trim().length > 2048) {
-        errors[`archivos.${key}.ruta`] = 'A path of at most 2048 characters is required';
-      }
-      if (typeof file.driveId !== 'string' || !file.driveId.trim() || file.driveId.trim().length > 2048) {
-        errors[`archivos.${key}.driveId`] = 'A Drive ID of at most 2048 characters is required';
+      if (mode === 'drive') {
+        if (typeof file.nombre !== 'string' || !file.nombre.trim() || file.nombre.trim().length > 255) {
+          errors[`archivos.${key}.nombre`] = 'A name of at most 255 characters is required';
+        }
+        if (typeof file.ruta !== 'string' || !file.ruta.trim() || file.ruta.trim().length > 2048) {
+          errors[`archivos.${key}.ruta`] = 'A path of at most 2048 characters is required';
+        }
+        if (typeof file.driveId !== 'string' || !file.driveId.trim() || file.driveId.trim().length > 2048) {
+          errors[`archivos.${key}.driveId`] = 'A Drive ID of at most 2048 characters is required';
+        }
+      } else if (typeof file.systemReportId !== 'string' || !/^FOR-[a-f\d-]{36}$/i.test(file.systemReportId)) {
+        errors[`archivos.${key}.systemReportId`] = 'A valid system report ID is required';
       }
       if (file.pseudoPath !== undefined && (
         !Array.isArray(file.pseudoPath) ||
@@ -112,12 +138,29 @@ function validateMonthlyFiles(body, period) {
         errors[`archivos.${key}.modifiedTime`] = 'Must be a valid date or null';
       }
 
-      if (
+      if (mode === 'system') {
+        value.archivos[key] = {
+          mode,
+          systemReportId: file.systemReportId,
+          nombre: typeof file.nombre === 'string' ? file.nombre.trim().slice(0, 255) : '',
+          generatedExcelStatus: file.generatedExcelStatus || 'not_requested',
+          driveId: typeof file.driveId === 'string' ? file.driveId.trim().slice(0, 2048) : '',
+          ruta: typeof file.ruta === 'string' ? file.ruta.trim().slice(0, 2048) : '',
+          reportRevision: Number.isInteger(file.reportRevision) ? file.reportRevision : 0,
+          generatedExcelRevision: Number.isInteger(file.generatedExcelRevision) ? file.generatedExcelRevision : 0,
+          generatedExcelTemplateVersion: typeof file.generatedExcelTemplateVersion === 'string'
+            ? file.generatedExcelTemplateVersion.trim().slice(0, 30)
+            : '',
+          periodYear: Number(match?.[1]),
+          periodMonth: Number(match?.[2]),
+        };
+      } else if (
         typeof file.nombre === 'string' && file.nombre.trim() && file.nombre.trim().length <= 255 &&
         typeof file.ruta === 'string' && file.ruta.trim() && file.ruta.trim().length <= 2048 &&
         typeof file.driveId === 'string' && file.driveId.trim() && file.driveId.trim().length <= 2048
       ) {
         value.archivos[key] = {
+          mode: 'drive',
           nombre: file.nombre.trim(),
           ruta: file.ruta.trim(),
           driveId: file.driveId.trim(),
@@ -170,11 +213,12 @@ async function saveAgencyMonthlyFiles(req, res, next) {
       agencyId: agency._id,
       period: req.params.period,
     }).lean();
+    const archivos = preserveSystemGeneratedFiles(previousRecord?.archivos, value.archivos);
     const record = await AgencyMonthlyFiles.findOneAndUpdate(
       { agencyId: agency._id, period: req.params.period },
       {
         $set: {
-          archivos: value.archivos,
+          archivos,
           updatedBy: req.user._id,
         },
       },
@@ -219,4 +263,5 @@ module.exports = {
   saveAgencyMonthlyFiles,
   validateMonthlyFiles,
   serializeMonthlyRecord,
+  preserveSystemGeneratedFiles,
 };

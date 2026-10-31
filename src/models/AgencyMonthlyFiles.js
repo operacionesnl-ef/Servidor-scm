@@ -4,6 +4,17 @@ const mongoose = require('mongoose');
 
 const monthlyFileSchema = new mongoose.Schema({
   nombre: { type: String, trim: true, maxlength: 255 },
+  mode: { type: String, enum: ['drive', 'system'], default: 'drive' },
+  systemReportId: { type: String, trim: true, maxlength: 50, default: '' },
+  generatedExcelStatus: {
+    type: String,
+    enum: ['not_requested', 'queued', 'processing', 'ready', 'failed'],
+    default: 'not_requested',
+  },
+  generatedExcelError: { type: String, trim: true, maxlength: 1000, default: '' },
+  generatedExcelTemplateVersion: { type: String, trim: true, maxlength: 30, default: '' },
+  reportRevision: { type: Number, min: 0, default: 0 },
+  generatedExcelRevision: { type: Number, min: 0, default: 0 },
   ruta: { type: String, trim: true, maxlength: 2048 },
   driveId: { type: String, trim: true, maxlength: 2048 },
   pseudoPath: { type: [String], default: undefined },
