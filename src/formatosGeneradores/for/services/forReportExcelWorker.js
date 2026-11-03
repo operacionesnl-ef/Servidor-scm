@@ -1,9 +1,9 @@
 'use strict';
 
 const ForReport = require('../models/ForReport');
-const Agency = require('../models/Agency');
-const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
-const { createGoogleDriveClient } = require('../config/googleDrive');
+const Agency = require('../../../models/Agency');
+const AgencyMonthlyFiles = require('../../../models/AgencyMonthlyFiles');
+const { createGoogleDriveClient } = require('../../../config/googleDrive');
 const {
   generateForReportExcelBuffer,
   ForReportExcelError,
@@ -14,8 +14,8 @@ const {
   ForReportDriveStorageError,
   uploadGeneratedExcelToDrive,
 } = require('./forReportDriveStorage');
-const { logConsoleEvent } = require('../utils/serverLogger');
-const { shouldPauseComplexJobs } = require('./resourceMonitor');
+const { logConsoleEvent } = require('../../../utils/serverLogger');
+const { shouldPauseComplexJobs } = require('../../../services/resourceMonitor');
 
 const POLL_INTERVAL_MS = 1500;
 const STALE_PROCESSING_MS = 5 * 60 * 1000;

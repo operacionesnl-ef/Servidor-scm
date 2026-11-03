@@ -7,7 +7,7 @@ const {
   MAX_IMAGE_HEIGHT,
   MAX_IMAGE_WIDTH,
   processForReportImage,
-} = require('../src/services/forReportImageProcessor');
+} = require('../src/formatosGeneradores/for/services/forReportImageProcessor');
 
 test('keeps images within 1080p byte-for-byte unchanged', async () => {
   const original = await sharp({

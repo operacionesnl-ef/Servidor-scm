@@ -5,13 +5,13 @@ const { test } = require('node:test');
 const {
   ASPECTS,
   validateReportCompletion: validateFormatCompletion,
-} = require('../src/formats/forAudAmb');
+} = require('../src/formatosGeneradores/for/formats/forAudAmb');
 const {
   getDetectedImageMimeType,
   reconcileReportContent,
   validateReportCompletion,
   validateReportPayload,
-} = require('../src/services/forReportService');
+} = require('../src/formatosGeneradores/for/services/forReportService');
 
 function makePayload(overrides = {}) {
   return {

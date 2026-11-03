@@ -5,8 +5,8 @@ const crypto = require('node:crypto');
 const { afterEach, test } = require('node:test');
 const Agency = require('../src/models/Agency');
 const AgencyMonthlyFiles = require('../src/models/AgencyMonthlyFiles');
-const ForReport = require('../src/models/ForReport');
-const controller = require('../src/controllers/forReportController');
+const ForReport = require('../src/formatosGeneradores/for/models/ForReport');
+const controller = require('../src/formatosGeneradores/for/controllers/forReportController');
 
 const originalAgencyFindOne = Agency.findOne;
 const originalReportFindOne = ForReport.findOne;

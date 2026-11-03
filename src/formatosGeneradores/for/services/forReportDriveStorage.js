@@ -1,12 +1,12 @@
 'use strict';
 
 const { Readable } = require('node:stream');
-const { getGoogleDriveOAuthConfig } = require('../config/googleDrive');
+const { getGoogleDriveOAuthConfig } = require('../../../config/googleDrive');
 const {
   findDriveFileByAppProperties,
   findOrCreateFolder,
   uploadDriveFile,
-} = require('./googleDriveService');
+} = require('../../../services/googleDriveService');
 
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const GENERATED_FILE_PROPERTIES = {

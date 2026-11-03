@@ -3,10 +3,10 @@
 const crypto = require('node:crypto');
 const { Readable } = require('node:stream');
 const mongoose = require('mongoose');
-const Agency = require('../models/Agency');
-const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
+const Agency = require('../../../models/Agency');
+const AgencyMonthlyFiles = require('../../../models/AgencyMonthlyFiles');
 const ForReport = require('../models/ForReport');
-const { createGoogleDriveClient } = require('../config/googleDrive');
+const { createGoogleDriveClient } = require('../../../config/googleDrive');
 const {
   ALLOWED_IMAGE_MIME_TYPES,
   IDENTIFIER_PATTERN,
@@ -24,7 +24,7 @@ const {
   findOrCreateFolder,
   getDriveFileMetadata,
   uploadDriveFile,
-} = require('../services/googleDriveService');
+} = require('../../../services/googleDriveService');
 const { ImageProcessingError, processForReportImage } = require('../services/forReportImageProcessor');
 const {
   getGeneratedForReportExcelPath,

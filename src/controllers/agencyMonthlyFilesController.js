@@ -5,13 +5,14 @@ const Agency = require('../models/Agency');
 const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
 const { success } = require('../utils/response');
 const { recordAgencyHistory } = require('../services/agencyHistory');
-const { TEMPLATE_VERSION } = require('../services/forReportExcelGenerator');
+const { TEMPLATE_VERSION } = require('../formatosGeneradores/for/services/forReportExcelGenerator');
+const { TEMPLATE_VERSION: REP_TEMPLATE_VERSION } = require('../formatosGeneradores/rep/services/repExcelGenerator');
 
 const FILE_FIELDS = new Set(['archivo1', 'archivo2', 'archivo3', 'archivo4']);
 const FILE_PROPERTIES = new Set([
   'nombre', 'ruta', 'driveId', 'pseudoPath', 'path', 'sizeBytes', 'mimeType', 'modifiedTime',
   'mode', 'systemReportId', 'generatedExcelStatus', 'reportRevision',
-  'generatedExcelRevision', 'generatedExcelTemplateVersion',
+  'generatedExcelRevision', 'generatedExcelTemplateVersion', 'generatedExcelError',
 ]);
 const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/;
 
@@ -24,6 +25,9 @@ function serializeMonthlyRecord(record, agency) {
   };
   if (serialized.archivos?.archivo2?.mode === 'system') {
     serialized.archivos.archivo2.currentGeneratedExcelTemplateVersion = TEMPLATE_VERSION;
+  }
+  if (serialized.archivos?.archivo3?.mode === 'system') {
+    serialized.archivos.archivo3.currentGeneratedExcelTemplateVersion = REP_TEMPLATE_VERSION;
   }
   return serialized;
 }
@@ -109,7 +113,9 @@ function validateMonthlyFiles(body, period) {
         if (typeof file.driveId !== 'string' || !file.driveId.trim() || file.driveId.trim().length > 2048) {
           errors[`archivos.${key}.driveId`] = 'A Drive ID of at most 2048 characters is required';
         }
-      } else if (typeof file.systemReportId !== 'string' || !/^FOR-[a-f\d-]{36}$/i.test(file.systemReportId)) {
+      } else if (typeof file.systemReportId !== 'string'
+        || !(key === 'archivo2' && /^FOR-[a-f\d-]{36}$/i.test(file.systemReportId))
+          && !(key === 'archivo3' && /^REP-[a-f\d-]{36}$/i.test(file.systemReportId))) {
         errors[`archivos.${key}.systemReportId`] = 'A valid system report ID is required';
       }
       if (file.pseudoPath !== undefined && (

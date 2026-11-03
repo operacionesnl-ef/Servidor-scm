@@ -747,11 +747,38 @@ async function verifyGeneratedWorkbook(buffer, expectedValues, expectedImageCoun
   }
 }
 
-async function generateForReportExcelBuffer(report, drive, options = {}) {
-  const templatePath = options.templatePath || process.env.FOR_REPORT_EXCEL_TEMPLATE_PATH || DEFAULT_TEMPLATE_PATH;
+function getTemplateDownloadUrl(value) {
+  const url = new URL(value);
+  if (url.hostname === 'docs.google.com' && url.pathname.startsWith('/spreadsheets/d/')) {
+    const spreadsheetId = url.pathname.split('/')[3];
+    if (!spreadsheetId) throw new ForReportExcelError('La URL de Google Sheets no contiene un ID válido.');
+    return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export?format=xlsx`;
+  }
+  return url.toString();
+}
+
+async function loadTemplateBuffer(templateLocation) {
+  if (!/^https?:\/\//i.test(templateLocation)) return fs.readFile(templateLocation);
+  let response;
+  try {
+    response = await fetch(getTemplateDownloadUrl(templateLocation));
+  } catch (error) {
+    throw new ForReportExcelError('No se pudo descargar la plantilla oficial de FOR-AUD-AMB.', error);
+  }
+  if (!response.ok) {
+    throw new ForReportExcelError(`No se pudo descargar la plantilla oficial de FOR-AUD-AMB (HTTP ${response.status}).`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
+async function generateForReportExcelBuffer(report, drive) {
+  const templatePath = process.env.FOR_REPORT_EXCEL_TEMPLATE_PATH?.trim();
+  if (!templatePath) {
+    throw new ForReportExcelError('Falta configurar FOR_REPORT_EXCEL_TEMPLATE_PATH en el archivo .env.');
+  }
   let templateBuffer;
   try {
-    templateBuffer = await fs.readFile(templatePath);
+    templateBuffer = await loadTemplateBuffer(templatePath);
   } catch (error) {
     throw new ForReportExcelError('No se pudo leer la plantilla oficial de FOR-AUD-AMB.', error);
   }

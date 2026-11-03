@@ -7,15 +7,16 @@ const { test } = require('node:test');
 const ExcelJS = require('exceljs');
 const JSZip = require('jszip');
 const sharp = require('sharp');
-const { ASPECTS } = require('../src/formats/forAudAmb');
+const { ASPECTS } = require('../src/formatosGeneradores/for/formats/forAudAmb');
 const {
   DEFAULT_TEMPLATE_PATH,
   ForReportExcelError,
   generateForReportExcelBuffer,
   markerInventory,
   validateWorkbook,
-} = require('../src/services/forReportExcelGenerator');
+} = require('../src/formatosGeneradores/for/services/forReportExcelGenerator');
 
+process.env.FOR_REPORT_EXCEL_TEMPLATE_PATH = DEFAULT_TEMPLATE_PATH;
 const REPORT_ID = 'FOR-12345678-1234-1234-1234-123456789012';
 
 function makeReport(overrides = {}) {
@@ -59,6 +60,29 @@ test('validates every marker from the official workbook and replaces data withou
   assert.equal(result.getWorksheet('APLICA').getCell('C1').value, 'Sucursal Norte');
   assert.equal(result.getWorksheet('APLICA').getCell('C2').value, '');
   assert.equal(generated.imageCount, 0);
+});
+
+test('downloads a public Google Sheets template as an Excel workbook', async () => {
+  const template = await fs.readFile(DEFAULT_TEMPLATE_PATH);
+  const originalFetch = global.fetch;
+  const originalTemplatePath = process.env.FOR_REPORT_EXCEL_TEMPLATE_PATH;
+  let requestedUrl;
+  global.fetch = async (url) => {
+    requestedUrl = url;
+    return { ok: true, arrayBuffer: async () => template };
+  };
+  try {
+    process.env.FOR_REPORT_EXCEL_TEMPLATE_PATH = 'https://docs.google.com/spreadsheets/d/example-sheet-id/edit?usp=drive_link';
+    const generated = await generateForReportExcelBuffer(makeReport(), null);
+    assert.equal(
+      requestedUrl,
+      'https://docs.google.com/spreadsheets/d/example-sheet-id/export?format=xlsx',
+    );
+    assert.ok(generated.buffer.length);
+  } finally {
+    global.fetch = originalFetch;
+    process.env.FOR_REPORT_EXCEL_TEMPLATE_PATH = originalTemplatePath;
+  }
 });
 
 test('preserves template shape graphics and inserts an evidence image into its marker area', async () => {

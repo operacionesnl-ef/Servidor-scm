@@ -2,10 +2,10 @@
 
 const assert = require('node:assert/strict');
 const { afterEach, test } = require('node:test');
-const ForReport = require('../src/models/ForReport');
+const ForReport = require('../src/formatosGeneradores/for/models/ForReport');
 const AgencyMonthlyFiles = require('../src/models/AgencyMonthlyFiles');
-const { TEMPLATE_VERSION } = require('../src/services/forReportExcelGenerator');
-const { invalidateStaleGeneratedExcels } = require('../src/services/forReportExcelWorker');
+const { TEMPLATE_VERSION } = require('../src/formatosGeneradores/for/services/forReportExcelGenerator');
+const { invalidateStaleGeneratedExcels } = require('../src/formatosGeneradores/for/services/forReportExcelWorker');
 
 const originalReportFind = ForReport.find;
 const originalReportUpdateMany = ForReport.updateMany;

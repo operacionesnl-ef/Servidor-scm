@@ -6,7 +6,7 @@ const mongoose = require('mongoose');
 const Agency = require('../src/models/Agency');
 const AgencyHistory = require('../src/models/AgencyHistory');
 const AgencyMonthlyFiles = require('../src/models/AgencyMonthlyFiles');
-const ForReport = require('../src/models/ForReport');
+const ForReport = require('../src/formatosGeneradores/for/models/ForReport');
 const {
   getAgencyMonthlyFiles,
   preserveSystemGeneratedFiles,
@@ -17,7 +17,7 @@ const agencyRoutes = require('../src/routes/agencyRoutes');
 const { migrate } = require('../src/scripts/migrateAgencyMonthlyFiles');
 const { validateAgencyInput } = require('../src/controllers/agencyController');
 const agencyController = require('../src/controllers/agencyController');
-const { TEMPLATE_VERSION } = require('../src/services/forReportExcelGenerator');
+const { TEMPLATE_VERSION } = require('../src/formatosGeneradores/for/services/forReportExcelGenerator');
 
 const sampleFile = {
   nombre: 'Reporte.xlsx',
@@ -109,6 +109,26 @@ test('validates a system-generated FOR reference and the developer agency filena
     marca: 'HYUNDAI/SONATA',
   }, false);
   assert.ok(invalidBrand.errors.marca);
+});
+
+test('validates system-generated REP references only in the REP slot', () => {
+  const repFile = {
+    mode: 'system',
+    systemReportId: 'REP-12345678-1234-1234-1234-123456789012',
+    nombre: 'REP-INS-12345678-rev-1-2026-10.xlsx',
+    generatedExcelStatus: 'queued',
+    reportRevision: 1,
+  };
+  const valid = validateMonthlyFiles({
+    archivos: { archivo1: null, archivo2: null, archivo3: repFile, archivo4: null },
+  }, '2026-10');
+  assert.deepEqual(valid.errors, {});
+  assert.equal(valid.value.archivos.archivo3.systemReportId, repFile.systemReportId);
+
+  const invalidSlot = validateMonthlyFiles({
+    archivos: { archivo1: null, archivo2: repFile, archivo3: null, archivo4: null },
+  }, '2026-10');
+  assert.ok(invalidSlot.errors['archivos.archivo2.systemReportId']);
 });
 
 test('persists the developer filename code through the agency debug update route', async () => {

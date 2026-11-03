@@ -15,17 +15,23 @@ Esta nota describe el flujo del módulo de reportes de auditoría ambiental (FOR
 
 ### Backend (`Servidor-scm`)
 
-- `src/routes/forReportRoutes.js`: rutas autenticadas para reportes, imágenes, generación, estado y descarga.
-- `src/controllers/forReportController.js`: autorización, validación de revisiones, persistencia del reporte y respuestas HTTP.
-- `src/models/ForReport.js`: esquema MongoDB para datos, evidencias, aplicabilidad explícita, estado de generación y referencias de almacenamiento.
-- `src/services/forReportExcelWorker.js`: worker que reclama trabajos encolados, recupera imágenes, genera el libro, registra el resultado y reintenta trabajos interrumpidos.
-- `src/services/forReportDriveStorage.js`: crea `Servicios EF/Recorridos Medio Ambiente/{AAAA}/{MM}/{marca}` y sube o actualiza el Excel en Drive.
-- `src/services/forReportExcelGenerator.js`: valida la plantilla, resuelve marcadores, inserta fotografías, oculta bloques y verifica el archivo resultante.
-- `src/services/forReportDriveStorage.js`: crea las carpetas de destino y sube o actualiza el Excel en Drive.
-- `src/templates/FOR-AUD-AMB-v1.xlsx`: copia de la plantilla oficial usada por el servidor. No se modifica durante la generación.
+- `src/formatosGeneradores/for/routes/forReportRoutes.js`: rutas autenticadas para reportes, imágenes, generación, estado y descarga.
+- `src/formatosGeneradores/for/controllers/forReportController.js`: autorización, validación de revisiones, persistencia del reporte y respuestas HTTP.
+- `src/formatosGeneradores/for/models/ForReport.js`: esquema MongoDB para datos, evidencias, aplicabilidad explícita, estado de generación y referencias de almacenamiento.
+- `src/formatosGeneradores/for/services/`: lógica de validación, almacenamiento, procesamiento de imágenes, generación Excel y workers del formato.
+- `src/formatosGeneradores/for/formats/forAudAmb.js`: estructura y validaciones propias del formato.
+- `src/formatosGeneradores/for/templates/FOR-AUD-AMB-v1.xlsx`: copia de la plantilla oficial usada por el servidor. No se modifica durante la generación.
 - `test/forReportExcelGenerator.test.js`, `test/forReportService.test.js` y `test/forReportController.test.js`: cobertura del formato, reglas de datos y endpoints.
 
 ## Flujo de trabajo
+
+La plantilla debe configurarse con `FOR_REPORT_EXCEL_TEMPLATE_PATH` en `.env`; no hay una plantilla local de respaldo. Se acepta una ruta local o una URL pública; para Google Sheets, el servicio convierte el enlace de edición al endpoint de exportación XLSX. Por ejemplo:
+
+```env
+FOR_REPORT_EXCEL_TEMPLATE_PATH=https://docs.google.com/spreadsheets/d/15BTnrG-O-vPJq8rMeAaFQ3sg1eXVPq7c/edit?usp=drive_link&rtpof=true&sd=true
+```
+
+La hoja debe estar publicada/compartida para que el servidor pueda descargarla sin autenticación. Si la variable no está definida, la generación falla con un error de configuración explícito.
 
 1. El usuario captura o edita el único reporte permitido para la agencia y período mensual en el frontend y lo guarda.
 2. El frontend envía los datos a `POST /api/for-aud-amb` o `PUT /api/for-aud-amb/:reportId`. Las imágenes se cargan al backend, que las valida y las conserva en Drive como evidencia.
@@ -42,7 +48,7 @@ Estados de generación: `not_requested`, `queued`, `processing`, `ready` y `fail
 
 - La plantilla conserva el diseño visual; el backend reemplaza marcadores encontrados por su texto exacto en `DATOS`, `EVIDENCIA` y `APLICA`.
 - Los valores generales usan la razón social y nombre de agencia (`razón social · empresa`), fecha `DD/MM/AAAA`, número de visita y observaciones.
-- Las respuestas y comentarios se asocian a las preguntas por sus identificadores funcionales y prefijos definidos en `src/formats/forAudAmb.js`.
+- Las respuestas y comentarios se asocian a las preguntas por sus identificadores funcionales y prefijos definidos en `src/formatosGeneradores/for/formats/forAudAmb.js`.
 - `notApplicableCategories` es independiente de las respuestas. Una lista vacía significa que todas las secciones aplican. Solo los IDs permitidos pueden ocultar sus filas; respuestas vacías no ocultan secciones.
 - `0` y `1` se reemplazan por valores numéricos de Excel; `NA` se reemplaza por texto para evitar la advertencia de número almacenado como texto.
 - Una evidencia activa se considera usada si tiene descripción o imágenes activas. Se admite un máximo de 20 evidencias y cuatro imágenes por evidencia; los archivos aún pendientes o sin referencia de almacenamiento hacen fallar la generación de forma explícita.
@@ -53,7 +59,7 @@ Estados de generación: `not_requested`, `queued`, `processing`, `ready` y `fail
 
 ## Almacenamiento en Drive
 
-- La plantilla por defecto está en `src/templates/FOR-AUD-AMB-v1.xlsx`; se puede cambiar con `FOR_REPORT_EXCEL_TEMPLATE_PATH`.
+- La plantilla se configura con `FOR_REPORT_EXCEL_TEMPLATE_PATH`.
 - `TEMPLATE_VERSION=1.1` valida que ExcelJS pueda reabrir el libro y reconocer cada imagen; los PNG internos usan nombres de paquete estándar (`imageN.png`).
 - El archivo se guarda en `GOOGLE_DRIVE_ROOT_FOLDER_ID/Servicios EF/Recorridos Medio Ambiente/{AAAA}/{MM}/{marca}`. La marca se configura por agencia desde el modo Debug y queda registrada en el reporte.
 - MongoDB guarda `storageProvider=drive`, `driveFileId`, `generatedFolderId` y `downloadFileName`; el contenido del XLSX no se escribe al disco del servidor.

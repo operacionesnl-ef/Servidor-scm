@@ -1,0 +1,117 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const { test } = require('node:test');
+const ExcelJS = require('exceljs');
+const JSZip = require('jszip');
+const sharp = require('sharp');
+const templatePath = require('../src/formatosGeneradores/rep/services/repExcelGenerator').DEFAULT_TEMPLATE_PATH;
+const { generateRepExcelBuffer, validateTemplate } = require('../src/formatosGeneradores/rep/services/repExcelGenerator');
+
+process.env.REP_EXCEL_TEMPLATE_PATH = templatePath;
+
+function makeReport(findings = [{}]) {
+  return {
+    reportId: 'REP-12345678-1234-1234-1234-123456789012',
+    revision: 3,
+    agencyNameSnapshot: 'Sucursal Norte',
+    agencyLegalNameSnapshot: 'Empresa Norte',
+    agencyAddressSnapshot: 'Calle Uno 123',
+    agencyBrandSnapshot: 'MARCA',
+    generalData: {
+      inspectionDate: '2026-10-29',
+      startDate: '2026-10-29',
+      endDate: '2026-10-29',
+      visitType: 'ordinario',
+      startTime: '08:00',
+      endTime: '10:00',
+      areas: 'Patio y almacén',
+    },
+    findings: findings.map((finding) => ({
+      area: 'Patio',
+      element: 'Extintor',
+      description: 'Sin etiqueta vigente',
+      imageNumber: '1, 2',
+      correctiveAction: 'Reponer etiqueta',
+      preventiveAction: 'Inspección mensual',
+      priority: 'alta',
+      responsible: 'Ana',
+      legalBasis: 'NOM aplicable',
+      findingDate: '2026-10-29',
+      dueDate: '2026-11-05',
+      status: 'Pendiente',
+      onTime: 'Sí',
+      sanction: '0',
+      ...finding,
+    })),
+    documents: {
+      estudio_iluminacion: 'Cumple',
+      estudio_ruido: 'Pendiente',
+    },
+  };
+}
+
+async function makeLogo() {
+  return sharp({
+    create: { width: 64, height: 32, channels: 4, background: { r: 230, g: 10, b: 10, alpha: 1 } },
+  }).png().toBuffer();
+}
+
+test('validates the uploaded REP template sheets, markers, and duplicate action cells', async () => {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(templatePath);
+  const result = validateTemplate(workbook);
+  assert.equal(result.mainSheet.name, 'REPORTE REVISION PISO');
+  assert.equal(result.documentSheet.name, 'REVISION DOCUMENTAL');
+});
+
+test('generates the workbook with general data, distinct actions, documentary values, and the brand logo', async () => {
+  const original = await fs.readFile(templatePath);
+  const generated = await generateRepExcelBuffer(makeReport(), {
+    logoBuffer: await makeLogo(),
+    logoMimeType: 'image/png',
+  });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(generated.buffer);
+  const main = workbook.getWorksheet('REPORTE REVISION PISO');
+  const documents = workbook.getWorksheet('REVISION DOCUMENTAL');
+
+  assert.equal(generated.downloadFileName, 'REP-INS-12345678-1234-1234-1234-123456789012-rev-3-2026-10-29.xlsx');
+  assert.equal(main.getCell('D3').value, 'Nombre Empresa (9.12 a): Empresa Norte - Sucursal Norte');
+  assert.equal(main.getCell('D5').value, 'Calle Uno 123');
+  assert.equal(main.getCell('E5').value, '29/10/2026');
+  assert.equal(main.getCell('K5').value, 'Reponer etiqueta');
+  assert.equal(main.getCell('M5').value, 'Inspección mensual');
+  assert.equal(main.getCell('G5').value, 1);
+  assert.equal(main.getCell('T5').value, 0);
+  assert.equal(main.getCell('K3').value.endsWith('Patio y almacén'), true);
+  assert.equal(documents.getCell('E5').value, 'Cumple');
+  assert.equal(documents.getCell('E6').value, 'Pendiente');
+  assert.equal(main.getImages().length, 2);
+
+  const zip = await JSZip.loadAsync(generated.buffer);
+  const imagePaths = Object.keys(zip.files).filter((name) => /^xl\/media\//.test(name));
+  assert.ok(imagePaths.length >= 2);
+  assert.notDeepEqual(await fs.readFile(templatePath), generated.buffer);
+  assert.ok(original.length > 0);
+  assert.deepEqual(await fs.readFile(templatePath), original);
+});
+
+test('duplicates the styled finding row and removes it when there are no findings', async () => {
+  const logoBuffer = await makeLogo();
+  const multiple = await generateRepExcelBuffer(makeReport([{}, {}]), { logoBuffer, logoMimeType: 'image/png' });
+  const multipleWorkbook = new ExcelJS.Workbook();
+  await multipleWorkbook.xlsx.load(multiple.buffer);
+  const multipleSheet = multipleWorkbook.getWorksheet('REPORTE REVISION PISO');
+  assert.equal(multipleSheet.getCell('G5').value, 1);
+  assert.equal(multipleSheet.getCell('G6').value, 2);
+  assert.equal(multipleSheet.getCell('T7').formula, 'SUM(T5:T6)');
+
+  const empty = await generateRepExcelBuffer(makeReport([]), { logoBuffer, logoMimeType: 'image/png' });
+  const emptyWorkbook = new ExcelJS.Workbook();
+  await emptyWorkbook.xlsx.load(empty.buffer);
+  const emptySheet = emptyWorkbook.getWorksheet('REPORTE REVISION PISO');
+  assert.equal(emptySheet.getCell('S5').value, 'MONTO ACUMULADO');
+  assert.equal(emptySheet.getCell('T5').value, 0);
+});

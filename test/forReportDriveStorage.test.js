@@ -6,7 +6,7 @@ const {
   ensureGeneratedExcelFolder,
   ForReportDriveStorageError,
   uploadGeneratedExcelToDrive,
-} = require('../src/services/forReportDriveStorage');
+} = require('../src/formatosGeneradores/for/services/forReportDriveStorage');
 
 const originalRootFolderId = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
 
