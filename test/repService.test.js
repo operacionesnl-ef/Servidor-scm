@@ -52,7 +52,7 @@ test('rejects invalid inspection dates, conflicting visit types, and unknown doc
 test('accepts reports without findings and enforces the finding-count ceiling', () => {
   assert.deepEqual(validateRepPayload(payload({ findings: [] })).errors, []);
   const result = validateRepPayload(payload({ findings: Array.from({ length: 501 }, () => ({})) }));
-  assert.ok(result.errors.some((error) => error.includes('hasta 500')));
+  assert.ok(result.errors.some((error) => error.includes('hasta 40')));
 });
 
 test('validates pending finding photos without accepting unsupported image metadata', () => {
@@ -75,5 +75,5 @@ test('validates pending finding photos without accepting unsupported image metad
   const tooMany = validateRepPayload(payload({
     findings: [{ area: 'Patio', element: 'Extintor', images: Array.from({ length: 5 }, (_, index) => ({ ...image, imageId: `photo-id-12345${index}` })) }],
   }));
-  assert.ok(tooMany.errors.some((error) => error.includes('hasta 4 fotos')));
+  assert.ok(tooMany.errors.some((error) => error.includes('una sola foto')));
 });

@@ -5,6 +5,7 @@ const requireAuth = require('../../../middlewares/requireAuth');
 const {
   createRepReport,
   downloadRepExcel,
+  generateRepAnx,
   getRepLogo,
   getRepExcelStatus,
   getRepReport,
@@ -31,5 +32,6 @@ router.get('/:reportId/findings/:findingId/images/:imageId', streamRepFindingIma
 router.post('/:reportId/excel/generate', queueRepExcel);
 router.get('/:reportId/excel', getRepExcelStatus);
 router.get('/:reportId/excel/download', downloadRepExcel);
+router.get('/:reportId/anx/generate', generateRepAnx);
 
 module.exports = router;

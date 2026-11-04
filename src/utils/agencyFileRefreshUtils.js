@@ -179,7 +179,7 @@ function identifyFileType(file) {
   if (isPresentation) return FILE_TYPES[0];
   if (isSpreadsheet) {
     if (hasCode('REV') && (hasCode('INS') || hasCode('REC'))) return FILE_TYPES[2];
-    if (hasCode('FOR') || (hasCode('REP') && hasCode('MEA'))) return FILE_TYPES[1];
+    if (hasCode('FOR')) return FILE_TYPES[1];
     if (hasCode('REP') || hasCode('INS')) return FILE_TYPES[2];
     if (hasCode('REV') || hasCode('EXT')) return FILE_TYPES[3];
   }

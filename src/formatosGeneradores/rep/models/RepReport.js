@@ -2,24 +2,12 @@
 
 const mongoose = require('mongoose');
 
-const findingImageSchema = new mongoose.Schema({
-  imageId: { type: String, trim: true, default: '' },
-  driveFileId: { type: String, trim: true, default: '' },
-  fileName: { type: String, trim: true, maxlength: 255, default: '' },
-  mimeType: { type: String, trim: true, maxlength: 100, default: '' },
-  sizeBytes: { type: Number, min: 0, default: 0 },
-  checksum: { type: String, trim: true, default: '' },
-  status: { type: String, enum: ['pending', 'active', 'removed'], default: 'pending' },
-  uploadedAt: { type: Date, default: null },
-}, { _id: false });
-
 const findingSchema = new mongoose.Schema({
   findingId: { type: String, trim: true, maxlength: 100, default: '' },
   area: { type: String, trim: true, maxlength: 200, default: '' },
   element: { type: String, trim: true, maxlength: 2000, default: '' },
   description: { type: String, trim: true, maxlength: 2000, default: '' },
   imageNumber: { type: String, trim: true, maxlength: 200, default: '' },
-  images: { type: [findingImageSchema], default: [] },
   correctiveAction: { type: String, trim: true, maxlength: 2000, default: '' },
   preventiveAction: { type: String, trim: true, maxlength: 2000, default: '' },
   priority: { type: String, trim: true, maxlength: 30, default: '' },
