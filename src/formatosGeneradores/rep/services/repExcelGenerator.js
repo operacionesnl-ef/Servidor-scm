@@ -90,12 +90,12 @@ function formatDate(value) {
 function buildGeneralValues(report) {
   const date = report.generalData.inspectionDate;
   const dateObject = new Date(`${date}T00:00:00.000Z`);
-  const month = new Intl.DateTimeFormat('es-MX', { month: 'long', timeZone: 'UTC' }).format(dateObject);
+  const month = new Intl.DateTimeFormat('es-MX', { month: 'long', timeZone: 'UTC' }).format(dateObject).toLocaleUpperCase('es-MX');
   const year = date.slice(0, 4);
   const start = report.generalData.startTime;
   const end = report.generalData.endTime;
-  const company = report.agencyLegalNameSnapshot || report.agencyNameSnapshot;
-  const branch = report.agencyNameSnapshot;
+  const company = (report.agencyLegalNameSnapshot || report.agencyNameSnapshot).toLocaleUpperCase('es-MX');
+  const branch = (report.agencyNameSnapshot || '').toLocaleUpperCase('es-MX');
   const startText = [formatDate(report.generalData.startDate || date), start].filter(Boolean).join(' ');
   const endText = [formatDate(report.generalData.endDate || date), end].filter(Boolean).join(' ');
   return new Map([
@@ -111,7 +111,7 @@ function buildGeneralValues(report) {
     ['hora_inicio', start],
     ['fecha_fin', endText],
     ['hora_fin', end],
-    ['fecha_recorrido', formatDate(date)],
+    ['fecha_recorrido', formatDate(report.generalData.startDate || date)],
     ['areas', report.generalData.areas],
   ]);
 }
@@ -139,31 +139,260 @@ function replaceCellMarkers(cell, values) {
   }
 }
 
+function decodeXmlText(value) {
+  return value.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (entity, code) => {
+    if (code[0] === '#') {
+      const number = code[1].toLowerCase() === 'x'
+        ? Number.parseInt(code.slice(2), 16)
+        : Number.parseInt(code.slice(1), 10);
+      return String.fromCodePoint(number);
+    }
+    return { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }[code.toLowerCase()];
+  });
+}
+
+function encodeXmlText(value) {
+  return String(value).replace(/[<>&'"]/g, (character) => ({
+    '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;',
+  }[character]));
+}
+
+function readSharedStrings(xml) {
+  const entries = [...xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)].map((match) => (
+    [...match[1].replace(/<rPh\b[\s\S]*?<\/rPh>/g, '').matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)]
+      .map((text) => decodeXmlText(text[1]))
+      .join('')
+  ));
+  const indexes = new Map(entries.map((text, index) => [text, index]));
+  return { entries, indexes };
+}
+
+function appendSharedString(text, sharedStrings) {
+  const normalized = String(text ?? '');
+  if (sharedStrings.indexes.has(normalized)) return sharedStrings.indexes.get(normalized);
+  const index = sharedStrings.entries.length;
+  sharedStrings.entries.push(normalized);
+  sharedStrings.indexes.set(normalized, index);
+  sharedStrings.additions.push(`<si><t xml:space="preserve">${encodeXmlText(normalized)}</t></si>`);
+  return index;
+}
+
+function buildSharedStringsXml(templateXml, sharedStrings, referenceCount) {
+  let xml = templateXml.replace('</sst>', `${sharedStrings.additions.join('')}</sst>`);
+  xml = xml.replace(/\bcount="\d+"/, `count="${referenceCount}"`);
+  xml = xml.replace(/\buniqueCount="\d+"/, `uniqueCount="${sharedStrings.entries.length}"`);
+  return xml;
+}
+
+function getCellString(cellXml, sharedStrings) {
+  const type = cellXml.match(/\bt="([^"]+)"/)?.[1];
+  if (type === 's') {
+    const index = Number(cellXml.match(/<v>(\d+)<\/v>/)?.[1]);
+    return sharedStrings.entries[index] ?? '';
+  }
+  if (type === 'inlineStr') {
+    return [...cellXml.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)]
+      .map((match) => decodeXmlText(match[1]))
+      .join('');
+  }
+  return '';
+}
+
+function writeCellXml(cellXml, value, sharedStrings) {
+  const opening = cellXml.match(/^<c\b([^>]*)/);
+  if (!opening) return cellXml;
+  const attributes = opening[1].replace(/\s+t="[^"]*"/g, '').replace(/\/\s*$/, '');
+  if (typeof value === 'number') return `<c${attributes}><v>${value}</v></c>`;
+  const index = appendSharedString(value, sharedStrings);
+  return `<c${attributes} t="s"><v>${index}</v></c>`;
+}
+
+function writeFormulaCellXml(cellXml, formula) {
+  const opening = cellXml.match(/^<c\b([^>]*)/);
+  if (!opening) return cellXml;
+  const attributes = opening[1].replace(/\s+t="[^"]*"/g, '').replace(/\/\s*$/, '');
+  return `<c${attributes}><f>${encodeXmlText(formula)}</f><v>0</v></c>`;
+}
+
+function replaceRowCell(rowXml, address, value, sharedStrings, formula = false) {
+  let found = false;
+  const updated = rowXml.replace(/<c\b[^>]*?\/>|<c\b[^>]*>[\s\S]*?<\/c>/g, (cellXml) => {
+    if (cellXml.match(/\br="([^"]+)"/)?.[1] !== address) return cellXml;
+    found = true;
+    return formula
+      ? writeFormulaCellXml(cellXml, value)
+      : writeCellXml(cellXml, value, sharedStrings);
+  });
+  if (!found) throw new RepExcelError(`No se encontró la celda ${address} en la plantilla REP.`);
+  return updated;
+}
+
+function markerValuesForRow(rowXml, sharedStrings, values) {
+  let actionIndex = 0;
+  return rowXml.replace(/<c\b[^>]*?\/>|<c\b[^>]*>[\s\S]*?<\/c>/g, (cellXml) => {
+    const text = getCellString(cellXml, sharedStrings);
+    if (!text.includes('{')) return cellXml;
+    const exactMarker = text.match(/^\{([^{}]+)\}$/)?.[1];
+    if (exactMarker === 'n' || exactMarker === 'sancion') {
+      const value = values.get(exactMarker);
+      return writeCellXml(cellXml, value === undefined ? '' : value, sharedStrings);
+    }
+    if (exactMarker === 'accion') {
+      const value = values.get(`accion${actionIndex}`);
+      actionIndex += 1;
+      return writeCellXml(cellXml, value || '', sharedStrings);
+    }
+    const replaced = replaceTextMarkers(text, values);
+    return replaced === text ? cellXml : writeCellXml(cellXml, replaced, sharedStrings);
+  });
+}
+
+function replaceRowNumber(rowXml, rowNumber) {
+  return rowXml
+    .replace(/(<row\b[^>]*\br=")\d+(")/, `$1${rowNumber}$2`)
+    .replace(/(<c\b[^>]*\br="[A-Z]+)\d+(")/g, `$1${rowNumber}$2`);
+}
+
+function shiftRowReferences(rowXml, delta) {
+  if (!delta) return rowXml;
+  const shifted = rowXml.replace(/(<f\b[^>]*>)([\s\S]*?)(<\/f>)/g, (formula, open, value, close) => (
+    `${open}${value.replace(/(\$?[A-Z]{1,3}\$?)(\d+)/g, (reference, column, row) => (
+      Number(row) >= 6 ? `${column}${Number(row) + delta}` : reference
+    ))}${close}`
+  ));
+  const rowNumber = Number(shifted.match(/<row\b[^>]*\br="(\d+)"/)?.[1]);
+  return replaceRowNumber(shifted, rowNumber + delta);
+}
+
+function shiftWorksheetRanges(xml, delta) {
+  if (!delta) return xml;
+  return xml.replace(/\b(?:ref|sqref)="([^"]+)"/g, (attribute, range) => (
+    attribute.replace(range, range.replace(/(\$?[A-Z]{1,3}\$?)(\d+)/g, (reference, column, row) => (
+      Number(row) >= 6 ? `${column}${Number(row) + delta}` : reference
+    )))
+  ));
+}
+
+function writeFindingRow(rowXml, rowNumber, finding, index, report, sharedStrings) {
+  let result = replaceRowNumber(rowXml, rowNumber);
+  const values = findingValues(finding, index, report);
+  values.set('accion0', finding.correctiveAction);
+  values.set('accion1', finding.preventiveAction);
+  result = markerValuesForRow(result, sharedStrings, values);
+  result = replaceRowCell(result, `A${rowNumber}`, report.agencyNameSnapshot || '', sharedStrings);
+  result = replaceRowCell(result, `B${rowNumber}`, report.generalData.city || '', sharedStrings);
+  return replaceRowCell(result, `C${rowNumber}`, report.agencyStateSnapshot || '', sharedStrings);
+}
+
+function writeFindingsToWorksheet(xml, findings, report, sharedStrings) {
+  const rowMatches = [...xml.matchAll(/<row\b[^>]*\br="(\d+)"[^>]*(?:\/>|>[\s\S]*?<\/row>)/g)];
+  const templateFindingRow = rowMatches.find((match) => Number(match[1]) === REVIEW_ROW)?.[0];
+  const totalRow = rowMatches.find((match) => Number(match[1]) === REVIEW_ROW + 1)?.[0];
+  if (!templateFindingRow || !totalRow) {
+    throw new RepExcelError('La hoja REP no contiene la fila 5 de hallazgos y su fila de monto acumulado.');
+  }
+  const shift = Math.max(0, findings.length - 1);
+  let firstFindingRow;
+  const insertedFindingRows = [];
+  if (!findings.length) {
+    const emptyValues = new Map([...FINDING_MARKERS, ...GENERAL_MARKERS, ...DOCUMENT_MARKERS, 'fecha_recorrido']
+      .map((marker) => [marker, '']));
+    emptyValues.set('n', '');
+    emptyValues.set('sancion', '');
+    emptyValues.set('accion0', '');
+    emptyValues.set('accion1', '');
+    firstFindingRow = markerValuesForRow(templateFindingRow, sharedStrings, emptyValues);
+  } else {
+    firstFindingRow = writeFindingRow(templateFindingRow, REVIEW_ROW, findings[0], 0, report, sharedStrings);
+    for (let index = 1; index < findings.length; index += 1) {
+      insertedFindingRows.push(writeFindingRow(
+        templateFindingRow,
+        REVIEW_ROW + index,
+        findings[index],
+        index,
+        report,
+        sharedStrings,
+      ));
+    }
+  }
+  const totalRowNumber = REVIEW_ROW + 1 + shift;
+  let outputTotalRow = replaceRowNumber(totalRow, totalRowNumber);
+  outputTotalRow = replaceRowCell(outputTotalRow, `T${totalRowNumber}`, findings.length * 16000, sharedStrings);
+  let updated = xml.replace(/<row\b[^>]*\br="(\d+)"[^>]*(?:\/>|>[\s\S]*?<\/row>)/g, (rowXml, number) => {
+    const rowNumber = Number(number);
+    if (rowNumber === REVIEW_ROW) return firstFindingRow;
+    if (rowNumber === REVIEW_ROW + 1) return `${insertedFindingRows.join('')}${outputTotalRow}`;
+    const nextRow = rowNumber > REVIEW_ROW + 1 ? shiftRowReferences(rowXml, shift) : rowXml;
+    return nextRow;
+  });
+  return shiftWorksheetRanges(updated, shift);
+}
+
+function writeGeneralValuesToWorksheet(xml, sharedStrings, values, skipFindingRow = false) {
+  return xml.replace(/<row\b[^>]*\br="(\d+)"[^>]*(?:\/>|>[\s\S]*?<\/row>)/g, (rowXml, row) => {
+    if (skipFindingRow && Number(row) === REVIEW_ROW) return rowXml;
+    return markerValuesForRow(rowXml, sharedStrings, values);
+  });
+}
+
+function updateTableRange(xml, findingCount) {
+  const lastDataRow = Math.max(REVIEW_ROW, REVIEW_ROW - 1 + findingCount);
+  return xml.replace(/\bref="A4:Z\d+"/, `ref="A4:Z${lastDataRow}"`);
+}
+
+async function removeCalcChain(zip) {
+  zip.remove('xl/calcChain.xml');
+  const relationshipsPath = 'xl/_rels/workbook.xml.rels';
+  const relationships = await zip.file(relationshipsPath)?.async('string');
+  if (relationships) {
+    zip.file(relationshipsPath, relationships.replace(
+      /<Relationship\b(?=[^>]*\/calcChain")[^>]*\/>/g,
+      '',
+    ));
+  }
+  const contentTypesPath = '[Content_Types].xml';
+  const contentTypes = await zip.file(contentTypesPath)?.async('string');
+  if (contentTypes) {
+    zip.file(contentTypesPath, contentTypes.replace(
+      /<Override\b(?=[^>]*\/xl\/calcChain\.xml")[^>]*\/>/g,
+      '',
+    ));
+  }
+}
+
+function updateWorksheetCell(xml, address, value, sharedStrings) {
+  const rowNumber = Number(address.match(/\d+$/)?.[0]);
+  const rowPattern = new RegExp(`<row\\b[^>]*\\br="${rowNumber}"[^>]*(?:\\/>|>[\\s\\S]*?<\\/row>)`);
+  return xml.replace(rowPattern, (rowXml) => replaceRowCell(rowXml, address, value, sharedStrings));
+}
+
 function findingValues(finding, index, report) {
   return new Map([
-    ['fecha_recorrido', formatDate(report.generalData.inspectionDate)],
+    ['fecha_recorrido', formatDate(report.generalData.startDate || report.generalData.inspectionDate)],
     ['direccion', report.agencyAddressSnapshot || ''],
     ['area', finding.area],
     ['n', index + 1],
     ['elemento_revisado', finding.element],
     ['descripcion', finding.description],
-    ['numero_imagen', finding.imageNumber],
+    ['numero_imagen', finding.imageNumber ? `Imagen ${index + 1}` : ''],
     ['prioridad', finding.priority],
     ['responsable', finding.responsible],
     ['fundamento_legal', finding.legalBasis],
-    ['fecha_hallazgo', formatDate(finding.findingDate)],
+    ['fecha_hallazgo', formatDate(report.generalData.startDate || report.generalData.inspectionDate)],
     ['fecha_cumplimiento', formatDate(finding.dueDate)],
     ['status', finding.status],
     ['en_tiempo', finding.onTime],
-    ['sancion', finding.sanction],
+    ['sancion', 16000],
   ]);
 }
 
 function applyFindingRows(worksheet, findings, report) {
   if (!findings.length) {
-    worksheet.spliceRows(REVIEW_ROW, 1);
-    const totalRow = worksheet.getRow(REVIEW_ROW);
-    totalRow.getCell(20).value = 0;
+    const emptyValues = new Map([...FINDING_MARKERS, ...GENERAL_MARKERS, ...DOCUMENT_MARKERS, 'fecha_recorrido']
+      .map((marker) => [marker, '']));
+    const findingRow = worksheet.getRow(REVIEW_ROW);
+    findingRow.eachCell({ includeEmpty: false }, (cell) => replaceCellMarkers(cell, emptyValues));
+    worksheet.getRow(REVIEW_ROW + 1).getCell(20).value = 0;
     return;
   }
   if (findings.length > 1) worksheet.duplicateRow(REVIEW_ROW, findings.length - 1, true);
@@ -181,8 +410,7 @@ function applyFindingRows(worksheet, findings, report) {
         return;
       }
       if (text === '{sancion}') {
-        const sanction = findings[index].sanction;
-        cell.value = sanction === '' || sanction === undefined || sanction === null ? null : Number(sanction);
+        cell.value = 16000;
         return;
       }
       if (text === '{accion}') {
@@ -196,7 +424,7 @@ function applyFindingRows(worksheet, findings, report) {
   }
   const totalRowIndex = REVIEW_ROW + findings.length;
   const totalCell = worksheet.getRow(totalRowIndex).getCell(20);
-  totalCell.value = { formula: `SUM(T${REVIEW_ROW}:T${REVIEW_ROW + findings.length - 1})` };
+  totalCell.value = { formula: `COUNT(A${REVIEW_ROW}:A${REVIEW_ROW + findings.length - 1})*16000` };
 }
 
 function applyDocumentValues(worksheet, documents, generalValues) {
@@ -275,8 +503,21 @@ async function replaceNamedLogo(zip, sheetPath, imageBuffer, imageMimeType) {
 }
 
 function buildDownloadFileName(report) {
-  const period = report.generalData.inspectionDate;
-  return `REP-INS-${report.reportId.replace(/^REP-/i, '')}-rev-${report.revision}-${period}.xlsx`;
+  const date = report.generalData.inspectionDate;
+  const day = date.slice(8, 10);
+  const month = date.slice(5, 7);
+  const year = date.slice(0, 4);
+  const endDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  endDate.setUTCMonth(endDate.getUTCMonth() + 1);
+  if (endDate.getUTCDate() !== Number(day)) endDate.setUTCDate(0);
+  const endToken = `(${String(endDate.getUTCDate()).padStart(2, '0')}-${String(endDate.getUTCMonth() + 1).padStart(2, '0')}-${endDate.getUTCFullYear()})`;
+  const code = String(report.agencyFileNameCodeSnapshot || 'SIN-CODIGO')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'SIN-CODIGO';
+  return `REP-INS-${code}-(${day}-${month}-${year})-${endToken}.xlsx`;
 }
 
 async function generateRepExcelBuffer(report, { logoBuffer, logoMimeType }) {
@@ -306,29 +547,55 @@ async function generateRepExcelBuffer(report, { logoBuffer, logoMimeType }) {
   } catch (error) {
     throw new RepExcelError('La plantilla REP no es un libro Excel válido.', error);
   }
-  const { mainSheet, documentSheet } = validateTemplate(workbook);
+  const { mainSheet } = validateTemplate(workbook);
   const generalValues = buildGeneralValues(report);
+  const sharedStringsFile = templateZip.file('xl/sharedStrings.xml');
+  if (!sharedStringsFile) throw new RepExcelError('La plantilla REP no contiene la tabla de cadenas compartidas.');
+  const sharedStringsXml = await sharedStringsFile.async('string');
+  const sharedStrings = { ...readSharedStrings(sharedStringsXml), additions: [] };
+  const sheetPaths = [...templateSheetFiles.values()];
+  const mainSheetPath = templateSheetFiles.get(SHEETS[0]);
+  const documentSheetPath = templateSheetFiles.get(SHEETS[1]);
+  let mainXml = await templateZip.file(mainSheetPath)?.async('string');
+  let documentXml = await templateZip.file(documentSheetPath)?.async('string');
+  if (!mainXml || !documentXml) throw new RepExcelError('No se pudieron leer las hojas de la plantilla REP.');
+  mainXml = writeGeneralValuesToWorksheet(mainXml, sharedStrings, generalValues, true);
   const areasCell = mainSheet.getCell('K3');
-  if (typeof areasCell.value === 'string') {
-    areasCell.value = `${areasCell.value}${report.generalData.areas || ''}`;
-  }
-  mainSheet.eachRow({ includeEmpty: false }, (row) => {
-    if (row.number === REVIEW_ROW) return;
-    row.eachCell({ includeEmpty: false }, (cell) => replaceCellMarkers(cell, generalValues));
-  });
-  applyFindingRows(mainSheet, report.findings, report);
-  applyDocumentValues(documentSheet, report.documents || {}, generalValues);
+  const areasText = extractText(areasCell.value);
+  mainXml = updateWorksheetCell(
+    mainXml,
+    'K3',
+    `${areasText}${report.generalData.areas || ''}`,
+    sharedStrings,
+  );
+  mainXml = writeFindingsToWorksheet(mainXml, report.findings || [], report, sharedStrings);
+  const documentValues = new Map([
+    ...DOCUMENT_MARKERS.map((key) => [key, report.documents?.[key] || '']),
+    ...generalValues,
+  ]);
+  documentXml = writeGeneralValuesToWorksheet(documentXml, sharedStrings, documentValues);
+  templateZip.file(mainSheetPath, mainXml);
+  templateZip.file(documentSheetPath, documentXml);
 
-  let serializedWorkbook;
-  try {
-    serializedWorkbook = Buffer.from(await workbook.xlsx.writeBuffer());
-  } catch (error) {
-    throw new RepExcelError('No se pudo transformar la plantilla REP.', error);
+  const tableFile = templateZip.file('xl/tables/table1.xml');
+  if (!tableFile) throw new RepExcelError('La plantilla REP no contiene su tabla de revisión.');
+  templateZip.file('xl/tables/table1.xml', updateTableRange(
+    await tableFile.async('string'),
+    report.findings?.length || 0,
+  ));
+  let sharedStringReferences = 0;
+  for (const sheetPath of sheetPaths) {
+    const sheetXml = await templateZip.file(sheetPath)?.async('string');
+    if (sheetXml) sharedStringReferences += [...sheetXml.matchAll(/\bt="s"/g)].length;
   }
-  const zip = await JSZip.loadAsync(serializedWorkbook);
+  templateZip.file(
+    'xl/sharedStrings.xml',
+    buildSharedStringsXml(sharedStringsXml, sharedStrings, sharedStringReferences),
+  );
+  await removeCalcChain(templateZip);
   let outputBuffer;
   try {
-    outputBuffer = await zip.generateAsync({
+    outputBuffer = await templateZip.generateAsync({
       type: 'nodebuffer',
       compression: 'DEFLATE',
       compressionOptions: { level: 6 },

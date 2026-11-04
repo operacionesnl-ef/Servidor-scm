@@ -3,6 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const JSZip = require('jszip');
+const sharp = require('sharp');
 
 const TEMPLATE_PATH = path.join(__dirname, '../templates/ANX-FOT.pptx');
 const IMAGE_TYPES = new Map([
@@ -16,6 +17,22 @@ class AnxPowerPointError extends Error {
     super(message, { cause });
     this.name = 'AnxPowerPointError';
   }
+}
+
+function buildAnxFileName(report) {
+  const date = report.generalData.startDate || report.generalData.inspectionDate;
+  const [year, month, day] = date.slice(0, 10).split('-').map(Number);
+  const endDate = new Date(Date.UTC(year, month - 1, day));
+  endDate.setUTCMonth(endDate.getUTCMonth() + 1);
+  if (endDate.getUTCDate() !== day) endDate.setUTCDate(0);
+  const dateToken = (value) => `(${String(value.getUTCDate()).padStart(2, '0')}-${String(value.getUTCMonth() + 1).padStart(2, '0')}-${String(value.getUTCFullYear()).slice(-2)})`;
+  const code = String(report.agencyFileNameCodeSnapshot || 'SIN-CODIGO')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'SIN-CODIGO';
+  return `ANX-FOT-${code}-${dateToken(new Date(Date.UTC(year, month - 1, day)))}-${dateToken(endDate)}.pptx`;
 }
 
 function escapeXml(value) {
@@ -56,7 +73,87 @@ function updatePicture(xml, shapeName, relationshipId) {
   return updated;
 }
 
-async function generateAnxPowerPointBuffer(images) {
+function removeNamedShape(xml, shapeName) {
+  const removedRelationships = [];
+  const updated = xml.replace(/<p:(sp|pic)\b[\s\S]*?<\/p:\1>/g, (shape) => {
+    if (!new RegExp(`<p:cNvPr\\b[^>]*\\bname="${shapeName}"`, 'i').test(shape)) return shape;
+    const relationshipId = shape.match(/r:embed="([^"]+)"/)?.[1];
+    if (relationshipId) removedRelationships.push(relationshipId);
+    return '';
+  });
+  return { xml: updated, removedRelationships };
+}
+
+function removeRelationships(xml, relationshipIds) {
+  return xml.replace(/<Relationship\b[^>]*\/>/g, (relationship) => (
+    relationshipIds.some((id) => new RegExp(`\\bId="${id}"`).test(relationship)) ? '' : relationship
+  ));
+}
+
+async function replaceLogo(zip, slidePath, xml, rels, logoBuffer, logoMimeType) {
+  const shapeName = /name="logo"/i.test(xml) ? 'logo' : 'Logo';
+  const shape = [...xml.matchAll(/<p:pic\b[\s\S]*?<\/p:pic>/g)]
+    .find((match) => new RegExp(`<p:cNvPr\\b[^>]*\\bname="${shapeName}"`, 'i').test(match[0]));
+  if (!shape) return { xml, rels };
+  const relationshipId = shape[0].match(/r:embed="([^"]+)"/)?.[1];
+  const relationship = rels.match(new RegExp(`<Relationship\\b(?=[^>]*\\bId="${relationshipId}")([^>]*)\\/>`));
+  const target = relationship?.[1].match(/\bTarget="([^"]+)"/)?.[1];
+  if (!relationshipId || !target) throw new AnxPowerPointError('El logotipo de la plantilla ANX no tiene una relación válida.');
+  const mediaPath = path.posix.normalize(path.posix.join(path.posix.dirname(slidePath), target));
+  const extension = path.posix.extname(mediaPath).slice(1).toLowerCase();
+  const converted = extension === 'png' ? await sharp(logoBuffer).png().toBuffer()
+    : ['jpg', 'jpeg'].includes(extension) ? await sharp(logoBuffer).jpeg().toBuffer()
+      : extension === 'webp' ? await sharp(logoBuffer).webp().toBuffer()
+        : null;
+  if (!converted || !['image/png', 'image/jpeg', 'image/webp'].includes(logoMimeType)) {
+    throw new AnxPowerPointError('El formato del logotipo de la sucursal no es compatible.');
+  }
+  zip.file(mediaPath, converted);
+  return { xml, rels };
+}
+
+function getRelationshipAttributes(xml) {
+  return [...xml.matchAll(/<Relationship\b([^>]*)\/>/g)].map((match) => ({
+    raw: match[0],
+    ...Object.fromEntries([...match[1].matchAll(/([A-Za-z_:][\w:.-]*)="([^"]*)"/g)]
+      .map((attribute) => [attribute[1], attribute[2]])),
+  }));
+}
+
+async function removeUnusedSlides(zip, slideCount) {
+  const presentationPath = 'ppt/presentation.xml';
+  const relationshipsPath = 'ppt/_rels/presentation.xml.rels';
+  const presentation = await zip.file(presentationPath)?.async('string');
+  const relationships = await zip.file(relationshipsPath)?.async('string');
+  if (!presentation || !relationships) {
+    throw new AnxPowerPointError('La plantilla ANX no contiene relaciones válidas para sus diapositivas.');
+  }
+  const slideRelations = getRelationshipAttributes(relationships)
+    .map((relation) => ({
+      ...relation,
+      slideNumber: Number(relation.Target?.match(/slide(\d+)\.xml$/)?.[1]),
+    }))
+    .filter(({ Type, slideNumber }) => Type?.endsWith('/slide') && slideNumber > slideCount);
+  const removedIds = new Set(slideRelations.map(({ Id }) => Id));
+  zip.file(presentationPath, presentation.replace(/<p:sldId\b[^>]*\/>/g, (slide) => (
+    removedIds.has(slide.match(/\br:id="([^"]+)"/)?.[1]) ? '' : slide
+  )));
+  zip.file(relationshipsPath, relationships.replace(/<Relationship\b[^>]*\/>/g, (relation) => (
+    slideRelations.some(({ Id }) => new RegExp(`\\bId="${Id}"`).test(relation)) ? '' : relation
+  )));
+  let contentTypes = await zip.file('[Content_Types].xml').async('string');
+  for (const { slideNumber } of slideRelations) {
+    zip.remove(`ppt/slides/slide${slideNumber}.xml`);
+    zip.remove(`ppt/slides/_rels/slide${slideNumber}.xml.rels`);
+    contentTypes = contentTypes.replace(
+      new RegExp(`<Override\\b(?=[^>]*PartName="/ppt/slides/slide${slideNumber}\\.xml")[^>]*/>`),
+      '',
+    );
+  }
+  zip.file('[Content_Types].xml', contentTypes);
+}
+
+async function generateAnxPowerPointBuffer(images, { logoBuffer, logoMimeType } = {}) {
   const template = await fs.readFile(TEMPLATE_PATH);
   const zip = await JSZip.loadAsync(template);
   const presentation = zip.file('ppt/presentation.xml');
@@ -68,6 +165,8 @@ async function generateAnxPowerPointBuffer(images) {
   if (slideFiles.length !== 10) throw new AnxPowerPointError('La plantilla ANX debe contener exactamente 10 diapositivas.');
 
   const imageList = [...images].sort((left, right) => left.numero - right.numero);
+  if (!imageList.length) throw new AnxPowerPointError('ANX requiere al menos una imagen.');
+  const slideCount = Math.ceil(imageList.length / 4);
   const numbers = new Set();
   for (const image of imageList) {
     if (!Number.isInteger(image.numero) || image.numero < 1 || image.numero > 40 || numbers.has(image.numero)) {
@@ -79,7 +178,7 @@ async function generateAnxPowerPointBuffer(images) {
     numbers.add(image.numero);
   }
 
-  for (let slideNumber = 1; slideNumber <= 10; slideNumber += 1) {
+  for (let slideNumber = 1; slideNumber <= slideCount; slideNumber += 1) {
     const slidePath = `ppt/slides/slide${slideNumber}.xml`;
     const relationshipsPath = `ppt/slides/_rels/slide${slideNumber}.xml.rels`;
     const slideFile = zip.file(slidePath);
@@ -87,10 +186,19 @@ async function generateAnxPowerPointBuffer(images) {
     if (!slideFile || !relsFile) throw new AnxPowerPointError(`Falta la diapositiva ${slideNumber} o sus relaciones.`);
     let xml = await slideFile.async('string');
     let rels = await relsFile.async('string');
+    if (logoBuffer?.length) {
+      ({ xml, rels } = await replaceLogo(zip, slidePath, xml, rels, logoBuffer, logoMimeType));
+    }
     for (let slot = 1; slot <= 4; slot += 1) {
-      const numero = (slideNumber - 1) * 4 + slot;
-      const image = imageList.find((entry) => entry.numero === numero);
-      if (!image) continue;
+      const image = imageList[(slideNumber - 1) * 4 + slot - 1];
+      if (!image) {
+        const picture = removeNamedShape(xml, `imagen${slot}`);
+        const caption = removeNamedShape(picture.xml, `imagen${slot}txt`);
+        xml = caption.xml;
+        rels = removeRelationships(rels, [...picture.removedRelationships, ...caption.removedRelationships]);
+        continue;
+      }
+      const numero = image.numero;
       const relationshipId = `rIdAnx${numero}`;
       const extension = IMAGE_TYPES.get(image.mimeType);
       const mediaName = `anx_image_${numero}.${extension}`;
@@ -100,6 +208,7 @@ async function generateAnxPowerPointBuffer(images) {
       zip.file(`ppt/media/${mediaName}`, image.buffer);
       xml = replaceTextForShape(xml, `imagen${slot}txt`, `IMAGEN ${numero}`);
     }
+    await removeUnusedSlides(zip, slideCount);
     zip.file(slidePath, xml);
     zip.file(relationshipsPath, rels);
   }
@@ -115,4 +224,4 @@ async function generateAnxPowerPointBuffer(images) {
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
 }
 
-module.exports = { AnxPowerPointError, generateAnxPowerPointBuffer };
+module.exports = { AnxPowerPointError, buildAnxFileName, generateAnxPowerPointBuffer };

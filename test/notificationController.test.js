@@ -292,10 +292,35 @@ test('notification SSE broadcasts persisted changes without an initial redundant
   streamNotificationEvents(req, res);
   assert.equal(writes.some((event) => event.includes('event: change')), false);
   publishNotificationChange();
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await new Promise((resolve) => setTimeout(resolve, 1100));
   assert.equal(writes.filter((event) => event.includes('event: change')).length, 1);
   res.destroyed = true;
   res.emit('close');
+});
+
+test('notification SSE closes clients that cannot keep up with the stream', async () => {
+  const res = new EventEmitter();
+  let writeCount = 0;
+  let destroyCount = 0;
+  res.destroyed = false;
+  res.status = () => res;
+  res.set = () => res;
+  res.flushHeaders = () => {};
+  res.write = () => {
+    writeCount += 1;
+    return writeCount === 1;
+  };
+  res.destroy = () => {
+    destroyCount += 1;
+    res.destroyed = true;
+    res.emit('close');
+  };
+
+  streamNotificationEvents({}, res);
+  publishNotificationChange();
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+
+  assert.equal(destroyCount, 1);
 });
 
 test('hiding a quick-view item stores its id only on the authenticated user', async () => {

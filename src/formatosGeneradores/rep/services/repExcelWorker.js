@@ -70,11 +70,13 @@ async function processClaimedReport(report) {
 
   try {
     if (report.revision !== revision) return;
-    if (!report.agencyBrandSnapshot || !report.agencyAddressSnapshot || !report.agencyLegalNameSnapshot) {
+    if (!report.agencyBrandSnapshot || !report.agencyAddressSnapshot
+      || !report.agencyLegalNameSnapshot || !report.agencyFileNameCodeSnapshot) {
       const agency = await Agency.findById(report.agencyId)
-        .select('razonSocial direccion entidadFederativa marca')
+        .select('razonSocial direccion entidadFederativa brand marca fileNameCode')
         .lean();
-      report.agencyBrandSnapshot ||= agency?.marca || '';
+      report.agencyBrandSnapshot ||= agency?.brand || agency?.marca || '';
+      report.agencyFileNameCodeSnapshot ||= agency?.fileNameCode || '';
       report.agencyAddressSnapshot ||= agency?.direccion || '';
       report.agencyLegalNameSnapshot ||= agency?.razonSocial || '';
     }

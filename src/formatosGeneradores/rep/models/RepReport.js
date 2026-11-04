@@ -30,6 +30,7 @@ const repReportSchema = new mongoose.Schema({
   agencyAddressSnapshot: { type: String, trim: true, maxlength: 500, default: '' },
   agencyStateSnapshot: { type: String, trim: true, maxlength: 100, default: '' },
   agencyBrandSnapshot: { type: String, trim: true, maxlength: 80, default: '' },
+  agencyFileNameCodeSnapshot: { type: String, trim: true, maxlength: 60, default: '' },
   status: { type: String, enum: ['draft', 'completed', 'archived'], default: 'draft', index: true },
   revision: { type: Number, min: 1, default: 1 },
   templateVersion: { type: String, required: true, default: '1.0' },
@@ -69,6 +70,7 @@ const repReportSchema = new mongoose.Schema({
     error: { type: String, trim: true, maxlength: 1000, default: '' },
   },
   drive: {
+    evidenceFolderId: { type: String, trim: true, default: '' },
     generatedFolderId: { type: String, trim: true, default: '' },
   },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },

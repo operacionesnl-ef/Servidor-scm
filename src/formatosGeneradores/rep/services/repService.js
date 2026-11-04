@@ -110,8 +110,8 @@ function validateRepPayload(payload) {
           errors.push(`La fecha ${field} del hallazgo ${index + 1} no es válida.`);
         }
       }
-      if (!finding.area || !AREA_OPTIONS.includes(finding.area)) {
-        errors.push(`El área del hallazgo ${index + 1} debe seleccionarse del catálogo.`);
+      if (!cleanText(finding.area, 200)) {
+        errors.push(`El área del hallazgo ${index + 1} es obligatoria.`);
       }
       if (!cleanText(finding.element)) {
         errors.push(`El elemento revisado del hallazgo ${index + 1} es obligatorio.`);
@@ -182,7 +182,7 @@ function validateRepPayload(payload) {
       legalBasis: cleanText(finding.legalBasis),
       findingDate: finding.findingDate || '',
       dueDate: finding.dueDate || '',
-      status: cleanText(finding.status, 50),
+      status: cleanText(finding.status, 50) || 'EN PROCESO',
       onTime: typeof finding.onTime === 'boolean'
         ? (finding.onTime ? 'Sí' : 'No')
         : cleanText(finding.onTime, 30),
