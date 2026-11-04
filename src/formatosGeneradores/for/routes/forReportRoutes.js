@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const requireAuth = require('../middlewares/requireAuth');
+const requireAuth = require('../../../middlewares/requireAuth');
 const {
   getForReport,
   getForReportExcelStatus,

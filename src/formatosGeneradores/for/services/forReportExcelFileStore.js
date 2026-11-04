@@ -3,7 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
-const DEFAULT_OUTPUT_DIRECTORY = path.resolve(__dirname, '../../storage/for-report-excels');
+const DEFAULT_OUTPUT_DIRECTORY = path.resolve(__dirname, '../../../../storage/for-report-excels');
 const REPORT_EXCEL_FILENAME_PATTERN = /^FOR-[a-f\d-]{36}-rev-\d+\.xlsx$/i;
 
 function getOutputDirectory() {
