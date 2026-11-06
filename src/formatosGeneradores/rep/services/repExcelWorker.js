@@ -3,6 +3,10 @@
 const RepReport = require('../models/RepReport');
 const Agency = require('../../../models/Agency');
 const { createGoogleDriveClient } = require('../../../config/googleDrive');
+const {
+  getGoogleDriveErrorStatus,
+  retryTransientGoogleDriveOperation,
+} = require('../../../services/googleDriveService');
 const { logConsoleEvent } = require('../../../utils/serverLogger');
 const { shouldPauseComplexJobs } = require('../../../services/resourceMonitor');
 const { generateRepExcelBuffer, RepExcelError, TEMPLATE_VERSION } = require('./repExcelGenerator');
@@ -19,7 +23,12 @@ let workerPromise = null;
 let pollTimer = null;
 
 async function setGenerationFailure(report, revision, error) {
-  const message = String(error?.message || 'No se pudo generar el REP.').slice(0, 1000);
+  const rawMessage = String(error?.message || 'No se pudo generar el REP.');
+  const isHtmlResponse = /^\s*(?:<!doctype html|<html\b)/i.test(rawMessage);
+  const status = getGoogleDriveErrorStatus(error);
+  const message = (isHtmlResponse
+    ? `Google Drive respondió con HTTP ${status || 502} durante la generación del Excel REP.`
+    : rawMessage).slice(0, 1000);
   const result = await RepReport.updateOne(
     {
       _id: report._id,
@@ -81,7 +90,18 @@ async function processClaimedReport(report) {
       report.agencyLegalNameSnapshot ||= agency?.razonSocial || '';
     }
     const drive = createGoogleDriveClient();
-    const logo = await getBrandLogo(drive, report.agencyBrandSnapshot);
+    const retryDriveOperation = (stage, operation) => retryTransientGoogleDriveOperation(operation, {
+      onRetry: ({ attempt, status }) => logConsoleEvent('rep_excel_drive_retry', {
+        reportId: report.reportId,
+        stage,
+        attempt,
+        status,
+      }),
+    });
+    const logo = await retryDriveOperation(
+      'brand_logo',
+      () => getBrandLogo(drive, report.agencyBrandSnapshot),
+    );
     const generated = await generateRepExcelBuffer(report, {
       logoBuffer: logo.buffer,
       logoMimeType: logo.mimeType,
@@ -89,14 +109,14 @@ async function processClaimedReport(report) {
     if (generated.templateVersion !== TEMPLATE_VERSION) {
       throw new RepExcelError('La versión de plantilla REP generada no coincide con la versión activa.');
     }
-    const folderId = await ensureRepFolder(drive, report);
-    const stored = await uploadRepExcelToDrive(drive, {
+    const folderId = await retryDriveOperation('generated_folder', () => ensureRepFolder(drive, report));
+    const stored = await retryDriveOperation('upload_excel', () => uploadRepExcelToDrive(drive, {
       folderId,
       reportId: report.reportId,
       revision,
       fileName: generated.downloadFileName,
       buffer: generated.buffer,
-    });
+    }));
     const result = await RepReport.updateOne(
       {
         _id: report._id,

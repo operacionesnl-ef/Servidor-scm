@@ -72,7 +72,37 @@ const {
   getBrandLogo,
   normalizeBrand,
   resolveBrandLogo,
+  uploadRepAnxToDrive,
 } = require('../src/formatosGeneradores/rep/services/repDriveStorage');
+
+test('uploads the generated ANX PowerPoint to the report folder with revision identity', async () => {
+  let uploaded;
+  const drive = {
+    files: {
+      list: async () => ({ data: { files: [] } }),
+      create: async (request) => {
+        uploaded = request;
+        return { data: { id: 'anx-drive-id', name: request.requestBody.name } };
+      },
+    },
+  };
+  const stored = await uploadRepAnxToDrive(drive, {
+    folderId: 'rep-folder',
+    reportId: 'REP-123',
+    revision: 3,
+    fileName: 'ANX-FOT-TEST.pptx',
+    buffer: Buffer.from('presentation'),
+  });
+
+  assert.equal(stored.driveFileId, 'anx-drive-id');
+  assert.equal(uploaded.requestBody.parents[0], 'rep-folder');
+  assert.equal(uploaded.media.mimeType, 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+  assert.deepEqual(uploaded.requestBody.appProperties, {
+    efcoreGeneratedAnx: 'REP-FOT',
+    efcoreGeneratedReportId: 'REP-123',
+    efcoreGeneratedRevision: '3',
+  });
+});
 
 test('normalizes brand names for case-, accent-, and separator-insensitive logo lookup', () => {
   assert.equal(normalizeBrand('  Hýundai Motor '), 'hyundaimotor');

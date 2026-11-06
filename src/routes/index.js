@@ -15,6 +15,7 @@ const calendarRoutes = require('./calendarRoutes');
 const googleDriveRoutes = require('./googleDriveRoutes');
 const forReportRoutes = require('../formatosGeneradores/for/routes/forReportRoutes');
 const repRoutes = require('../formatosGeneradores/rep/routes/repRoutes');
+const revRoutes = require('../formatosGeneradores/rev/routes/revRoutes');
 const requireAuth = require('../middlewares/requireAuth');
 
 const denyConsultor = (req, res, next) => {
@@ -58,5 +59,6 @@ router.use('/calendar', calendarRoutes);
 router.use('/google-drive', googleDriveRoutes);
 router.use('/for-aud-amb', forReportRoutes);
 router.use('/rep', repRoutes);
+router.use('/rev', revRoutes);
 
 module.exports = router;

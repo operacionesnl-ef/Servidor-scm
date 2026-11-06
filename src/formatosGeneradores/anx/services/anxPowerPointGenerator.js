@@ -221,7 +221,7 @@ async function generateAnxPowerPointBuffer(images, { logoBuffer, logoMimeType } 
     }
   }
   zip.file('[Content_Types].xml', contentTypes);
-  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 1 } });
 }
 
 module.exports = { AnxPowerPointError, buildAnxFileName, generateAnxPowerPointBuffer };

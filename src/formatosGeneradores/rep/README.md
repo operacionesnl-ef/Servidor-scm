@@ -1,6 +1,6 @@
 # REP-INS
 
-Los Excel REP se guardan bajo `Servicios EF/Recorridos Medio Ambiente/<año>/<mes>/<marca>`, con la misma jerarquía de FOR. Las fotografías se guardan por separado bajo `Evidencias/<año>/<mes>/<agencia>/REP/<reporteId>`. El nombre del Excel usa el código de archivo de la agencia y el formato de fechas de FOR.
+Los Excel REP y los PowerPoint ANX se guardan bajo `Servicios EF/Recorridos Medio Ambiente/<año>/<mes>/<marca>`, con la misma jerarquía de FOR. Las fotografías se guardan por separado bajo `Evidencias/<año>/<mes>/<agencia>/REP/<reporteId>`. Los archivos generados se registran en el expediente mensual en modo Sistema; el ANX usa el slot ANX y el ID del REP asociado.
 
 El módulo REST se monta en `/api/rep` y almacena reportes REP en MongoDB. La generación se procesa en segundo plano y el XLSX resultante se guarda en Google Drive.
 
@@ -24,6 +24,9 @@ Para asignar logotipos explícitos, edita `src/config/repBrandLogoPaths.js`: usa
 - `POST /api/rep/:reportId/excel/generate`: encola la generación con `expectedRevision`.
 - `GET /api/rep/:reportId/excel`: consulta el estado de generación.
 - `GET /api/rep/:reportId/excel/download`: descarga el Excel listo desde Drive.
+- `POST /api/rep/:reportId/anx/generate`: encola la generación y guardado del PowerPoint ANX en Drive.
+- `GET /api/rep/:reportId/anx`: consulta el estado de generación del ANX.
+- `GET /api/rep/:reportId/anx/download`: descarga el ANX listo desde Drive.
 
 El cuerpo de creación contiene `agencyId`, `calendarEventId`, `generalData`, `findings` y `documents`. El servidor valida que la programación pertenezca a la sucursal y toma de ella las fechas y horas del recorrido. `generalData.visitType` acepta `ordinario` o `extraordinario`. Cada hallazgo distingue `correctiveAction` y `preventiveAction`; el área y el elemento revisado son obligatorios. Los catálogos de área y status corresponden a las listas de la plantilla; prioridad acepta `baja`, `media`, `alta` o `crítica`; `onTime` acepta booleano o `Sí`/`No`. `imageNumber` es el texto que se escribe en la columna de evidencia y `sanction` es un monto numérico no negativo. Los siete campos de `documents` usan los marcadores de la plantilla: `estudio_iluminacion`, `estudio_ruido`, `permisos_recipientes`, `registro_programa`, `licencia_uso`, `estudio_grado` y `estudio_sustancias`.
 

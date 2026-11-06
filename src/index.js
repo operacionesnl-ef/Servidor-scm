@@ -14,6 +14,8 @@ const { startActivityLogCleanupWorker } = require('./services/activityLogCleanup
 const { startCalendarReminderWorker } = require('./services/calendarReminderWorker');
 const { startForReportExcelWorker } = require('./formatosGeneradores/for/services/forReportExcelWorker');
 const { startRepExcelWorker } = require('./formatosGeneradores/rep/services/repExcelWorker');
+const { startRepAnxWorker } = require('./formatosGeneradores/rep/services/repAnxWorker');
+const { startRevExcelWorker } = require('./formatosGeneradores/rev/services/revExcelWorker');
 const { logServerEvent } = require('./utils/serverLogger');
 const { logStartup } = require('./utils/consoleLogger');
 const { getHealth } = require('./controllers/healthController');
@@ -179,6 +181,8 @@ connectDB().then(async () => {
   await startAgencyRefreshJobWorker();
   await startForReportExcelWorker();
   await startRepExcelWorker();
+  await startRepAnxWorker();
+  await startRevExcelWorker();
   startActivityLogCleanupWorker();
   startCalendarReminderWorker();
 

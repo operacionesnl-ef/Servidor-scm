@@ -11,6 +11,7 @@ const {
 const { logConsoleEvent } = require('../../../utils/serverLogger');
 
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const PPTX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 const IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const GENERATED_FILE_PROPERTIES = { efcoreGeneratedExcel: 'REP-INS' };
 const MAX_PUBLIC_LOGO_BYTES = 5 * 1024 * 1024;
@@ -402,6 +403,47 @@ async function uploadRepExcelToDrive(drive, { folderId, reportId, revision, file
   return { driveFileId: uploaded.id, folderId, fileName: uploaded.name || fileName };
 }
 
+async function uploadRepAnxToDrive(drive, { folderId, reportId, revision, fileName, buffer }) {
+  if (!folderId || !reportId || !Number.isInteger(revision) || !fileName || !Buffer.isBuffer(buffer) || !buffer.length) {
+    throw new TypeError('Se requieren reporte, revisión, carpeta, nombre y contenido para guardar el ANX.');
+  }
+  const appProperties = {
+    efcoreGeneratedAnx: 'REP-FOT',
+    efcoreGeneratedReportId: reportId,
+    efcoreGeneratedRevision: String(revision),
+  };
+  const existing = await findDriveFileByAppProperties(drive, null, {
+    efcoreGeneratedAnx: 'REP-FOT',
+    efcoreGeneratedReportId: reportId,
+  });
+  if (existing) {
+    const storedRevision = Number(existing.appProperties?.efcoreGeneratedRevision) || 0;
+    if (storedRevision > revision) throw new RepDriveStorageError('Drive ya contiene una revisión posterior del ANX.');
+    const request = {
+      fileId: existing.id,
+      supportsAllDrives: true,
+      requestBody: { name: fileName, appProperties },
+      media: { mimeType: PPTX_MIME_TYPE, body: Readable.from([buffer]) },
+      fields: 'id,name,parents,appProperties',
+    };
+    const parents = existing.parents || [];
+    if (!parents.includes(folderId)) {
+      request.addParents = folderId;
+      if (parents.length) request.removeParents = parents.join(',');
+    }
+    const { data } = await drive.files.update(request);
+    return { driveFileId: data.id, folderId, fileName: data.name || fileName };
+  }
+  const uploaded = await uploadDriveFile(drive, {
+    folderId,
+    fileName,
+    mimeType: PPTX_MIME_TYPE,
+    body: Readable.from([buffer]),
+    appProperties,
+  });
+  return { driveFileId: uploaded.id, folderId, fileName: uploaded.name || fileName };
+}
+
 module.exports = {
   RepDriveStorageError,
   ensureRepFolder,
@@ -411,5 +453,6 @@ module.exports = {
   resolveBrandLogo,
   listFolderFiles,
   uploadRepExcelToDrive,
+  uploadRepAnxToDrive,
   uploadRepImageToDrive,
 };

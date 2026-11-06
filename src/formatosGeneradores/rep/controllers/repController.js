@@ -17,6 +17,7 @@ const {
 } = require('../services/repDriveStorage');
 const { syncRepReportMonthlyFile } = require('../services/repMonthlyFileSync');
 const { kickRepExcelWorker } = require('../services/repExcelWorker');
+const { kickRepAnxWorker } = require('../services/repAnxWorker');
 const { logConsoleEvent } = require('../../../utils/serverLogger');
 const {
   RepExcelError,
@@ -24,9 +25,7 @@ const {
 } = require('../services/repExcelGenerator');
 const { serializeRepReport, validateRepPayload, isValidDate } = require('../services/repService');
 const {
-  AnxPowerPointError,
   buildAnxFileName,
-  generateAnxPowerPointBuffer,
 } = require('../../anx/services/anxPowerPointGenerator');
 
 const ACCESS_ROLES = new Set(['admin', 'developer', 'consultor']);
@@ -167,6 +166,13 @@ async function createRepReport(req, res, next) {
     if (errors.length) {
       throw new RepRequestError(400, `Los datos del REP no son válidos: ${errors.join(' ')}`, errors);
     }
+    const status = req.body.status || 'draft';
+    if (!['draft', 'completed'].includes(status)) {
+      throw new RepRequestError(400, 'El estado del REP debe ser draft o completed.');
+    }
+    if (status === 'completed' && !ADMIN_ROLES.has(String(req.user?.rol || '').trim().toLowerCase())) {
+      throw new RepRequestError(403, 'Solo un administrador puede validar y completar el REP.');
+    }
     value.findings.forEach((finding) => {
       if (!finding.findingId) finding.findingId = crypto.randomUUID();
     });
@@ -253,6 +259,7 @@ async function createRepReport(req, res, next) {
       generalData: value.generalData,
       findings: value.findings.map(({ images, ...finding }) => finding),
       documents: value.documents,
+      status,
       createdBy: req.user._id,
       updatedBy: req.user._id,
     });
@@ -590,6 +597,10 @@ async function updateRepReport(req, res, next) {
       if (!['draft', 'completed'].includes(req.body.status)) {
         throw new RepRequestError(400, 'El estado del REP debe ser draft o completed.');
       }
+      if (req.body.status === 'completed'
+        && !ADMIN_ROLES.has(String(req.user?.rol || '').trim().toLowerCase())) {
+        throw new RepRequestError(403, 'Solo un administrador puede validar y completar el REP.');
+      }
       report.status = req.body.status;
     }
     if (before !== after || req.body.status !== undefined) {
@@ -655,6 +666,18 @@ function canGenerateReport(user, report) {
   return ADMIN_ROLES.has(role) || (role === 'consultor' && String(report.createdBy) === String(user._id));
 }
 
+async function getCurrentAnxFileName(report) {
+  let agencyCode = report.agencyFileNameCodeSnapshot;
+  if (!agencyCode) {
+    const agency = await Agency.findById(report.agencyId).select('fileNameCode').lean();
+    agencyCode = agency?.fileNameCode || '';
+  }
+  return buildAnxFileName({
+    generalData: report.generalData,
+    agencyFileNameCodeSnapshot: agencyCode,
+  });
+}
+
 async function queueRepExcel(req, res, next) {
   try {
     const report = req.repReport;
@@ -705,7 +728,7 @@ async function getRepExcelStatus(req, res, next) {
       throw new RepRequestError(403, 'No tienes permiso para consultar la generación del REP.');
     }
     const stored = req.repReport.generatedExcel;
-    const current = stored?.status === 'ready'
+    const current = stored?.estado === 'ready'
       && stored.reportRevision === req.repReport.revision
       && stored.templateVersion === TEMPLATE_VERSION;
     const generatedExcel = stored
@@ -761,39 +784,113 @@ async function generateRepAnx(req, res, next) {
     if (!canGenerateReport(req.user, report)) {
       throw new RepRequestError(403, 'No tienes permiso para generar el anexo fotográfico.');
     }
-    const anx = await ANX.findOne({ reporteId: report.reportId }).lean();
+    const anx = await ANX.findOne({ reporteId: report.reportId });
     if (!anx || anx.estado === 'cancelado' || !anx.totalImagenes) {
       throw new RepRequestError(404, 'El reporte no tiene fotografías asociadas en ANX.');
     }
     if (anx.totalImagenes !== anx.imagenes.length) {
       throw new RepRequestError(409, 'El total de imágenes de ANX no coincide con sus registros.');
     }
-    const drive = createGoogleDriveClient();
-    const images = await Promise.all(anx.imagenes.map(async (image) => {
-      const response = await drive.files.get(
-        { fileId: image.driveFileId, alt: 'media', supportsAllDrives: true },
-        { responseType: 'stream' },
-      );
-      const chunks = [];
-      for await (const chunk of response.data) chunks.push(Buffer.from(chunk));
-      return { numero: image.numero, mimeType: image.mimeType, buffer: Buffer.concat(chunks) };
-    }));
-    const logo = await getBrandLogo(drive, report.agencyBrandSnapshot);
-    const buffer = await generateAnxPowerPointBuffer(images, {
-      logoBuffer: logo.buffer,
-      logoMimeType: logo.mimeType,
+    const generated = anx.archivoGenerado || {};
+    const expectedFileName = await getCurrentAnxFileName(report);
+    if (generated.estado === 'ready'
+      && generated.revision === report.revision
+      && generated.driveFileId
+      && generated.nombre === expectedFileName) {
+      return res.json({
+        success: true,
+        data: { generatedAnx: { status: 'ready', revision: report.revision, fileName: generated.nombre } },
+      });
+    }
+    if (['queued', 'processing'].includes(generated.estado)
+      && generated.revision === report.revision) {
+      return res.status(202).json({
+        success: true,
+        data: { generatedAnx: { status: generated.estado, revision: report.revision } },
+      });
+    }
+    anx.archivoGenerado = {
+      estado: 'queued',
+      revision: report.revision,
+      driveFileId: '',
+      nombre: expectedFileName,
+      queuedAt: new Date(),
+      startedAt: null,
+      generadoEn: null,
+      error: '',
+    };
+    await anx.save();
+    await syncRepReportMonthlyFile(report);
+    kickRepAnxWorker();
+    return res.status(202).json({
+      success: true,
+      data: {
+        generatedAnx: {
+          status: 'queued',
+          revision: report.revision,
+          fileName: anx.archivoGenerado.nombre,
+        },
+      },
     });
+  } catch (error) {
+    return respondError(error, res, next);
+  }
+}
+
+async function getRepAnxStatus(req, res, next) {
+  try {
+    const report = req.repReport;
+    if (!canGenerateReport(req.user, report)) {
+      throw new RepRequestError(403, 'No tienes permiso para consultar la generación del ANX.');
+    }
+    const anx = await ANX.findOne({ reporteId: report.reportId }).lean();
+    const stored = anx?.archivoGenerado;
+    const current = stored?.estado === 'ready'
+      && stored.revision === report.revision
+      && Boolean(stored.driveFileId);
+    const generatedAnx = stored
+      ? {
+        status: stored.estado === 'ready' && !current ? 'not_requested' : stored.estado,
+        revision: stored.revision,
+        fileName: current ? stored.nombre : '',
+        queuedAt: stored.queuedAt,
+        startedAt: stored.startedAt,
+        generatedAt: stored.generadoEn,
+        error: stored.error,
+      }
+      : { status: 'not_requested' };
+    return res.json({ success: true, data: { generatedAnx } });
+  } catch (error) {
+    return respondError(error, res, next);
+  }
+}
+
+async function downloadRepAnx(req, res, next) {
+  try {
+    const report = req.repReport;
+    if (!canGenerateReport(req.user, report)) {
+      throw new RepRequestError(403, 'No tienes permiso para descargar el anexo fotográfico.');
+    }
+    const anx = await ANX.findOne({ reporteId: report.reportId }).lean();
+    const generated = anx?.archivoGenerado;
+    if (generated?.estado !== 'ready'
+      || generated.revision !== report.revision
+      || !generated.driveFileId) {
+      throw new RepRequestError(404, 'No hay un ANX listo para la revisión actual del REP.');
+    }
+    const response = await createGoogleDriveClient().files.get(
+      { fileId: generated.driveFileId, alt: 'media', supportsAllDrives: true },
+      { responseType: 'stream' },
+    );
     res.set({
       'Cache-Control': 'no-store, private',
       'Content-Type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      'Content-Disposition': `attachment; filename="${encodeURIComponent(buildAnxFileName(report))}"`,
+      'Content-Disposition': `attachment; filename="${encodeURIComponent(generated.nombre || buildAnxFileName(report))}"`,
       'X-Content-Type-Options': 'nosniff',
     });
-    return res.send(buffer);
+    response.data.on('error', (streamError) => res.destroy(streamError));
+    return response.data.pipe(res);
   } catch (error) {
-    if (error instanceof AnxPowerPointError) {
-      return res.status(422).json({ success: false, message: error.message });
-    }
     return respondError(error, res, next);
   }
 }
@@ -853,7 +950,9 @@ async function getRepLogo(req, res, next) {
 module.exports = {
   createRepReport,
   downloadRepExcel,
+  downloadRepAnx,
   generateRepAnx,
+  getRepAnxStatus,
   getRepLogo,
   getRepExcelStatus,
   getRepReport,

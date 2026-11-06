@@ -111,7 +111,7 @@ test('validates a system-generated FOR reference and the developer agency filena
   assert.ok(invalidBrand.errors.marca);
 });
 
-test('validates system-generated REP references only in the REP slot', () => {
+test('validates system-generated ANX and REP references in their associated slots', () => {
   const repFile = {
     mode: 'system',
     systemReportId: 'REP-12345678-1234-1234-1234-123456789012',
@@ -124,6 +124,22 @@ test('validates system-generated REP references only in the REP slot', () => {
   }, '2026-10');
   assert.deepEqual(valid.errors, {});
   assert.equal(valid.value.archivos.archivo3.systemReportId, repFile.systemReportId);
+
+  const anxFile = {
+    mode: 'system',
+    systemReportId: repFile.systemReportId,
+    nombre: 'ANX-FOT-TEST-(01-10-26)-(01-11-26).pptx',
+    generatedAnxStatus: 'ready',
+    generatedAnxRevision: 1,
+    reportRevision: 1,
+    driveId: 'anx-drive-file',
+    ruta: 'anx-drive-folder',
+  };
+  const validAnx = validateMonthlyFiles({
+    archivos: { archivo1: anxFile, archivo2: null, archivo3: repFile, archivo4: null },
+  }, '2026-10');
+  assert.deepEqual(validAnx.errors, {});
+  assert.equal(validAnx.value.archivos.archivo1.generatedAnxStatus, 'ready');
 
   const invalidSlot = validateMonthlyFiles({
     archivos: { archivo1: null, archivo2: repFile, archivo3: null, archivo4: null },
