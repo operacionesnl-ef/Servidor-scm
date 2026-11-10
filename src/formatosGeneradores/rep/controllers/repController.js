@@ -17,12 +17,22 @@ const {
 } = require('../services/repDriveStorage');
 const { syncRepReportMonthlyFile } = require('../services/repMonthlyFileSync');
 const { kickRepExcelWorker } = require('../services/repExcelWorker');
+const { kickRepAnxWorker } = require('../services/repAnxWorker');
+const { enqueueGeneration } = require('../../services/generationQueue');
+const { logConsoleEvent } = require('../../../utils/serverLogger');
 const {
   RepExcelError,
   TEMPLATE_VERSION,
 } = require('../services/repExcelGenerator');
-const { serializeRepReport, validateRepPayload, isValidDate } = require('../services/repService');
-const { AnxPowerPointError, generateAnxPowerPointBuffer } = require('../../anx/services/anxPowerPointGenerator');
+const {
+  MAX_IMAGES_PER_FINDING,
+  serializeRepReport,
+  validateRepPayload,
+  isValidDate,
+} = require('../services/repService');
+const {
+  buildAnxFileName,
+} = require('../../anx/services/anxPowerPointGenerator');
 
 const ACCESS_ROLES = new Set(['admin', 'developer', 'consultor']);
 const ADMIN_ROLES = new Set(['admin', 'developer']);
@@ -78,10 +88,14 @@ async function getAccessibleAgency(user, agencyId) {
   const filter = { _id: agencyId };
   if (role === 'consultor') filter.consultantId = user._id;
   const agency = await Agency.findOne(filter)
-    .select('_id nombre razonSocial direccion entidadFederativa marca consultantId')
+    .select('_id nombre razonSocial direccion entidadFederativa brand marca fileNameCode consultantId')
     .lean();
   if (!agency) throw new RepRequestError(404, 'No se encontró la agencia o no tienes acceso asignado.');
   return agency;
+}
+
+function getAgencyBrand(agency) {
+  return String(agency?.brand || agency?.marca || '').trim();
 }
 
 function canEditReport(user, report) {
@@ -112,8 +126,11 @@ async function loadRepReport(req, res, next, reportId) {
 
 async function listRepReports(req, res, next) {
   try {
-    const { agencyId, inspectionDate, calendarEventId } = req.query;
-    if (!isValidDate(inspectionDate)) throw new RepRequestError(400, 'La fecha debe tener formato AAAA-MM-DD.');
+    const { agencyId, inspectionDate, calendarEventId, period } = req.query;
+    if (period !== undefined && !/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) {
+      throw new RepRequestError(400, 'El período debe tener formato AAAA-MM.');
+    }
+    if (!period && !isValidDate(inspectionDate)) throw new RepRequestError(400, 'La fecha debe tener formato AAAA-MM-DD.');
     const agency = await getAccessibleAgency(req.user, agencyId);
     let eventFilter = {};
     if (calendarEventId) {
@@ -134,7 +151,9 @@ async function listRepReports(req, res, next) {
     const reports = await RepReport.find({
       agencyId: agency._id,
       status: { $ne: 'archived' },
-      'generalData.inspectionDate': inspectionDate,
+      ...(period
+        ? { 'generalData.inspectionDate': new RegExp(`^${period}`) }
+        : { 'generalData.inspectionDate': inspectionDate }),
       ...eventFilter,
     })
       .select('reportId agencyNameSnapshot status revision generalData createdAt updatedAt')
@@ -149,8 +168,25 @@ async function listRepReports(req, res, next) {
 
 async function createRepReport(req, res, next) {
   try {
+    logConsoleEvent('rep_create_started', {
+      agencyId: req.body?.agencyId || '',
+      userId: String(req.user?._id || ''),
+      findingCount: Array.isArray(req.body?.findings) ? req.body.findings.length : 0,
+    });
     const { errors, value } = validateRepPayload(req.body);
-    if (errors.length) throw new RepRequestError(400, 'Los datos del REP no son válidos.', errors);
+    if (errors.length) {
+      throw new RepRequestError(400, `Los datos del REP no son válidos: ${errors.join(' ')}`, errors);
+    }
+    const status = req.body.status || 'draft';
+    if (!['draft', 'completed'].includes(status)) {
+      throw new RepRequestError(400, 'El estado del REP debe ser draft o completed.');
+    }
+    if (status === 'completed' && !ADMIN_ROLES.has(String(req.user?.rol || '').trim().toLowerCase())) {
+      throw new RepRequestError(403, 'Solo un administrador puede validar y completar el REP.');
+    }
+    value.findings.forEach((finding) => {
+      if (!finding.findingId) finding.findingId = crypto.randomUUID();
+    });
     const agency = await getAccessibleAgency(req.user, req.body.agencyId);
     if (!req.body.calendarEventId) {
       throw new RepRequestError(400, 'El REP debe estar relacionado con una programación de recorrido.');
@@ -189,7 +225,9 @@ async function createRepReport(req, res, next) {
         throw new RepRequestError(409, 'La clave de idempotencia ya se utilizó para otro usuario.');
       }
       await syncRepReportMonthlyFile(existing);
-      return res.status(200).json({ success: true, data: { report: serializeRepReport(existing) } });
+      const responseReport = await attachRepAnxImages(serializeRepReport(existing));
+      logConsoleEvent('rep_create_idempotent', { reportId: existing.reportId, revision: existing.revision });
+      return res.status(200).json({ success: true, data: { report: responseReport } });
     }
     const reportForVisit = await RepReport.findOne({
       agencyId: agency._id,
@@ -227,16 +265,30 @@ async function createRepReport(req, res, next) {
       agencyLegalNameSnapshot: agency.razonSocial || '',
       agencyAddressSnapshot: agency.direccion || '',
       agencyStateSnapshot: agency.entidadFederativa || '',
-      agencyBrandSnapshot: agency.marca || '',
+      agencyBrandSnapshot: getAgencyBrand(agency),
+      agencyFileNameCodeSnapshot: agency.fileNameCode || '',
       generalData: value.generalData,
       findings: value.findings.map(({ images, ...finding }) => finding),
       documents: value.documents,
+      status,
       createdBy: req.user._id,
       updatedBy: req.user._id,
     });
     await syncRepReportMonthlyFile(report);
-    return res.status(201).json({ success: true, data: { report: serializeRepReport(report) } });
+    const responseReport = await attachRepAnxImages(serializeRepReport(report));
+    logConsoleEvent('rep_create_completed', {
+      reportId: report.reportId,
+      revision: report.revision,
+      findingCount: report.findings.length,
+    });
+    return res.status(201).json({ success: true, data: { report: responseReport } });
   } catch (error) {
+    logConsoleEvent('rep_create_failed', {
+      agencyId: req.body?.agencyId || '',
+      userId: String(req.user?._id || ''),
+      status: error.status || 500,
+      message: error.message,
+    });
     if (error?.code === 11000) {
       return respondError(
         new RepRequestError(409, 'Ya existe un REP vinculado a este recorrido. Abre el reporte existente para continuar.'),
@@ -250,17 +302,18 @@ async function createRepReport(req, res, next) {
 
 async function attachRepAnxImages(report) {
   const anx = await ANX.findOne({ reporteId: report.reportId }).lean();
-  report.findings = report.findings.map((finding) => {
-    const image = anx?.imagenes.find((entry) => entry.registroId === finding.findingId);
+  const images = Array.isArray(anx?.imagenes) ? anx.imagenes : [];
+  report.findings = (report.findings || []).map((finding) => {
+    const findingImages = images.filter((entry) => entry.registroId === finding.findingId);
     return {
       ...finding,
-      imageNumber: image?.numero || '',
-      images: image ? [{
+      imageNumber: findingImages[0]?.numero || '',
+      images: findingImages.map((image) => ({
         imageId: image.imageId,
         fileName: image.fileName,
         mimeType: image.mimeType,
         status: 'active',
-      }] : [],
+      })),
     };
   });
   return report;
@@ -293,11 +346,33 @@ function receiveRepFindingImage(req, res, next) {
     limits: { fileSize: MAX_IMAGE_BYTES, files: 1 },
   }).single('file');
   upload(req, res, (error) => {
-    if (!error) return next();
+    if (!error) {
+      logConsoleEvent('rep_image_received', {
+        reportId: req.params.reportId,
+        findingId: req.params.findingId,
+        imageId: req.params.imageId,
+        fileName: req.file?.originalname || '',
+        mimeType: req.file?.mimetype || '',
+        bytes: req.file?.size || 0,
+      });
+      return next();
+    }
     if (error.code === 'LIMIT_FILE_SIZE') {
+      logConsoleEvent('rep_image_rejected', {
+        reportId: req.params.reportId,
+        findingId: req.params.findingId,
+        imageId: req.params.imageId,
+        reason: 'file_too_large',
+      });
       return res.status(413).json({ success: false, message: 'La foto supera el límite de 10 MiB.' });
     }
     if (error instanceof multer.MulterError) {
+      logConsoleEvent('rep_image_rejected', {
+        reportId: req.params.reportId,
+        findingId: req.params.findingId,
+        imageId: req.params.imageId,
+        reason: error.code,
+      });
       return res.status(400).json({ success: false, message: 'La carga debe incluir una sola imagen válida.' });
     }
     return next(error);
@@ -317,14 +392,37 @@ async function uploadRepFindingImage(req, res, next) {
     const finding = report.findings[findingIndex];
     if (!finding) throw new RepRequestError(404, 'No se encontró el registro del REP.');
     const anx = await ANX.findOne({ reporteId: report.reportId });
-    const currentImage = anx?.imagenes.find((entry) => entry.registroId === findingId);
+    const currentImages = anx?.imagenes?.filter((entry) => entry.registroId === findingId) || [];
+    const currentImage = currentImages.find((entry) => entry.imageId === imageId);
     if (currentImage) {
+      logConsoleEvent('rep_image_upload_idempotent', { reportId: report.reportId, findingId, imageId });
+      return res.status(200).json({
+        success: true,
+        data: {
+          image: {
+            imageId: currentImage.imageId,
+            fileName: currentImage.fileName,
+            mimeType: currentImage.mimeType,
+            status: 'active',
+          },
+          reportRevision: report.revision,
+        },
+      });
+    }
+    if (currentImages.length >= MAX_IMAGES_PER_FINDING) {
       return res.status(409).json({
         success: false,
-        message: 'Este registro ya tiene una fotografía asociada.',
+        message: `Este registro admite hasta ${MAX_IMAGES_PER_FINDING} fotografías.`,
       });
     }
     if (anx?.imagenes.length >= 40) throw new RepRequestError(409, 'El anexo admite hasta 40 fotografías.');
+    const usedNumbers = new Set((anx?.imagenes || []).map((image) => image.numero));
+    const numero = Array.from({ length: 40 }, (_, index) => index + 1)
+      .find((number) => !usedNumbers.has(number));
+    if (!numero) throw new RepRequestError(409, 'El anexo admite hasta 40 fotografías.');
+    if (!ALLOWED_IMAGE_MIME_TYPES.has(req.file.mimetype)) {
+      throw new RepRequestError(415, 'Solo se admiten fotos JPEG, PNG o WebP.');
+    }
     let processedImage;
     try {
       processedImage = await processForReportImage(req.file.buffer, req.file.mimetype);
@@ -332,12 +430,16 @@ async function uploadRepFindingImage(req, res, next) {
       if (error instanceof ImageProcessingError) throw new RepRequestError(422, error.message);
       throw error;
     }
-    if (!ALLOWED_IMAGE_MIME_TYPES.has(req.file.mimetype) || req.file.mimetype !== image.mimeType) {
-      throw new RepRequestError(415, 'Solo se admiten fotos JPEG, PNG o WebP.');
-    }
 
     const drive = createGoogleDriveClient();
     const folderId = await ensureRepImageFolder(drive, report);
+    logConsoleEvent('rep_image_drive_upload_started', {
+      reportId: report.reportId,
+      findingId,
+      imageId,
+      bytes: processedImage.buffer.length,
+      resized: processedImage.resized,
+    });
     const driveFile = await uploadRepImageToDrive(drive, {
       folderId,
       reportId: report.reportId,
@@ -348,11 +450,14 @@ async function uploadRepFindingImage(req, res, next) {
       buffer: processedImage.buffer,
     });
     const metadata = await getDriveFileMetadata(drive, driveFile.id);
+    if (!metadata?.id || metadata.trashed) {
+      throw new RepRequestError(502, 'Google Drive no confirmó el archivo de la foto.');
+    }
     const imageEntry = {
       imageId,
-      numero: findingIndex + 1,
+      numero,
       registroId: findingId,
-      nombre: `Imagen ${findingIndex + 1}`,
+      nombre: `Imagen ${numero}`,
       driveFileId: metadata.id,
       fileName: String(req.file.originalname || 'foto').replace(/[\\/:*?"<>|]/g, '_').slice(0, 255),
       mimeType: req.file.mimetype,
@@ -365,6 +470,12 @@ async function uploadRepFindingImage(req, res, next) {
     anxDocument.imagenes.push(imageEntry);
     anxDocument.totalImagenes = anxDocument.imagenes.length;
     await anxDocument.save();
+    logConsoleEvent('rep_image_anx_saved', {
+      reportId: report.reportId,
+      findingId,
+      imageId,
+      totalImages: anxDocument.totalImagenes,
+    });
     finding.imageNumber = findingIndex + 1;
     report.revision += 1;
     report.generatedExcel.status = 'not_requested';
@@ -375,11 +486,25 @@ async function uploadRepFindingImage(req, res, next) {
     report.updatedBy = req.user._id;
     await report.save();
     await syncRepReportMonthlyFile(report);
+    logConsoleEvent('rep_image_upload_completed', {
+      reportId: report.reportId,
+      findingId,
+      imageId,
+      reportRevision: report.revision,
+      driveFileId: metadata.id,
+    });
     return res.status(201).json({
       success: true,
       data: { image: { imageId, fileName: imageEntry.fileName, mimeType: imageEntry.mimeType, status: 'active' }, reportRevision: report.revision },
     });
   } catch (error) {
+    logConsoleEvent('rep_image_upload_failed', {
+      reportId: req.repReport?.reportId || req.params.reportId,
+      findingId: req.params.findingId,
+      imageId: req.params.imageId,
+      status: error.status || 500,
+      message: error.message,
+    });
     return respondError(error, res, next);
   }
 }
@@ -390,9 +515,9 @@ async function streamRepFindingImage(req, res, next) {
     if (!IMAGE_ID_PATTERN.test(findingId || '') || !IMAGE_ID_PATTERN.test(imageId || '')) {
       throw new RepRequestError(404, 'No se encontró la foto solicitada.');
     }
-    const image = (await ANX.findOne({ reporteId: req.repReport.reportId }))?.imagenes
-      .find((entry) => entry.registroId === findingId && entry.imageId === imageId);
-    if (!image || image.status !== 'active' || !image.driveFileId) {
+    const anx = await ANX.findOne({ reporteId: req.repReport.reportId });
+    const image = anx?.imagenes?.find((entry) => entry.registroId === findingId && entry.imageId === imageId);
+    if (!image || !image.driveFileId) {
       throw new RepRequestError(404, 'No se encontró la foto solicitada.');
     }
     const response = await createGoogleDriveClient().files.get(
@@ -402,13 +527,21 @@ async function streamRepFindingImage(req, res, next) {
     res.set({
       'Cache-Control': 'no-store, private',
       'Content-Type': image.mimeType,
-      'Content-Length': String(image.sizeBytes),
       'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(image.fileName)}`,
       'X-Content-Type-Options': 'nosniff',
     });
+    const imageSize = Number(image.tamanoBytes);
+    if (Number.isFinite(imageSize) && imageSize > 0) res.set('Content-Length', String(imageSize));
     response.data.on('error', next);
     return response.data.pipe(res);
   } catch (error) {
+    logConsoleEvent('rep_image_stream_failed', {
+      reportId: req.repReport?.reportId || req.params.reportId,
+      findingId: req.params.findingId,
+      imageId: req.params.imageId,
+      status: error.status || 500,
+      message: error.message,
+    });
     return respondError(error, res, next);
   }
 }
@@ -416,12 +549,25 @@ async function streamRepFindingImage(req, res, next) {
 async function updateRepReport(req, res, next) {
   try {
     const report = req.repReport;
+    logConsoleEvent('rep_update_started', {
+      reportId: report.reportId,
+      revision: report.revision,
+      expectedRevision: req.body.expectedRevision,
+      findingCount: Array.isArray(req.body.findings) ? req.body.findings.length : 0,
+    });
     requireCanEdit(req.user, report);
     if (!Number.isInteger(req.body.expectedRevision) || req.body.expectedRevision !== report.revision) {
       throw new RepRequestError(409, 'El REP cambió antes de guardar. Recarga el reporte e inténtalo nuevamente.');
     }
     const { errors, value } = validateRepPayload(req.body);
-    if (errors.length) throw new RepRequestError(400, 'Los datos del REP no son válidos.', errors);
+    if (errors.length) {
+      throw new RepRequestError(400, `Los datos del REP no son válidos: ${errors.join(' ')}`, errors);
+    }
+    value.findings.forEach((finding, index) => {
+      if (!finding.findingId) {
+        finding.findingId = report.findings[index]?.findingId || crypto.randomUUID();
+      }
+    });
     value.generalData = {
       ...value.generalData,
       inspectionDate: report.generalData.inspectionDate,
@@ -442,11 +588,34 @@ async function updateRepReport(req, res, next) {
       documents: value.documents,
     });
     report.generalData = value.generalData;
+    const incomingFindings = Array.isArray(req.body.findings) ? req.body.findings : [];
+    value.findings = value.findings.map((finding) => {
+      const incoming = incomingFindings.find((entry) => entry?.findingId === finding.findingId);
+      if (incoming && incoming.images === undefined) {
+        const existingImages = anx?.imagenes?.filter((image) => image.registroId === finding.findingId) || [];
+        if (existingImages.length) {
+          return {
+            ...finding,
+            images: existingImages.map((existingImage) => ({
+              imageId: existingImage.imageId,
+              fileName: existingImage.fileName,
+              mimeType: existingImage.mimeType,
+              status: 'active',
+            })),
+          };
+        }
+      }
+      return finding;
+    });
     report.findings = value.findings.map(({ images, ...finding }) => finding);
     report.documents = value.documents;
     if (req.body.status !== undefined) {
       if (!['draft', 'completed'].includes(req.body.status)) {
         throw new RepRequestError(400, 'El estado del REP debe ser draft o completed.');
+      }
+      if (req.body.status === 'completed'
+        && !ADMIN_ROLES.has(String(req.user?.rol || '').trim().toLowerCase())) {
+        throw new RepRequestError(403, 'Solo un administrador puede validar y completar el REP.');
       }
       report.status = req.body.status;
     }
@@ -476,13 +645,34 @@ async function updateRepReport(req, res, next) {
         anx.totalImagenes = anx.imagenes.length;
         if (!anx.totalImagenes) await ANX.deleteOne({ _id: anx._id });
         else await anx.save();
-        await Promise.all(removedImages.map((image) => deleteDriveFile(createGoogleDriveClient(), image.driveFileId)));
+        const deletionResults = await Promise.allSettled(removedImages.map((image) => (
+          deleteDriveFile(createGoogleDriveClient(), image.driveFileId)
+        )));
+        deletionResults.forEach((result, index) => {
+          if (result.status === 'rejected') {
+            logConsoleEvent('rep_image_drive_delete_failed', {
+              reportId: report.reportId,
+              driveFileId: removedImages[index].driveFileId,
+              message: result.reason?.message || 'No se pudo eliminar la imagen de Google Drive.',
+            });
+          }
+        });
       }
     }
     await syncRepReportMonthlyFile(report);
     const responseReport = await attachRepAnxImages(serializeRepReport(report));
+    logConsoleEvent('rep_update_completed', {
+      reportId: report.reportId,
+      revision: report.revision,
+      findingCount: report.findings.length,
+    });
     return res.json({ success: true, data: { report: responseReport } });
   } catch (error) {
+    logConsoleEvent('rep_update_failed', {
+      reportId: req.repReport?.reportId || req.params.reportId,
+      status: error.status || 500,
+      message: error.message,
+    });
     return respondError(error, res, next);
   }
 }
@@ -490,6 +680,18 @@ async function updateRepReport(req, res, next) {
 function canGenerateReport(user, report) {
   const role = String(user?.rol || '').trim().toLowerCase();
   return ADMIN_ROLES.has(role) || (role === 'consultor' && String(report.createdBy) === String(user._id));
+}
+
+async function getCurrentAnxFileName(report) {
+  let agencyCode = report.agencyFileNameCodeSnapshot;
+  if (!agencyCode) {
+    const agency = await Agency.findById(report.agencyId).select('fileNameCode').lean();
+    agencyCode = agency?.fileNameCode || '';
+  }
+  return buildAnxFileName({
+    generalData: report.generalData,
+    agencyFileNameCodeSnapshot: agencyCode,
+  });
 }
 
 async function queueRepExcel(req, res, next) {
@@ -528,6 +730,13 @@ async function queueRepExcel(req, res, next) {
       error: '',
     };
     await report.save();
+    await enqueueGeneration({
+      type: 'REP',
+      entityId: report._id,
+      reportId: report.reportId,
+      revision: report.revision,
+      userId: req.user._id,
+    });
     await syncRepReportMonthlyFile(report);
     kickRepExcelWorker();
     return res.status(202).json({ success: true, data: { generatedExcel: report.generatedExcel } });
@@ -542,7 +751,7 @@ async function getRepExcelStatus(req, res, next) {
       throw new RepRequestError(403, 'No tienes permiso para consultar la generación del REP.');
     }
     const stored = req.repReport.generatedExcel;
-    const current = stored?.status === 'ready'
+    const current = stored?.estado === 'ready'
       && stored.reportRevision === req.repReport.revision
       && stored.templateVersion === TEMPLATE_VERSION;
     const generatedExcel = stored
@@ -598,35 +807,121 @@ async function generateRepAnx(req, res, next) {
     if (!canGenerateReport(req.user, report)) {
       throw new RepRequestError(403, 'No tienes permiso para generar el anexo fotográfico.');
     }
-    const anx = await ANX.findOne({ reporteId: report.reportId }).lean();
+    const anx = await ANX.findOne({ reporteId: report.reportId });
     if (!anx || anx.estado === 'cancelado' || !anx.totalImagenes) {
       throw new RepRequestError(404, 'El reporte no tiene fotografías asociadas en ANX.');
     }
     if (anx.totalImagenes !== anx.imagenes.length) {
       throw new RepRequestError(409, 'El total de imágenes de ANX no coincide con sus registros.');
     }
-    const drive = createGoogleDriveClient();
-    const images = await Promise.all(anx.imagenes.map(async (image) => {
-      const response = await drive.files.get(
-        { fileId: image.driveFileId, alt: 'media', supportsAllDrives: true },
-        { responseType: 'stream' },
-      );
-      const chunks = [];
-      for await (const chunk of response.data) chunks.push(Buffer.from(chunk));
-      return { numero: image.numero, mimeType: image.mimeType, buffer: Buffer.concat(chunks) };
-    }));
-    const buffer = await generateAnxPowerPointBuffer(images);
+    const generated = anx.archivoGenerado || {};
+    const expectedFileName = await getCurrentAnxFileName(report);
+    if (generated.estado === 'ready'
+      && generated.revision === report.revision
+      && generated.driveFileId
+      && generated.nombre === expectedFileName) {
+      return res.json({
+        success: true,
+        data: { generatedAnx: { status: 'ready', revision: report.revision, fileName: generated.nombre } },
+      });
+    }
+    if (['queued', 'processing'].includes(generated.estado)
+      && generated.revision === report.revision) {
+      return res.status(202).json({
+        success: true,
+        data: { generatedAnx: { status: generated.estado, revision: report.revision } },
+      });
+    }
+    anx.archivoGenerado = {
+      estado: 'queued',
+      revision: report.revision,
+      driveFileId: '',
+      nombre: expectedFileName,
+      queuedAt: new Date(),
+      startedAt: null,
+      generadoEn: null,
+      error: '',
+    };
+    await anx.save();
+    await enqueueGeneration({
+      type: 'ANX',
+      entityId: anx._id,
+      reportId: anx.reporteId,
+      revision: report.revision,
+      userId: req.user._id,
+    });
+    await syncRepReportMonthlyFile(report);
+    kickRepAnxWorker();
+    return res.status(202).json({
+      success: true,
+      data: {
+        generatedAnx: {
+          status: 'queued',
+          revision: report.revision,
+          fileName: anx.archivoGenerado.nombre,
+        },
+      },
+    });
+  } catch (error) {
+    return respondError(error, res, next);
+  }
+}
+
+async function getRepAnxStatus(req, res, next) {
+  try {
+    const report = req.repReport;
+    if (!canGenerateReport(req.user, report)) {
+      throw new RepRequestError(403, 'No tienes permiso para consultar la generación del ANX.');
+    }
+    const anx = await ANX.findOne({ reporteId: report.reportId }).lean();
+    const stored = anx?.archivoGenerado;
+    const current = stored?.estado === 'ready'
+      && stored.revision === report.revision
+      && Boolean(stored.driveFileId);
+    const generatedAnx = stored
+      ? {
+        status: stored.estado === 'ready' && !current ? 'not_requested' : stored.estado,
+        revision: stored.revision,
+        fileName: current ? stored.nombre : '',
+        queuedAt: stored.queuedAt,
+        startedAt: stored.startedAt,
+        generatedAt: stored.generadoEn,
+        error: stored.error,
+      }
+      : { status: 'not_requested' };
+    return res.json({ success: true, data: { generatedAnx } });
+  } catch (error) {
+    return respondError(error, res, next);
+  }
+}
+
+async function downloadRepAnx(req, res, next) {
+  try {
+    const report = req.repReport;
+    if (!canGenerateReport(req.user, report)) {
+      throw new RepRequestError(403, 'No tienes permiso para descargar el anexo fotográfico.');
+    }
+    const anx = await ANX.findOne({ reporteId: report.reportId }).lean();
+    const generated = anx?.archivoGenerado;
+    if (generated?.estado !== 'ready'
+      || generated.revision !== report.revision
+      || !generated.driveFileId) {
+      throw new RepRequestError(404, 'No hay un ANX listo para la revisión actual del REP.');
+    }
+    const response = await createGoogleDriveClient().files.get(
+      { fileId: generated.driveFileId, alt: 'media', supportsAllDrives: true },
+      { responseType: 'stream' },
+    );
+    const downloadFileName = await getCurrentAnxFileName(report);
     res.set({
       'Cache-Control': 'no-store, private',
       'Content-Type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      'Content-Disposition': `attachment; filename="${encodeURIComponent(`ANX-${report.reportId}.pptx`)}"`,
+      'Content-Disposition': `attachment; filename="${encodeURIComponent(downloadFileName)}"`,
       'X-Content-Type-Options': 'nosniff',
     });
-    return res.send(buffer);
+    response.data.on('error', (streamError) => res.destroy(streamError));
+    return response.data.pipe(res);
   } catch (error) {
-    if (error instanceof AnxPowerPointError) {
-      return res.status(422).json({ success: false, message: error.message });
-    }
     return respondError(error, res, next);
   }
 }
@@ -634,7 +929,7 @@ async function generateRepAnx(req, res, next) {
 async function getRepLogo(req, res, next) {
   try {
     const agency = await getAccessibleAgency(req.user, req.query.agencyId);
-    let brandName = agency.marca;
+    let brandName = getAgencyBrand(agency);
     if (req.query.reportId) {
       if (!REPORT_ID_PATTERN.test(req.query.reportId)) {
         throw new RepRequestError(400, 'El identificador del REP no es válido.');
@@ -646,13 +941,39 @@ async function getRepLogo(req, res, next) {
       if (!report) throw new RepRequestError(404, 'No se encontró el REP.');
       brandName = report.agencyBrandSnapshot || brandName;
     }
+    console.info('[REP API] Resolviendo logotipo de agencia', {
+      agencyId: String(agency._id),
+      reportId: req.query.reportId || null,
+      brandField: agency.brand || '',
+      marcaField: agency.marca || '',
+      selectedBrand: brandName || '',
+    });
     const logo = await getBrandLogo(createGoogleDriveClient(), brandName);
     res.set({
       'Cache-Control': 'no-store, private',
       'Content-Type': logo.mimeType,
     });
+    logConsoleEvent('rep_logo_loaded', {
+      agencyId: String(agency._id),
+      reportId: req.query.reportId || '',
+      brand: brandName || '',
+      mimeType: logo.mimeType,
+      bytes: logo.buffer.length,
+    });
     return res.send(logo.buffer);
   } catch (error) {
+    console.error('[REP API] Error al resolver logotipo', {
+      agencyId: req.query.agencyId || '',
+      reportId: req.query.reportId || null,
+      status: error.status || 500,
+      message: error.message,
+    });
+    logConsoleEvent('rep_logo_load_failed', {
+      agencyId: req.query.agencyId || '',
+      reportId: req.query.reportId || '',
+      status: error.status || 500,
+      message: error.message,
+    });
     return respondError(error, res, next);
   }
 }
@@ -660,7 +981,9 @@ async function getRepLogo(req, res, next) {
 module.exports = {
   createRepReport,
   downloadRepExcel,
+  downloadRepAnx,
   generateRepAnx,
+  getRepAnxStatus,
   getRepLogo,
   getRepExcelStatus,
   getRepReport,

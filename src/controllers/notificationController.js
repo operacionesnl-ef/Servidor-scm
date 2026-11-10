@@ -67,16 +67,10 @@ function streamNotificationEvents(req, res) {
     'X-Accel-Buffering': 'no',
   });
   res.flushHeaders?.();
-  res.write('retry: 3000\n\n');
-
-  const sendChange = () => {
-    if (!res.destroyed) res.write('event: change\ndata: {}\n\n');
-  };
-  const unsubscribe = subscribeToNotificationChanges(sendChange);
-  const heartbeat = setInterval(() => {
-    if (!res.destroyed) res.write(': keep-alive\n\n');
-  }, 20000);
-  heartbeat.unref?.();
+  if (res.write('retry: 3000\n\n') === false) {
+    res.destroy();
+    return;
+  }
 
   let closed = false;
   const cleanup = () => {
@@ -85,6 +79,19 @@ function streamNotificationEvents(req, res) {
     clearInterval(heartbeat);
     unsubscribe();
   };
+  const writeEvent = (event) => {
+    if (closed || res.destroyed) return;
+    if (res.write(event) === false) res.destroy();
+  };
+  const sendChange = () => {
+    writeEvent('event: change\ndata: {}\n\n');
+  };
+  const unsubscribe = subscribeToNotificationChanges(sendChange);
+  const heartbeat = setInterval(() => {
+    writeEvent(': keep-alive\n\n');
+  }, 20000);
+  heartbeat.unref?.();
+
   res.once('close', cleanup);
 }
 

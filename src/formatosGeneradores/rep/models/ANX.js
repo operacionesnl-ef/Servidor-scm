@@ -19,6 +19,16 @@ const anxImageSchema = new mongoose.Schema({
 const anxSchema = new mongoose.Schema({
   reporteId: { type: String, required: true, unique: true, index: true },
   estado: { type: String, enum: ['pendiente', 'completado', 'cancelado'], default: 'pendiente' },
+  archivoGenerado: {
+    estado: { type: String, enum: ['not_requested', 'queued', 'processing', 'ready', 'failed'], default: 'not_requested' },
+    revision: { type: Number, min: 0, default: 0 },
+    driveFileId: { type: String, trim: true, default: '' },
+    nombre: { type: String, trim: true, maxlength: 255, default: '' },
+    queuedAt: { type: Date, default: null },
+    startedAt: { type: Date, default: null },
+    generadoEn: { type: Date, default: null },
+    error: { type: String, trim: true, maxlength: 1000, default: '' },
+  },
   imagenes: {
     type: [anxImageSchema],
     validate: [(images) => images.length <= 40, 'ANX admite hasta 40 imágenes.'],

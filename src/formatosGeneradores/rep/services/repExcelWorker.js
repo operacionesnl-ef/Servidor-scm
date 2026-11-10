@@ -3,8 +3,17 @@
 const RepReport = require('../models/RepReport');
 const Agency = require('../../../models/Agency');
 const { createGoogleDriveClient } = require('../../../config/googleDrive');
+const {
+  getGoogleDriveErrorStatus,
+  retryTransientGoogleDriveOperation,
+} = require('../../../services/googleDriveService');
 const { logConsoleEvent } = require('../../../utils/serverLogger');
 const { shouldPauseComplexJobs } = require('../../../services/resourceMonitor');
+const {
+  enqueueGeneration,
+  kickGenerationQueue,
+  registerGenerationProcessor,
+} = require('../../services/generationQueue');
 const { generateRepExcelBuffer, RepExcelError, TEMPLATE_VERSION } = require('./repExcelGenerator');
 const { syncRepReportMonthlyFile } = require('./repMonthlyFileSync');
 const {
@@ -19,7 +28,12 @@ let workerPromise = null;
 let pollTimer = null;
 
 async function setGenerationFailure(report, revision, error) {
-  const message = String(error?.message || 'No se pudo generar el REP.').slice(0, 1000);
+  const rawMessage = String(error?.message || 'No se pudo generar el REP.');
+  const isHtmlResponse = /^\s*(?:<!doctype html|<html\b)/i.test(rawMessage);
+  const status = getGoogleDriveErrorStatus(error);
+  const message = (isHtmlResponse
+    ? `Google Drive respondió con HTTP ${status || 502} durante la generación del Excel REP.`
+    : rawMessage).slice(0, 1000);
   const result = await RepReport.updateOne(
     {
       _id: report._id,
@@ -70,16 +84,29 @@ async function processClaimedReport(report) {
 
   try {
     if (report.revision !== revision) return;
-    if (!report.agencyBrandSnapshot || !report.agencyAddressSnapshot || !report.agencyLegalNameSnapshot) {
+    if (!report.agencyBrandSnapshot || !report.agencyAddressSnapshot
+      || !report.agencyLegalNameSnapshot || !report.agencyFileNameCodeSnapshot) {
       const agency = await Agency.findById(report.agencyId)
-        .select('razonSocial direccion entidadFederativa marca')
+        .select('razonSocial direccion entidadFederativa brand marca fileNameCode')
         .lean();
-      report.agencyBrandSnapshot ||= agency?.marca || '';
+      report.agencyBrandSnapshot ||= agency?.brand || agency?.marca || '';
+      report.agencyFileNameCodeSnapshot ||= agency?.fileNameCode || '';
       report.agencyAddressSnapshot ||= agency?.direccion || '';
       report.agencyLegalNameSnapshot ||= agency?.razonSocial || '';
     }
     const drive = createGoogleDriveClient();
-    const logo = await getBrandLogo(drive, report.agencyBrandSnapshot);
+    const retryDriveOperation = (stage, operation) => retryTransientGoogleDriveOperation(operation, {
+      onRetry: ({ attempt, status }) => logConsoleEvent('rep_excel_drive_retry', {
+        reportId: report.reportId,
+        stage,
+        attempt,
+        status,
+      }),
+    });
+    const logo = await retryDriveOperation(
+      'brand_logo',
+      () => getBrandLogo(drive, report.agencyBrandSnapshot),
+    );
     const generated = await generateRepExcelBuffer(report, {
       logoBuffer: logo.buffer,
       logoMimeType: logo.mimeType,
@@ -87,14 +114,14 @@ async function processClaimedReport(report) {
     if (generated.templateVersion !== TEMPLATE_VERSION) {
       throw new RepExcelError('La versión de plantilla REP generada no coincide con la versión activa.');
     }
-    const folderId = await ensureRepFolder(drive, report);
-    const stored = await uploadRepExcelToDrive(drive, {
+    const folderId = await retryDriveOperation('generated_folder', () => ensureRepFolder(drive, report));
+    const stored = await retryDriveOperation('upload_excel', () => uploadRepExcelToDrive(drive, {
       folderId,
       reportId: report.reportId,
       revision,
       fileName: generated.downloadFileName,
       buffer: generated.buffer,
-    });
+    }));
     const result = await RepReport.updateOne(
       {
         _id: report._id,
@@ -169,46 +196,50 @@ async function requeueStaleRepJobs() {
 }
 
 async function processQueuedRepReports() {
-  if (workerPromise) return workerPromise;
-  workerPromise = (async () => {
-    while (!shouldPauseComplexJobs()) {
-      const report = await RepReport.findOneAndUpdate(
-        { 'generatedExcel.status': 'queued' },
-        {
-          $set: {
-            'generatedExcel.status': 'processing',
-            'generatedExcel.startedAt': new Date(),
-            'generatedExcel.error': '',
-          },
-        },
-        { sort: { 'generatedExcel.queuedAt': 1 }, new: true },
-      );
-      if (!report) break;
-      await processClaimedReport(report);
-    }
-  })().finally(() => { workerPromise = null; });
-  return workerPromise;
+  kickGenerationQueue();
 }
 
 function kickRepExcelWorker() {
-  processQueuedRepReports().catch((error) => {
-    logConsoleEvent('rep_excel_worker_failed', { message: error.message });
-  });
+  kickGenerationQueue();
 }
 
 async function startRepExcelWorker() {
   await requeueStaleRepJobs();
-  kickRepExcelWorker();
-  if (!pollTimer) {
-    pollTimer = setInterval(async () => {
-      try {
-        await requeueStaleRepJobs();
-        await processQueuedRepReports();
-      } catch (error) {
-        logConsoleEvent('rep_excel_worker_failed', { message: error.message });
-      }
-    }, POLL_INTERVAL_MS);
-    pollTimer.unref?.();
+  registerGenerationProcessor('REP', async (job, logStep) => {
+    await logStep('loading_report', 'processing', 'Cargando reporte y revisión solicitada.');
+    const report = await RepReport.findById(job.entityId);
+    if (!report || report.revision !== job.revision) throw new Error('El REP ya no corresponde a la revisión en cola.');
+    await RepReport.updateOne(
+      { _id: report._id, revision: job.revision },
+      { $set: { 'generatedExcel.status': 'processing', 'generatedExcel.startedAt': new Date(), 'generatedExcel.error': '' } },
+    );
+    report.generatedExcel.status = 'processing';
+    await logStep('generating_excel', 'processing', 'Generando el libro Excel.');
+    await processClaimedReport(report);
+    const current = await RepReport.findById(report._id).select('generatedExcel.status generatedExcel.error').lean();
+    if (current?.generatedExcel?.status !== 'ready') {
+      await RepReport.updateOne(
+        { _id: report._id, revision: job.revision },
+        { $set: {
+          'generatedExcel.status': job.attempts >= 3 ? 'failed' : 'queued',
+          'generatedExcel.startedAt': null,
+        } },
+      );
+      throw new Error(current?.generatedExcel?.error || 'No se confirmó la generación REP.');
+    }
+    await logStep('file_verified', 'processing', 'Archivo y estado de generación confirmados.');
+  });
+  const queued = await RepReport.find({ 'generatedExcel.status': 'queued' })
+    .select('_id reportId revision createdBy generatedExcel.reportRevision')
+    .lean();
+  for (const report of queued) {
+    await enqueueGeneration({
+      type: 'REP',
+      entityId: report._id,
+      reportId: report.reportId,
+      revision: report.generatedExcel.reportRevision,
+      userId: report.createdBy,
+    });
   }
 }
 

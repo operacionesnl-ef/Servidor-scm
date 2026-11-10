@@ -16,6 +16,11 @@ const {
 } = require('./forReportDriveStorage');
 const { logConsoleEvent } = require('../../../utils/serverLogger');
 const { shouldPauseComplexJobs } = require('../../../services/resourceMonitor');
+const {
+  enqueueGeneration,
+  kickGenerationQueue,
+  registerGenerationProcessor,
+} = require('../../services/generationQueue');
 
 const POLL_INTERVAL_MS = 1500;
 const STALE_PROCESSING_MS = 5 * 60 * 1000;
@@ -255,48 +260,51 @@ async function invalidateStaleGeneratedExcels() {
 }
 
 async function processQueuedReports() {
-  if (workerPromise) return workerPromise;
-  workerPromise = (async () => {
-    while (true) {
-      if (shouldPauseComplexJobs()) break;
-      const report = await ForReport.findOneAndUpdate(
-        { 'generatedExcel.status': 'queued' },
-        {
-          $set: {
-            'generatedExcel.status': 'processing',
-            'generatedExcel.startedAt': new Date(),
-            'generatedExcel.error': '',
-          },
-        },
-        { sort: { 'generatedExcel.queuedAt': 1 }, new: true },
-      );
-      if (!report) break;
-      await processClaimedReport(report);
-    }
-  })().finally(() => { workerPromise = null; });
-  return workerPromise;
+  kickGenerationQueue();
 }
 
 function kickForReportExcelWorker() {
-  processQueuedReports().catch((error) => {
-    logConsoleEvent('for_report_excel_worker_failed', { message: error.message });
-  });
+  kickGenerationQueue();
 }
 
 async function startForReportExcelWorker() {
   await requeueStaleProcessingReports();
   await invalidateStaleGeneratedExcels();
-  kickForReportExcelWorker();
-  if (!pollTimer) {
-    pollTimer = setInterval(async () => {
-      try {
-        await requeueStaleProcessingReports();
-        await processQueuedReports();
-      } catch (error) {
-        logConsoleEvent('for_report_excel_worker_failed', { message: error.message });
-      }
-    }, POLL_INTERVAL_MS);
-    pollTimer.unref?.();
+  registerGenerationProcessor('FOR', async (job, logStep) => {
+    await logStep('loading_report', 'processing', 'Cargando reporte y revisión solicitada.');
+    const report = await ForReport.findById(job.entityId);
+    if (!report || report.revision !== job.revision) throw new Error('El reporte FOR ya no corresponde a la revisión en cola.');
+    await ForReport.updateOne(
+      { _id: report._id, revision: job.revision },
+      { $set: { 'generatedExcel.status': 'processing', 'generatedExcel.startedAt': new Date(), 'generatedExcel.error': '' } },
+    );
+    report.generatedExcel.status = 'processing';
+    await logStep('generating_excel', 'processing', 'Generando el libro Excel.');
+    await processClaimedReport(report);
+    const current = await ForReport.findById(report._id).select('generatedExcel.status generatedExcel.error').lean();
+    if (current?.generatedExcel?.status !== 'ready') {
+      await ForReport.updateOne(
+        { _id: report._id, revision: job.revision },
+        { $set: {
+          'generatedExcel.status': job.attempts >= 3 ? 'failed' : 'queued',
+          'generatedExcel.startedAt': null,
+        } },
+      );
+      throw new Error(current?.generatedExcel?.error || 'No se confirmó la generación FOR.');
+    }
+    await logStep('file_verified', 'processing', 'Archivo y estado de generación confirmados.');
+  });
+  const queued = await ForReport.find({ 'generatedExcel.status': 'queued' })
+    .select('_id reportId revision createdBy generatedExcel.reportRevision')
+    .lean();
+  for (const report of queued) {
+    await enqueueGeneration({
+      type: 'FOR',
+      entityId: report._id,
+      reportId: report.reportId,
+      revision: report.generatedExcel.reportRevision,
+      userId: report.createdBy,
+    });
   }
 }
 

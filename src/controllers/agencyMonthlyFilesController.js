@@ -7,12 +7,14 @@ const { success } = require('../utils/response');
 const { recordAgencyHistory } = require('../services/agencyHistory');
 const { TEMPLATE_VERSION } = require('../formatosGeneradores/for/services/forReportExcelGenerator');
 const { TEMPLATE_VERSION: REP_TEMPLATE_VERSION } = require('../formatosGeneradores/rep/services/repExcelGenerator');
+const { TEMPLATE_VERSION: REV_TEMPLATE_VERSION } = require('../formatosGeneradores/rev/services/revExcelGenerator');
 
 const FILE_FIELDS = new Set(['archivo1', 'archivo2', 'archivo3', 'archivo4']);
 const FILE_PROPERTIES = new Set([
   'nombre', 'ruta', 'driveId', 'pseudoPath', 'path', 'sizeBytes', 'mimeType', 'modifiedTime',
   'mode', 'systemReportId', 'generatedExcelStatus', 'reportRevision',
   'generatedExcelRevision', 'generatedExcelTemplateVersion', 'generatedExcelError',
+  'generatedAnxStatus', 'generatedAnxError', 'generatedAnxRevision',
 ]);
 const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/;
 
@@ -28,6 +30,9 @@ function serializeMonthlyRecord(record, agency) {
   }
   if (serialized.archivos?.archivo3?.mode === 'system') {
     serialized.archivos.archivo3.currentGeneratedExcelTemplateVersion = REP_TEMPLATE_VERSION;
+  }
+  if (serialized.archivos?.archivo4?.mode === 'system') {
+    serialized.archivos.archivo4.currentGeneratedExcelTemplateVersion = REV_TEMPLATE_VERSION;
   }
   return serialized;
 }
@@ -114,8 +119,10 @@ function validateMonthlyFiles(body, period) {
           errors[`archivos.${key}.driveId`] = 'A Drive ID of at most 2048 characters is required';
         }
       } else if (typeof file.systemReportId !== 'string'
-        || !(key === 'archivo2' && /^FOR-[a-f\d-]{36}$/i.test(file.systemReportId))
-          && !(key === 'archivo3' && /^REP-[a-f\d-]{36}$/i.test(file.systemReportId))) {
+        || !(key === 'archivo1' && /^REP-[a-f\d-]{36}$/i.test(file.systemReportId))
+          && !(key === 'archivo2' && /^FOR-[a-f\d-]{36}$/i.test(file.systemReportId))
+          && !(key === 'archivo3' && /^REP-[a-f\d-]{36}$/i.test(file.systemReportId))
+          && !(key === 'archivo4' && /^REV-[a-f\d-]{36}$/i.test(file.systemReportId))) {
         errors[`archivos.${key}.systemReportId`] = 'A valid system report ID is required';
       }
       if (file.pseudoPath !== undefined && (
@@ -145,6 +152,14 @@ function validateMonthlyFiles(body, period) {
       }
 
       if (mode === 'system') {
+        if (file.generatedAnxStatus !== undefined
+          && !['not_requested', 'queued', 'processing', 'ready', 'failed'].includes(file.generatedAnxStatus)) {
+          errors[`archivos.${key}.generatedAnxStatus`] = 'Must be not_requested, queued, processing, ready, or failed';
+        }
+        if (file.generatedAnxRevision !== undefined
+          && (!Number.isInteger(file.generatedAnxRevision) || file.generatedAnxRevision < 0)) {
+          errors[`archivos.${key}.generatedAnxRevision`] = 'Must be a non-negative integer';
+        }
         value.archivos[key] = {
           mode,
           systemReportId: file.systemReportId,
@@ -154,6 +169,11 @@ function validateMonthlyFiles(body, period) {
           ruta: typeof file.ruta === 'string' ? file.ruta.trim().slice(0, 2048) : '',
           reportRevision: Number.isInteger(file.reportRevision) ? file.reportRevision : 0,
           generatedExcelRevision: Number.isInteger(file.generatedExcelRevision) ? file.generatedExcelRevision : 0,
+          generatedAnxStatus: file.generatedAnxStatus || 'not_requested',
+          generatedAnxError: typeof file.generatedAnxError === 'string'
+            ? file.generatedAnxError.trim().slice(0, 1000)
+            : '',
+          generatedAnxRevision: Number.isInteger(file.generatedAnxRevision) ? file.generatedAnxRevision : 0,
           generatedExcelTemplateVersion: typeof file.generatedExcelTemplateVersion === 'string'
             ? file.generatedExcelTemplateVersion.trim().slice(0, 30)
             : '',

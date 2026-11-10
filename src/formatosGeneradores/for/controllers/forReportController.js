@@ -30,6 +30,7 @@ const {
   getGeneratedForReportExcelPath,
 } = require('../services/forReportExcelFileStore');
 const { kickForReportExcelWorker } = require('../services/forReportExcelWorker');
+const { enqueueGeneration } = require('../../services/generationQueue');
 const {
   buildDownloadFileName,
   TEMPLATE_VERSION,
@@ -196,15 +197,30 @@ async function listForReports(req, res, next) {
       throw new RequestError(400, 'La fecha debe tener formato AAAA-MM-DD.');
     }
     const agency = await getAccessibleAgency(req.user, agencyId);
+    const [periodYear, periodMonth] = period ? period.split('-').map(Number) : [];
+    const periodStart = period ? `${period}-01` : '';
+    const periodEndDate = period
+      ? new Date(Date.UTC(periodYear, periodMonth, 1)).toISOString().slice(0, 10)
+      : '';
     const reportFilter = {
       agencyId: agency._id,
       status: { $ne: 'archived' },
       ...(period
-        ? { agencyPeriod: period }
+        ? {
+          $or: [
+            { agencyPeriod: period },
+            {
+              'generalData.inspectionDate': {
+                $gte: periodStart,
+                $lt: periodEndDate,
+              },
+            },
+          ],
+        }
         : { 'generalData.inspectionDate': inspectionDate }),
     };
     const reports = await ForReport.find(reportFilter)
-      .select('reportId agencyNameSnapshot status revision templateVersion generalData.visitNumber createdAt updatedAt')
+      .select('reportId agencyNameSnapshot status revision templateVersion generalData.inspectionDate generalData.visitNumber createdAt updatedAt')
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();
@@ -289,6 +305,13 @@ async function queueForReportExcel(req, res, next) {
       error: '',
     };
     await report.save();
+    await enqueueGeneration({
+      type: 'FOR',
+      entityId: report._id,
+      reportId: report.reportId,
+      revision: report.revision,
+      userId: req.user._id,
+    });
     await syncForReportMonthlyFile(report);
     kickForReportExcelWorker();
     return res.status(202).json({

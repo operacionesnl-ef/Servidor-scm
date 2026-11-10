@@ -6,6 +6,42 @@ function escapeDriveQuery(value) {
   return String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
+function getGoogleDriveErrorStatus(error) {
+  const status = Number(
+    error?.response?.status
+      || error?.cause?.response?.status
+      || error?.status,
+  );
+  if (Number.isInteger(status) && status > 0) return status;
+  const match = String(error?.message || '').match(/\bHTTP\s+(408|429|500|502|503|504)\b|\b(408|429|500|502|503|504)\s*\(Server Error\)/i);
+  return Number(match?.[1] || match?.[2]) || 0;
+}
+
+function isTransientGoogleDriveError(error) {
+  const status = getGoogleDriveErrorStatus(error);
+  if ([408, 429, 500, 502, 503, 504].includes(status)) return true;
+  return ['ECONNABORTED', 'ECONNRESET', 'EAI_AGAIN', 'ETIMEDOUT'].includes(
+    String(error?.code || error?.cause?.code || ''),
+  );
+}
+
+async function retryTransientGoogleDriveOperation(operation, {
+  attempts = 3,
+  delayMs = 750,
+  onRetry,
+} = {}) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (attempt === attempts || !isTransientGoogleDriveError(error)) throw error;
+      onRetry?.({ attempt, error, status: getGoogleDriveErrorStatus(error) });
+      await new Promise((resolve) => setTimeout(resolve, delayMs * (2 ** (attempt - 1))));
+    }
+  }
+  throw new Error('No se pudo completar la operación de Google Drive.');
+}
+
 async function findOrCreateRootFolder(drive, folderName) {
   const { data } = await drive.files.list({
     q: `name = '${escapeDriveQuery(folderName)}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
@@ -198,6 +234,9 @@ module.exports = {
   findOrCreateAuxiliaryFolder,
   findOrCreateRootFolder,
   getDriveFileMetadata,
+  getGoogleDriveErrorStatus,
   getRootFolderStatus,
+  isTransientGoogleDriveError,
+  retryTransientGoogleDriveOperation,
   uploadDriveFile,
 };

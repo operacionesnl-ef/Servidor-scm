@@ -7,6 +7,7 @@ const Agency = require('../src/models/Agency');
 const AgencyMonthlyFiles = require('../src/models/AgencyMonthlyFiles');
 const CalendarEvent = require('../src/models/CalendarEvent');
 const RepReport = require('../src/formatosGeneradores/rep/models/RepReport');
+const ANX = require('../src/formatosGeneradores/rep/models/ANX');
 const controller = require('../src/formatosGeneradores/rep/controllers/repController');
 
 const originalAgencyFindOne = Agency.findOne;
@@ -15,6 +16,7 @@ const originalMonthlyFindOne = AgencyMonthlyFiles.findOne;
 const originalMonthlyFindOneAndUpdate = AgencyMonthlyFiles.findOneAndUpdate;
 const originalReportFindOne = RepReport.findOne;
 const originalReportCreate = RepReport.create;
+const originalAnxFindOne = ANX.findOne;
 
 afterEach(() => {
   Agency.findOne = originalAgencyFindOne;
@@ -23,6 +25,7 @@ afterEach(() => {
   AgencyMonthlyFiles.findOneAndUpdate = originalMonthlyFindOneAndUpdate;
   RepReport.findOne = originalReportFindOne;
   RepReport.create = originalReportCreate;
+  ANX.findOne = originalAnxFindOne;
 });
 
 test('creates a REP snapshot for an assigned consultant and persists the defined payload', async () => {
@@ -38,11 +41,14 @@ test('creates a REP snapshot for an assigned consultant and persists the defined
         razonSocial: 'Empresa Norte',
         direccion: 'Calle Uno',
         entidadFederativa: 'Nuevo León',
+        brand: 'MARCA-DIRECTA',
         marca: 'MARCA',
+        fileNameCode: 'HYU-SEN-NL',
       }),
     }),
   });
   RepReport.findOne = async () => null;
+  ANX.findOne = () => ({ lean: async () => null });
   CalendarEvent.findOne = () => ({
     select: () => ({
       lean: async () => ({
@@ -84,6 +90,8 @@ test('creates a REP snapshot for an assigned consultant and persists the defined
   assert.equal(nextError, undefined);
   assert.equal(response.statusCode, 201);
   assert.equal(created.agencyLegalNameSnapshot, 'Empresa Norte');
+  assert.equal(created.agencyBrandSnapshot, 'MARCA-DIRECTA');
+  assert.equal(created.agencyFileNameCodeSnapshot, 'HYU-SEN-NL');
   assert.equal(created.calendarEventId, calendarEventId);
   assert.equal(created.generalData.startTime, '08:00');
   assert.equal(created.generalData.endTime, '10:00');
@@ -106,4 +114,63 @@ test('returns a validation error before accessing agency records for invalid REP
 
   assert.equal(response.statusCode, 400);
   assert.equal(agencyLookups, 0);
+});
+
+test('returns every ANX photo associated with a REP finding', async () => {
+  const images = Array.from({ length: 4 }, (_, index) => ({
+    imageId: `photo-id-12345${index}`,
+    numero: index + 1,
+    registroId: 'finding-123456',
+    fileName: `photo-${index + 1}.jpg`,
+    mimeType: 'image/jpeg',
+  }));
+  ANX.findOne = () => ({ lean: async () => ({ imagenes: images }) });
+  const response = {
+    json(body) { this.body = body; return this; },
+  };
+  let nextError;
+
+  await controller.getRepReport({
+    repReport: {
+      reportId: 'REP-123',
+      findings: [{ findingId: 'finding-123456', imageNumber: '' }],
+    },
+  }, response, (error) => { nextError = error; });
+
+  assert.equal(nextError, undefined);
+  assert.equal(response.body.data.report.findings[0].images.length, 4);
+  assert.deepEqual(
+    response.body.data.report.findings[0].images.map((image) => image.imageId),
+    images.map((image) => image.imageId),
+  );
+  assert.equal(response.body.data.report.findings[0].imageNumber, 1);
+});
+
+test('rejects a fifth photo for a finding', async () => {
+  ANX.findOne = async () => ({
+    imagenes: Array.from({ length: 4 }, (_, index) => ({
+      imageId: `photo-id-12345${index}`,
+      registroId: 'finding-123456',
+    })),
+  });
+  const response = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return this; },
+  };
+  let nextError;
+
+  await controller.uploadRepFindingImage({
+    user: { rol: 'admin' },
+    repReport: {
+      reportId: 'REP-123',
+      findings: [{ findingId: 'finding-123456' }],
+    },
+    params: { findingId: 'finding-123456', imageId: 'photo-id-123459' },
+    file: { buffer: Buffer.from('image') },
+  }, response, (error) => { nextError = error; });
+
+  assert.equal(nextError, undefined);
+  assert.equal(response.statusCode, 409);
+  assert.match(response.body.message, /hasta 4 fotografías/);
 });

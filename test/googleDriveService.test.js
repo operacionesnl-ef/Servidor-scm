@@ -6,9 +6,50 @@ const {
   deleteDriveFile,
   findOrCreateRootFolder,
   getDriveFileMetadata,
+  getGoogleDriveErrorStatus,
   getRootFolderStatus,
+  isTransientGoogleDriveError,
+  retryTransientGoogleDriveOperation,
   uploadDriveFile,
 } = require('../src/services/googleDriveService');
+
+test('retries transient Google Drive 502 responses and succeeds when the service recovers', async () => {
+  let calls = 0;
+  const retries = [];
+  const result = await retryTransientGoogleDriveOperation(async () => {
+    calls += 1;
+    if (calls < 3) {
+      const error = new Error('<html><title>Error 502 (Server Error)</title></html>');
+      error.response = { status: 502 };
+      throw error;
+    }
+    return 'uploaded';
+  }, {
+    delayMs: 0,
+    onRetry: ({ attempt, status }) => retries.push({ attempt, status }),
+  });
+
+  assert.equal(result, 'uploaded');
+  assert.equal(calls, 3);
+  assert.deepEqual(retries, [{ attempt: 1, status: 502 }, { attempt: 2, status: 502 }]);
+});
+
+test('does not retry permanent Google Drive failures and extracts HTML 502 statuses', async () => {
+  const forbidden = new Error('Forbidden');
+  forbidden.response = { status: 403 };
+  let calls = 0;
+
+  await assert.rejects(
+    retryTransientGoogleDriveOperation(async () => {
+      calls += 1;
+      throw forbidden;
+    }, { delayMs: 0 }),
+    forbidden,
+  );
+  assert.equal(calls, 1);
+  assert.equal(getGoogleDriveErrorStatus(new Error('<title>Error 502 (Server Error)</title>')), 502);
+  assert.equal(isTransientGoogleDriveError(forbidden), false);
+});
 
 test('reuses a folder created for the application instead of creating a duplicate', async () => {
   let createCalls = 0;

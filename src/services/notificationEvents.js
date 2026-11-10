@@ -12,7 +12,7 @@ function publishNotificationChange() {
   const timer = setTimeout(() => {
     publishPending = false;
     events.emit('change');
-  }, 250);
+  }, 1000);
   timer.unref?.();
 }
 

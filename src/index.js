@@ -14,6 +14,9 @@ const { startActivityLogCleanupWorker } = require('./services/activityLogCleanup
 const { startCalendarReminderWorker } = require('./services/calendarReminderWorker');
 const { startForReportExcelWorker } = require('./formatosGeneradores/for/services/forReportExcelWorker');
 const { startRepExcelWorker } = require('./formatosGeneradores/rep/services/repExcelWorker');
+const { startRepAnxWorker } = require('./formatosGeneradores/rep/services/repAnxWorker');
+const { startRevExcelWorker } = require('./formatosGeneradores/rev/services/revExcelWorker');
+const { startGenerationQueue } = require('./formatosGeneradores/services/generationQueue');
 const { logServerEvent } = require('./utils/serverLogger');
 const { logStartup } = require('./utils/consoleLogger');
 const { getHealth } = require('./controllers/healthController');
@@ -28,7 +31,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ====== CORS + parsers ======
-app.use(cors({ origin: allowedOrigins, credentials: true }));
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true,
+  exposedHeaders: ['Content-Disposition'],
+}));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -179,6 +186,9 @@ connectDB().then(async () => {
   await startAgencyRefreshJobWorker();
   await startForReportExcelWorker();
   await startRepExcelWorker();
+  await startRepAnxWorker();
+  await startRevExcelWorker();
+  await startGenerationQueue();
   startActivityLogCleanupWorker();
   startCalendarReminderWorker();
 

@@ -7,7 +7,11 @@ const ExcelJS = require('exceljs');
 const JSZip = require('jszip');
 const sharp = require('sharp');
 const templatePath = require('../src/formatosGeneradores/rep/services/repExcelGenerator').DEFAULT_TEMPLATE_PATH;
-const { generateRepExcelBuffer, validateTemplate } = require('../src/formatosGeneradores/rep/services/repExcelGenerator');
+const {
+  buildDownloadFileName,
+  generateRepExcelBuffer,
+  validateTemplate,
+} = require('../src/formatosGeneradores/rep/services/repExcelGenerator');
 
 process.env.REP_EXCEL_TEMPLATE_PATH = templatePath;
 
@@ -19,6 +23,7 @@ function makeReport(findings = [{}]) {
     agencyLegalNameSnapshot: 'Empresa Norte',
     agencyAddressSnapshot: 'Calle Uno 123',
     agencyBrandSnapshot: 'MARCA',
+    agencyFileNameCodeSnapshot: 'HYU-SEN-NL',
     generalData: {
       inspectionDate: '2026-10-29',
       startDate: '2026-10-29',
@@ -52,6 +57,14 @@ function makeReport(findings = [{}]) {
   };
 }
 
+test('builds the REP workbook name with the agency code and FOR date convention', () => {
+  const report = makeReport();
+  assert.equal(
+    buildDownloadFileName(report),
+    'REP-INS-HYU-SEN-NL-(29-10-2026)-(29-11-2026).xlsx',
+  );
+});
+
 async function makeLogo() {
   return sharp({
     create: { width: 64, height: 32, channels: 4, background: { r: 230, g: 10, b: 10, alpha: 1 } },
@@ -77,20 +90,34 @@ test('generates the workbook with general data, distinct actions, documentary va
   const main = workbook.getWorksheet('REPORTE REVISION PISO');
   const documents = workbook.getWorksheet('REVISION DOCUMENTAL');
 
-  assert.equal(generated.downloadFileName, 'REP-INS-12345678-1234-1234-1234-123456789012-rev-3-2026-10-29.xlsx');
-  assert.equal(main.getCell('D3').value, 'Nombre Empresa (9.12 a): Empresa Norte - Sucursal Norte');
+  assert.equal(generated.downloadFileName, 'REP-INS-HYU-SEN-NL-(29-10-2026)-(29-11-2026).xlsx');
+  assert.equal(main.getCell('D3').value, 'Nombre Empresa (9.12 a): EMPRESA NORTE - SUCURSAL NORTE');
   assert.equal(main.getCell('D5').value, 'Calle Uno 123');
   assert.equal(main.getCell('E5').value, '29/10/2026');
   assert.equal(main.getCell('K5').value, 'Reponer etiqueta');
   assert.equal(main.getCell('M5').value, 'Inspección mensual');
   assert.equal(main.getCell('G5').value, 1);
-  assert.equal(main.getCell('T5').value, 0);
+  assert.equal(main.getCell('T5').value, 16000);
   assert.equal(main.getCell('K3').value.endsWith('Patio y almacén'), true);
   assert.equal(documents.getCell('E5').value, 'Cumple');
   assert.equal(documents.getCell('E6').value, 'Pendiente');
   assert.equal(main.getImages().length, 2);
 
   const zip = await JSZip.loadAsync(generated.buffer);
+  const templateZip = await JSZip.loadAsync(original);
+  for (const part of [
+    'xl/styles.xml',
+    'xl/drawings/drawing1.xml',
+    'xl/drawings/_rels/drawing1.xml.rels',
+    'xl/worksheets/_rels/sheet1.xml.rels',
+  ]) {
+    assert.equal(
+      await zip.file(part).async('string'),
+      await templateZip.file(part).async('string'),
+      `${part} should retain the original template structure`,
+    );
+  }
+  assert.match(await zip.file('xl/tables/table1.xml').async('string'), /tableStyleInfo/);
   const imagePaths = Object.keys(zip.files).filter((name) => /^xl\/media\//.test(name));
   assert.ok(imagePaths.length >= 2);
   assert.notDeepEqual(await fs.readFile(templatePath), generated.buffer);
@@ -106,12 +133,16 @@ test('duplicates the styled finding row and removes it when there are no finding
   const multipleSheet = multipleWorkbook.getWorksheet('REPORTE REVISION PISO');
   assert.equal(multipleSheet.getCell('G5').value, 1);
   assert.equal(multipleSheet.getCell('G6').value, 2);
-  assert.equal(multipleSheet.getCell('T7').formula, 'SUM(T5:T6)');
+  assert.equal(multipleSheet.getCell('T7').value, 32000);
+  const multipleZip = await JSZip.loadAsync(multiple.buffer);
+  assert.match(await multipleZip.file('xl/tables/table1.xml').async('string'), /ref="A4:Z6"/);
+  assert.equal(multipleZip.file('xl/calcChain.xml'), null);
+  assert.doesNotMatch(await multipleZip.file('xl/_rels/workbook.xml.rels').async('string'), /\/calcChain/);
 
   const empty = await generateRepExcelBuffer(makeReport([]), { logoBuffer, logoMimeType: 'image/png' });
   const emptyWorkbook = new ExcelJS.Workbook();
   await emptyWorkbook.xlsx.load(empty.buffer);
   const emptySheet = emptyWorkbook.getWorksheet('REPORTE REVISION PISO');
-  assert.equal(emptySheet.getCell('S5').value, 'MONTO ACUMULADO');
-  assert.equal(emptySheet.getCell('T5').value, 0);
+  assert.equal(emptySheet.getCell('S6').value, 'MONTO ACUMULADO');
+  assert.equal(emptySheet.getCell('T6').value, 0);
 });
