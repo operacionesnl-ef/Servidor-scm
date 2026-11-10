@@ -118,8 +118,8 @@ function validateRepPayload(payload) {
       if (!cleanText(finding.element)) {
         errors.push(`El elemento revisado del hallazgo ${index + 1} es obligatorio.`);
       }
-      if (finding.findingDate && finding.dueDate && finding.dueDate < finding.findingDate) {
-        errors.push(`La fecha de cumplimiento del hallazgo ${index + 1} no puede ser anterior a la fecha de hallazgo.`);
+      if (!cleanText(finding.legalBasis)) {
+        errors.push(`El fundamento legal del hallazgo ${index + 1} es obligatorio.`);
       }
       if (finding.priority && typeof finding.priority === 'string'
         && !PRIORITY_OPTIONS.includes(finding.priority.toLowerCase())) {

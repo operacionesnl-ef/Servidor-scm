@@ -12,7 +12,7 @@ const findingSchema = new mongoose.Schema({
   preventiveAction: { type: String, trim: true, maxlength: 2000, default: '' },
   priority: { type: String, trim: true, maxlength: 30, default: '' },
   responsible: { type: String, trim: true, maxlength: 200, default: '' },
-  legalBasis: { type: String, trim: true, maxlength: 2000, default: '' },
+  legalBasis: { type: String, trim: true, maxlength: 2000, required: true },
   findingDate: { type: String, trim: true, default: '' },
   dueDate: { type: String, trim: true, default: '' },
   status: { type: String, trim: true, maxlength: 50, default: '' },

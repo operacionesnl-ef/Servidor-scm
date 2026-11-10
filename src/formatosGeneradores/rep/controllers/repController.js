@@ -126,8 +126,11 @@ async function loadRepReport(req, res, next, reportId) {
 
 async function listRepReports(req, res, next) {
   try {
-    const { agencyId, inspectionDate, calendarEventId } = req.query;
-    if (!isValidDate(inspectionDate)) throw new RepRequestError(400, 'La fecha debe tener formato AAAA-MM-DD.');
+    const { agencyId, inspectionDate, calendarEventId, period } = req.query;
+    if (period !== undefined && !/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) {
+      throw new RepRequestError(400, 'El período debe tener formato AAAA-MM.');
+    }
+    if (!period && !isValidDate(inspectionDate)) throw new RepRequestError(400, 'La fecha debe tener formato AAAA-MM-DD.');
     const agency = await getAccessibleAgency(req.user, agencyId);
     let eventFilter = {};
     if (calendarEventId) {
@@ -148,7 +151,9 @@ async function listRepReports(req, res, next) {
     const reports = await RepReport.find({
       agencyId: agency._id,
       status: { $ne: 'archived' },
-      'generalData.inspectionDate': inspectionDate,
+      ...(period
+        ? { 'generalData.inspectionDate': new RegExp(`^${period}`) }
+        : { 'generalData.inspectionDate': inspectionDate }),
       ...eventFilter,
     })
       .select('reportId agencyNameSnapshot status revision generalData createdAt updatedAt')

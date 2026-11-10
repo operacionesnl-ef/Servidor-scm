@@ -21,6 +21,7 @@ function payload(overrides = {}) {
       correctiveAction: 'Reponer',
       preventiveAction: 'Inspeccionar mensualmente',
       priority: 'alta',
+      legalBasis: 'Ley Federal del Trabajo, artículo 132',
       onTime: true,
       findingDate: '2026-10-29',
       dueDate: '2026-11-05',
@@ -37,6 +38,27 @@ test('validates and normalizes REP data, including separate corrective and preve
   assert.equal(result.value.findings[0].preventiveAction, 'Inspeccionar mensualmente');
   assert.equal(result.value.findings[0].onTime, 'Sí');
   assert.equal(result.value.documents.estudio_iluminacion, 'Cumple');
+});
+
+test('accepts a due date before the finding date', () => {
+  const result = validateRepPayload(payload({
+    findings: [{
+      area: 'Patio',
+      element: 'Extintor',
+      legalBasis: 'NOM-002-STPS-2010',
+      findingDate: '2026-10-29',
+      dueDate: '2026-10-01',
+    }],
+  }));
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.value.findings[0].dueDate, '2026-10-01');
+});
+
+test('requires a non-empty legal basis for every finding', () => {
+  const result = validateRepPayload(payload({
+    findings: [{ area: 'Patio', element: 'Extintor', legalBasis: '   ' }],
+  }));
+  assert.ok(result.errors.some((error) => error.includes('fundamento legal') && error.includes('obligatorio')));
 });
 
 test('rejects invalid inspection dates, conflicting visit types, and unknown document fields', () => {
@@ -63,7 +85,7 @@ test('validates pending finding photos without accepting unsupported image metad
     status: 'pending',
   };
   const valid = validateRepPayload(payload({
-    findings: [{ area: 'Patio', element: 'Extintor', findingId: 'finding-123456', images: [image] }],
+    findings: [{ area: 'Patio', element: 'Extintor', legalBasis: 'NOM-002-STPS-2010', findingId: 'finding-123456', images: [image] }],
   }));
   assert.deepEqual(valid.errors, []);
   assert.equal(valid.value.findings[0].images[0].imageId, image.imageId);
@@ -73,7 +95,7 @@ test('validates pending finding photos without accepting unsupported image metad
     imageId: `photo-id-12345${index}`,
   }));
   const validFour = validateRepPayload(payload({
-    findings: [{ area: 'Patio', element: 'Extintor', findingId: 'finding-123456', images: fourPhotos }],
+    findings: [{ area: 'Patio', element: 'Extintor', legalBasis: 'NOM-002-STPS-2010', findingId: 'finding-123456', images: fourPhotos }],
   }));
   assert.deepEqual(validFour.errors, []);
   assert.equal(validFour.value.findings[0].images.length, 4);

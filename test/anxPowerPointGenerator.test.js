@@ -65,11 +65,14 @@ test('lays out up to four separate photos inside one finding image area', async 
   assert.doesNotMatch(generatedSlide, /<a:t>IMAGEN 1, 2/);
   const generatedZip = await JSZip.loadAsync(await generateAnxPowerPointBuffer(images));
   const bounds = [];
+  const gap = Math.min(originalWidth, originalHeight) * 0.015;
+  const expectedPhotoWidth = (originalWidth - gap * (dimensions.length - 1)) / dimensions.length;
   for (let index = 0; index < dimensions.length; index += 1) {
     const shapeName = index === 0 ? 'imagen1' : `imagen1-photo-${index + 1}`;
     const [x, y, width, height] = getPictureBounds(generatedSlide, shapeName);
     const metadata = await sharp(await generatedZip.file(`ppt/media/anx_image_${index + 1}.png`).async('nodebuffer')).metadata();
-    assert.ok(Math.abs(width / height - dimensions[index][0] / dimensions[index][1]) < 0.01);
+    assert.equal(height, originalHeight);
+    assert.ok(Math.abs(width - expectedPhotoWidth) <= 1);
     assert.ok(x >= originalX && y >= originalY);
     assert.ok(x + width <= originalX + originalWidth);
     assert.ok(y + height <= originalY + originalHeight);
@@ -81,13 +84,14 @@ test('lays out up to four separate photos inside one finding image area', async 
     for (let right = left + 1; right < bounds.length; right += 1) {
       const a = bounds[left];
       const b = bounds[right];
+      if (right === left + 1) assert.ok(Math.abs(b.x - a.x - a.width - gap) <= 1);
       assert.ok(a.x + a.width <= b.x || b.x + b.width <= a.x
         || a.y + a.height <= b.y || b.y + b.height <= a.y);
     }
   }
 });
 
-test('scales a single portrait photo to the available height and centers it without distortion', async () => {
+test('stretches a single portrait photo to fill the full image area', async () => {
   const image = await sharp({
     create: { width: 400, height: 900, channels: 3, background: { r: 20, g: 120, b: 200 } },
   }).png().toBuffer();
@@ -99,15 +103,15 @@ test('scales a single portrait photo to the available height and centers it with
   const generatedSlide = await generated.file('ppt/slides/slide1.xml').async('string');
   const [originalX, originalY, originalWidth, originalHeight] = getPictureBounds(originalSlide, 'imagen1');
   const [x, y, width, height] = getPictureBounds(generatedSlide, 'imagen1');
-  const margin = Math.min(originalWidth, originalHeight) * 0.015;
   const imageMetadata = await sharp(
     await generated.file('ppt/media/anx_image_1.png').async('nodebuffer'),
   ).metadata();
 
-  assert.equal(height, Math.round(originalHeight - margin * 2));
-  assert.equal(y, Math.round(originalY + (originalHeight - height) / 2));
-  assert.equal(x, Math.round(originalX + (originalWidth - width) / 2));
-  assert.ok(Math.abs(width / height - imageMetadata.width / imageMetadata.height) < 0.01);
+  assert.equal(x, originalX);
+  assert.equal(y, originalY);
+  assert.equal(width, originalWidth);
+  assert.equal(height, originalHeight);
+  assert.notEqual(width / height, imageMetadata.width / imageMetadata.height);
 });
 
 test('numbers finding image areas continuously across slides', async () => {
@@ -151,7 +155,7 @@ test('normalizes photo orientation and caps embedded image dimensions', async ()
   assert.equal(embedded.width, 800);
   assert.equal(embedded.height, 1600);
   assert.equal(embedded.orientation, undefined);
-  assert.ok(Math.abs(width / height - embedded.width / embedded.height) < 0.01);
+  assert.notEqual(width / height, embedded.width / embedded.height);
   assert.ok(x >= 0 && y >= 0);
 });
 

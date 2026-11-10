@@ -139,42 +139,15 @@ async function processAnxImage(image) {
 }
 
 function getPictureLayout(area, images) {
-  const margin = Math.min(area.width, area.height) * 0.015;
-  const layouts = Array.from({ length: images.length }, (_, index) => {
-    const columns = index + 1;
-    const rows = Math.ceil(images.length / columns);
-    const cellWidth = area.width / columns;
-    const cellHeight = area.height / rows;
-    const occupiedArea = images.reduce((total, image, imageIndex) => {
-      const ratio = image.info.width / image.info.height;
-      const availableWidth = cellWidth - margin * 2;
-      const availableHeight = cellHeight - margin * 2;
-      const width = Math.min(availableWidth, availableHeight * ratio);
-      return total + width * (width / ratio);
-    }, 0);
-    return { columns, rows, cellWidth, cellHeight, occupiedArea };
-  });
-  const layout = layouts.reduce((best, candidate) => (
-    candidate.occupiedArea > best.occupiedArea ? candidate : best
-  ));
-  return images.map((image, index) => {
-    const column = index % layout.columns;
-    const row = Math.floor(index / layout.columns);
-    const cellX = area.x + column * layout.cellWidth;
-    const cellY = area.y + row * layout.cellHeight;
-    const availableWidth = layout.cellWidth - margin * 2;
-    const availableHeight = layout.cellHeight - margin * 2;
-    const scale = Math.min(
-      availableWidth / image.info.width,
-      availableHeight / image.info.height,
-    );
-    const width = Math.round(image.info.width * scale);
-    const height = Math.round(image.info.height * scale);
+  const gap = Math.min(area.width, area.height) * 0.015;
+  const cellWidth = (area.width - gap * (images.length - 1)) / images.length;
+  return images.map((_, index) => {
+    const x = area.x + index * (cellWidth + gap);
     return {
-      x: Math.round(cellX + (layout.cellWidth - width) / 2),
-      y: Math.round(cellY + (layout.cellHeight - height) / 2),
-      width,
-      height,
+      x: Math.round(x),
+      y: area.y,
+      width: Math.round(x + cellWidth) - Math.round(x),
+      height: area.height,
     };
   });
 }
