@@ -5,6 +5,11 @@ const { createGoogleDriveClient } = require('../../../config/googleDrive');
 const { getGoogleDriveErrorStatus, retryTransientGoogleDriveOperation } = require('../../../services/googleDriveService');
 const { logConsoleEvent } = require('../../../utils/serverLogger');
 const { shouldPauseComplexJobs } = require('../../../services/resourceMonitor');
+const {
+  enqueueGeneration,
+  kickGenerationQueue,
+  registerGenerationProcessor,
+} = require('../../services/generationQueue');
 const { generateRevExcelBuffer, RevExcelError, TEMPLATE_VERSION } = require('./revExcelGenerator');
 const { syncRevReportMonthlyFile } = require('./revMonthlyFileSync');
 const { ensureRevFolder, getBrandLogo, uploadRevExcelToDrive } = require('./revDriveStorage');
@@ -84,23 +89,11 @@ async function processClaimedReport(report) {
 }
 
 async function processQueuedRevReports() {
-  if (workerPromise) return workerPromise;
-  workerPromise = (async () => {
-    while (!shouldPauseComplexJobs()) {
-      const report = await RevReport.findOneAndUpdate(
-        { 'generatedExcel.status': 'queued' },
-        { $set: { 'generatedExcel.status': 'processing', 'generatedExcel.startedAt': new Date() } },
-        { sort: { 'generatedExcel.queuedAt': 1 }, new: true },
-      );
-      if (!report) break;
-      await processClaimedReport(report);
-    }
-  })().finally(() => { workerPromise = null; });
-  return workerPromise;
+  kickGenerationQueue();
 }
 
 function kickRevExcelWorker() {
-  processQueuedRevReports().catch((error) => logConsoleEvent('rev_excel_worker_failed', { message: error.message }));
+  kickGenerationQueue();
 }
 
 async function startRevExcelWorker() {
@@ -108,10 +101,41 @@ async function startRevExcelWorker() {
     { 'generatedExcel.status': 'processing', 'generatedExcel.startedAt': { $lt: new Date(Date.now() - STALE_PROCESSING_MS) } },
     { $set: { 'generatedExcel.status': 'queued', 'generatedExcel.startedAt': null } },
   );
-  kickRevExcelWorker();
-  if (!pollTimer) {
-    pollTimer = setInterval(kickRevExcelWorker, 1500);
-    pollTimer.unref?.();
+  registerGenerationProcessor('REV', async (job, logStep) => {
+    await logStep('loading_report', 'processing', 'Cargando reporte y revisión solicitada.');
+    const report = await RevReport.findById(job.entityId);
+    if (!report || report.revision !== job.revision) throw new Error('El REV ya no corresponde a la revisión en cola.');
+    await RevReport.updateOne(
+      { _id: report._id, revision: job.revision },
+      { $set: { 'generatedExcel.status': 'processing', 'generatedExcel.startedAt': new Date(), 'generatedExcel.error': '' } },
+    );
+    report.generatedExcel.status = 'processing';
+    await logStep('generating_excel', 'processing', 'Generando el libro Excel.');
+    await processClaimedReport(report);
+    const current = await RevReport.findById(report._id).select('generatedExcel.status generatedExcel.error').lean();
+    if (current?.generatedExcel?.status !== 'ready') {
+      await RevReport.updateOne(
+        { _id: report._id, revision: job.revision },
+        { $set: {
+          'generatedExcel.status': job.attempts >= 3 ? 'failed' : 'queued',
+          'generatedExcel.startedAt': null,
+        } },
+      );
+      throw new Error(current?.generatedExcel?.error || 'No se confirmó la generación REV.');
+    }
+    await logStep('file_verified', 'processing', 'Archivo y estado de generación confirmados.');
+  });
+  const queued = await RevReport.find({ 'generatedExcel.status': 'queued' })
+    .select('_id reportId revision createdBy generatedExcel.reportRevision')
+    .lean();
+  for (const report of queued) {
+    await enqueueGeneration({
+      type: 'REV',
+      entityId: report._id,
+      reportId: report.reportId,
+      revision: report.generatedExcel.reportRevision,
+      userId: report.createdBy,
+    });
   }
 }
 

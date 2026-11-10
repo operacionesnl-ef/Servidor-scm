@@ -30,6 +30,7 @@ const {
   getGeneratedForReportExcelPath,
 } = require('../services/forReportExcelFileStore');
 const { kickForReportExcelWorker } = require('../services/forReportExcelWorker');
+const { enqueueGeneration } = require('../../services/generationQueue');
 const {
   buildDownloadFileName,
   TEMPLATE_VERSION,
@@ -289,6 +290,13 @@ async function queueForReportExcel(req, res, next) {
       error: '',
     };
     await report.save();
+    await enqueueGeneration({
+      type: 'FOR',
+      entityId: report._id,
+      reportId: report.reportId,
+      revision: report.revision,
+      userId: req.user._id,
+    });
     await syncForReportMonthlyFile(report);
     kickForReportExcelWorker();
     return res.status(202).json({

@@ -1,11 +1,31 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
 const test = require('node:test');
 const ExcelJS = require('exceljs');
 const JSZip = require('jszip');
 const sharp = require('sharp');
 const { DEFAULT_TEMPLATE_PATH, generateRevExcelBuffer } = require('../src/formatosGeneradores/rev/services/revExcelGenerator');
+
+async function getDrawingImage(zip, drawingNumber, pictureName) {
+  const drawingPath = `xl/drawings/drawing${drawingNumber}.xml`;
+  const drawing = await zip.file(drawingPath).async('string');
+  const picture = [...drawing.matchAll(/<xdr:pic>[\s\S]*?<\/xdr:pic>/g)]
+    .find(([xml]) => xml.includes(`name="${pictureName}"`));
+  assert.ok(picture, `existe ${pictureName} en drawing${drawingNumber}`);
+  const relationId = picture[0].match(/\br:embed="([^"]+)"/)?.[1];
+  assert.ok(relationId);
+  const rels = await zip.file(`xl/drawings/_rels/drawing${drawingNumber}.xml.rels`).async('string');
+  const relationship = rels.match(/<Relationship\b[^>]*\/>/g)
+    .find((entry) => entry.includes(`Id="${relationId}"`));
+  assert.ok(relationship);
+  const target = relationship.match(/\bTarget="\.\.\/media\/([^"]+)"/)?.[1];
+  assert.ok(target);
+  const image = zip.file(`xl/media/${target}`);
+  assert.ok(image);
+  return image.async('nodebuffer');
+}
 
 test('genera REV con datos automáticos, copia fila de inspección y conserva la carátula', async () => {
   const inspectionRow = (n) => ({
@@ -69,6 +89,15 @@ test('genera REV con datos automáticos, copia fila de inspección y conserva la
   assert.match(drawing, /name="cleber"/);
   assert.doesNotMatch(drawing, /\{(?:mes|year|razon_social|sucursal)\}/);
   assert.equal(generated.downloadFileName, 'REV-EXT-SUC-01-(05-11-26)-(05-12-26).xlsx');
+  const templateZip = await JSZip.loadAsync(await fs.readFile(DEFAULT_TEMPLATE_PATH));
+  const expectedLogo = await sharp(logoBuffer).png().toBuffer();
+  for (const drawingNumber of [1, 2]) {
+    const sheetRels = await zip.file(`xl/worksheets/_rels/sheet${drawingNumber}.xml.rels`).async('string');
+    assert.match(sheetRels, new RegExp(`Target="\\.\\./drawings/drawing${drawingNumber}\\.xml"`));
+    assert.deepEqual(await getDrawingImage(zip, drawingNumber, 'logotipo'), expectedLogo);
+  }
+  assert.deepEqual(await getDrawingImage(zip, 1, 'cleber'), await getDrawingImage(templateZip, 1, 'cleber'));
+  assert.deepEqual(await getDrawingImage(zip, 2, 'image2.png'), await getDrawingImage(templateZip, 2, 'image2.png'));
 
   const nonCleber = await generateRevExcelBuffer({
     ...report,
@@ -77,6 +106,28 @@ test('genera REV con datos automáticos, copia fila de inspección y conserva la
   const nonCleberZip = await JSZip.loadAsync(nonCleber.buffer);
   const nonCleberDrawing = await nonCleberZip.file('xl/drawings/drawing1.xml').async('string');
   assert.doesNotMatch(nonCleberDrawing, /name="cleber"/);
+  for (const drawingNumber of [1, 2]) {
+    assert.deepEqual(await getDrawingImage(nonCleberZip, drawingNumber, 'logotipo'), expectedLogo);
+  }
+  assert.deepEqual(await getDrawingImage(nonCleberZip, 2, 'image2.png'), await getDrawingImage(templateZip, 2, 'image2.png'));
+});
+
+test('convierte el logotipo JPEG para ambas hojas REV', async () => {
+  const report = {
+    generalData: { inspectionDate: '2026-11-05', responsible: 'Responsable' },
+    agencyNameSnapshot: 'Sucursal Centro',
+    agencyBrandSnapshot: 'OTRA MARCA',
+    extinguishers: [],
+  };
+  const logoBuffer = await sharp({
+    create: { width: 10, height: 10, channels: 3, background: '#123456' },
+  }).jpeg().toBuffer();
+  const generated = await generateRevExcelBuffer(report, { logoBuffer, logoMimeType: 'image/jpeg' });
+  const zip = await JSZip.loadAsync(generated.buffer);
+  const expectedLogo = await sharp(logoBuffer).png().toBuffer();
+  for (const drawingNumber of [1, 2]) {
+    assert.deepEqual(await getDrawingImage(zip, drawingNumber, 'logotipo'), expectedLogo);
+  }
 });
 
 test('colorea solo la fuente de las 13 respuestas REV según su valor', async () => {

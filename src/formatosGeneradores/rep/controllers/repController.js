@@ -18,12 +18,18 @@ const {
 const { syncRepReportMonthlyFile } = require('../services/repMonthlyFileSync');
 const { kickRepExcelWorker } = require('../services/repExcelWorker');
 const { kickRepAnxWorker } = require('../services/repAnxWorker');
+const { enqueueGeneration } = require('../../services/generationQueue');
 const { logConsoleEvent } = require('../../../utils/serverLogger');
 const {
   RepExcelError,
   TEMPLATE_VERSION,
 } = require('../services/repExcelGenerator');
-const { serializeRepReport, validateRepPayload, isValidDate } = require('../services/repService');
+const {
+  MAX_IMAGES_PER_FINDING,
+  serializeRepReport,
+  validateRepPayload,
+  isValidDate,
+} = require('../services/repService');
 const {
   buildAnxFileName,
 } = require('../../anx/services/anxPowerPointGenerator');
@@ -293,16 +299,16 @@ async function attachRepAnxImages(report) {
   const anx = await ANX.findOne({ reporteId: report.reportId }).lean();
   const images = Array.isArray(anx?.imagenes) ? anx.imagenes : [];
   report.findings = (report.findings || []).map((finding) => {
-    const image = images.find((entry) => entry.registroId === finding.findingId);
+    const findingImages = images.filter((entry) => entry.registroId === finding.findingId);
     return {
       ...finding,
-      imageNumber: image?.numero || '',
-      images: image ? [{
+      imageNumber: findingImages[0]?.numero || '',
+      images: findingImages.map((image) => ({
         imageId: image.imageId,
         fileName: image.fileName,
         mimeType: image.mimeType,
         status: 'active',
-      }] : [],
+      })),
     };
   });
   return report;
@@ -381,29 +387,34 @@ async function uploadRepFindingImage(req, res, next) {
     const finding = report.findings[findingIndex];
     if (!finding) throw new RepRequestError(404, 'No se encontró el registro del REP.');
     const anx = await ANX.findOne({ reporteId: report.reportId });
-    const currentImage = anx?.imagenes?.find((entry) => entry.registroId === findingId);
+    const currentImages = anx?.imagenes?.filter((entry) => entry.registroId === findingId) || [];
+    const currentImage = currentImages.find((entry) => entry.imageId === imageId);
     if (currentImage) {
-      if (currentImage.imageId === imageId) {
-        logConsoleEvent('rep_image_upload_idempotent', { reportId: report.reportId, findingId, imageId });
-        return res.status(200).json({
-          success: true,
-          data: {
-            image: {
-              imageId: currentImage.imageId,
-              fileName: currentImage.fileName,
-              mimeType: currentImage.mimeType,
-              status: 'active',
-            },
-            reportRevision: report.revision,
+      logConsoleEvent('rep_image_upload_idempotent', { reportId: report.reportId, findingId, imageId });
+      return res.status(200).json({
+        success: true,
+        data: {
+          image: {
+            imageId: currentImage.imageId,
+            fileName: currentImage.fileName,
+            mimeType: currentImage.mimeType,
+            status: 'active',
           },
-        });
-      }
+          reportRevision: report.revision,
+        },
+      });
+    }
+    if (currentImages.length >= MAX_IMAGES_PER_FINDING) {
       return res.status(409).json({
         success: false,
-        message: 'Este registro ya tiene una fotografía asociada.',
+        message: `Este registro admite hasta ${MAX_IMAGES_PER_FINDING} fotografías.`,
       });
     }
     if (anx?.imagenes.length >= 40) throw new RepRequestError(409, 'El anexo admite hasta 40 fotografías.');
+    const usedNumbers = new Set((anx?.imagenes || []).map((image) => image.numero));
+    const numero = Array.from({ length: 40 }, (_, index) => index + 1)
+      .find((number) => !usedNumbers.has(number));
+    if (!numero) throw new RepRequestError(409, 'El anexo admite hasta 40 fotografías.');
     if (!ALLOWED_IMAGE_MIME_TYPES.has(req.file.mimetype)) {
       throw new RepRequestError(415, 'Solo se admiten fotos JPEG, PNG o WebP.');
     }
@@ -439,9 +450,9 @@ async function uploadRepFindingImage(req, res, next) {
     }
     const imageEntry = {
       imageId,
-      numero: findingIndex + 1,
+      numero,
       registroId: findingId,
-      nombre: `Imagen ${findingIndex + 1}`,
+      nombre: `Imagen ${numero}`,
       driveFileId: metadata.id,
       fileName: String(req.file.originalname || 'foto').replace(/[\\/:*?"<>|]/g, '_').slice(0, 255),
       mimeType: req.file.mimetype,
@@ -576,16 +587,16 @@ async function updateRepReport(req, res, next) {
     value.findings = value.findings.map((finding) => {
       const incoming = incomingFindings.find((entry) => entry?.findingId === finding.findingId);
       if (incoming && incoming.images === undefined) {
-        const existingImage = anx?.imagenes?.find((image) => image.registroId === finding.findingId);
-        if (existingImage) {
+        const existingImages = anx?.imagenes?.filter((image) => image.registroId === finding.findingId) || [];
+        if (existingImages.length) {
           return {
             ...finding,
-            images: [{
+            images: existingImages.map((existingImage) => ({
               imageId: existingImage.imageId,
               fileName: existingImage.fileName,
               mimeType: existingImage.mimeType,
               status: 'active',
-            }],
+            })),
           };
         }
       }
@@ -714,6 +725,13 @@ async function queueRepExcel(req, res, next) {
       error: '',
     };
     await report.save();
+    await enqueueGeneration({
+      type: 'REP',
+      entityId: report._id,
+      reportId: report.reportId,
+      revision: report.revision,
+      userId: req.user._id,
+    });
     await syncRepReportMonthlyFile(report);
     kickRepExcelWorker();
     return res.status(202).json({ success: true, data: { generatedExcel: report.generatedExcel } });
@@ -820,6 +838,13 @@ async function generateRepAnx(req, res, next) {
       error: '',
     };
     await anx.save();
+    await enqueueGeneration({
+      type: 'ANX',
+      entityId: anx._id,
+      reportId: anx.reporteId,
+      revision: report.revision,
+      userId: req.user._id,
+    });
     await syncRepReportMonthlyFile(report);
     kickRepAnxWorker();
     return res.status(202).json({
@@ -882,10 +907,11 @@ async function downloadRepAnx(req, res, next) {
       { fileId: generated.driveFileId, alt: 'media', supportsAllDrives: true },
       { responseType: 'stream' },
     );
+    const downloadFileName = await getCurrentAnxFileName(report);
     res.set({
       'Cache-Control': 'no-store, private',
       'Content-Type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      'Content-Disposition': `attachment; filename="${encodeURIComponent(generated.nombre || buildAnxFileName(report))}"`,
+      'Content-Disposition': `attachment; filename="${encodeURIComponent(downloadFileName)}"`,
       'X-Content-Type-Options': 'nosniff',
     });
     response.data.on('error', (streamError) => res.destroy(streamError));

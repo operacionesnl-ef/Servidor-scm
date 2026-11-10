@@ -68,6 +68,16 @@ test('validates pending finding photos without accepting unsupported image metad
   assert.deepEqual(valid.errors, []);
   assert.equal(valid.value.findings[0].images[0].imageId, image.imageId);
 
+  const fourPhotos = Array.from({ length: 4 }, (_, index) => ({
+    ...image,
+    imageId: `photo-id-12345${index}`,
+  }));
+  const validFour = validateRepPayload(payload({
+    findings: [{ area: 'Patio', element: 'Extintor', findingId: 'finding-123456', images: fourPhotos }],
+  }));
+  assert.deepEqual(validFour.errors, []);
+  assert.equal(validFour.value.findings[0].images.length, 4);
+
   const invalid = validateRepPayload(payload({
     findings: [{ area: 'Patio', element: 'Extintor', images: [{ ...image, mimeType: 'text/plain' }] }],
   }));
@@ -75,5 +85,5 @@ test('validates pending finding photos without accepting unsupported image metad
   const tooMany = validateRepPayload(payload({
     findings: [{ area: 'Patio', element: 'Extintor', images: Array.from({ length: 5 }, (_, index) => ({ ...image, imageId: `photo-id-12345${index}` })) }],
   }));
-  assert.ok(tooMany.errors.some((error) => error.includes('una sola foto')));
+  assert.ok(tooMany.errors.some((error) => error.includes('hasta 4 fotos')));
 });

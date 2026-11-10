@@ -115,3 +115,62 @@ test('returns a validation error before accessing agency records for invalid REP
   assert.equal(response.statusCode, 400);
   assert.equal(agencyLookups, 0);
 });
+
+test('returns every ANX photo associated with a REP finding', async () => {
+  const images = Array.from({ length: 4 }, (_, index) => ({
+    imageId: `photo-id-12345${index}`,
+    numero: index + 1,
+    registroId: 'finding-123456',
+    fileName: `photo-${index + 1}.jpg`,
+    mimeType: 'image/jpeg',
+  }));
+  ANX.findOne = () => ({ lean: async () => ({ imagenes: images }) });
+  const response = {
+    json(body) { this.body = body; return this; },
+  };
+  let nextError;
+
+  await controller.getRepReport({
+    repReport: {
+      reportId: 'REP-123',
+      findings: [{ findingId: 'finding-123456', imageNumber: '' }],
+    },
+  }, response, (error) => { nextError = error; });
+
+  assert.equal(nextError, undefined);
+  assert.equal(response.body.data.report.findings[0].images.length, 4);
+  assert.deepEqual(
+    response.body.data.report.findings[0].images.map((image) => image.imageId),
+    images.map((image) => image.imageId),
+  );
+  assert.equal(response.body.data.report.findings[0].imageNumber, 1);
+});
+
+test('rejects a fifth photo for a finding', async () => {
+  ANX.findOne = async () => ({
+    imagenes: Array.from({ length: 4 }, (_, index) => ({
+      imageId: `photo-id-12345${index}`,
+      registroId: 'finding-123456',
+    })),
+  });
+  const response = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return this; },
+  };
+  let nextError;
+
+  await controller.uploadRepFindingImage({
+    user: { rol: 'admin' },
+    repReport: {
+      reportId: 'REP-123',
+      findings: [{ findingId: 'finding-123456' }],
+    },
+    params: { findingId: 'finding-123456', imageId: 'photo-id-123459' },
+    file: { buffer: Buffer.from('image') },
+  }, response, (error) => { nextError = error; });
+
+  assert.equal(nextError, undefined);
+  assert.equal(response.statusCode, 409);
+  assert.match(response.body.message, /hasta 4 fotografías/);
+});

@@ -7,6 +7,7 @@ const RevReport = require('../models/RevReport');
 const { createGoogleDriveClient } = require('../../../config/googleDrive');
 const { syncRevReportMonthlyFile } = require('../services/revMonthlyFileSync');
 const { kickRevExcelWorker } = require('../services/revExcelWorker');
+const { enqueueGeneration } = require('../../services/generationQueue');
 const { buildDownloadFileName, TEMPLATE_VERSION } = require('../services/revExcelGenerator');
 const {
   CHECK_FIELDS,
@@ -232,6 +233,13 @@ async function queueRevExcel(req, res, next) {
       error: '',
     };
     await report.save();
+    await enqueueGeneration({
+      type: 'REV',
+      entityId: report._id,
+      reportId: report.reportId,
+      revision: report.revision,
+      userId: req.user._id,
+    });
     await syncRevReportMonthlyFile(report);
     kickRevExcelWorker();
     return res.status(202).json({ success: true, data: { generatedExcel: report.generatedExcel } });

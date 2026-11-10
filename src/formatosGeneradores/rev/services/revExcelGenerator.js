@@ -166,28 +166,32 @@ async function generateRevExcelBuffer(report, { logoBuffer, logoMimeType }) {
   const imageTypes = { 'image/jpeg': 'jpeg', 'image/png': 'png', 'image/webp': 'png' };
   if (!imageTypes[logoMimeType]) throw new RevExcelError(`El formato de logotipo ${logoMimeType} no es compatible con la plantilla REV.`);
   let logoReplaced = false;
+  const formattedLogos = new Map();
   for (const [drawingPath, entry] of Object.entries(zip.files)) {
     if (!/^xl\/drawings\/drawing\d+\.xml$/.test(drawingPath)) continue;
     const drawingXml = await entry.async('string');
-    const logoPicture = [...drawingXml.matchAll(/<xdr:pic>[\s\S]*?<\/xdr:pic>/g)]
-      .find((match) => /<xdr:cNvPr\b[^>]*\bname="logotipo"/.test(match[0]));
-    if (!logoPicture) continue;
-    const relationId = logoPicture[0].match(/<a:blip\b[^>]*\br:embed="([^"]+)"/)?.[1];
+    const logoPictures = [...drawingXml.matchAll(/<xdr:pic>[\s\S]*?<\/xdr:pic>/g)]
+      .filter((match) => /<xdr:cNvPr\b[^>]*\bname="logotipo"/.test(match[0]));
+    if (!logoPictures.length) continue;
     const relsPath = pathPosix.join(pathPosix.dirname(drawingPath), '_rels', `${pathPosix.basename(drawingPath)}.rels`);
     const rels = await zip.file(relsPath)?.async('string');
-    const relation = rels?.match(/<Relationship\b[^>]*\/>/g)
-      ?.find((item) => item.match(/\bId="([^"]+)"/)?.[1] === relationId);
-    const target = relation?.match(/\bTarget="([^"]+)"/)?.[1];
-    if (!target) throw new RevExcelError('La plantilla REV no relaciona la imagen logotipo con un archivo válido.');
-    const mediaPath = pathPosix.normalize(pathPosix.join(pathPosix.dirname(drawingPath), target));
-    const mediaExtension = pathPosix.extname(mediaPath).slice(1).toLowerCase();
-    const targetMime = mediaExtension === 'jpg' || mediaExtension === 'jpeg' ? 'jpeg'
-      : mediaExtension === 'png' ? 'png' : '';
-    if (!targetMime) throw new RevExcelError(`El formato de imagen de la plantilla ${mediaExtension} no es compatible.`);
-    const formattedLogo = await sharp(logoBuffer).toFormat(targetMime).toBuffer();
-    zip.file(mediaPath, formattedLogo);
-    logoReplaced = true;
-    break;
+    for (const logoPicture of logoPictures) {
+      const relationId = logoPicture[0].match(/<a:blip\b[^>]*\br:embed="([^"]+)"/)?.[1];
+      const relation = relationId && rels?.match(/<Relationship\b[^>]*\/>/g)
+        ?.find((item) => item.match(/\bId="([^"]+)"/)?.[1] === relationId);
+      const target = relation?.match(/\bTarget="([^"]+)"/)?.[1];
+      if (!target) throw new RevExcelError('La plantilla REV no relaciona la imagen logotipo con un archivo válido.');
+      const mediaPath = pathPosix.normalize(pathPosix.join(pathPosix.dirname(drawingPath), target));
+      const mediaExtension = pathPosix.extname(mediaPath).slice(1).toLowerCase();
+      const targetMime = mediaExtension === 'jpg' || mediaExtension === 'jpeg' ? 'jpeg'
+        : mediaExtension === 'png' ? 'png' : '';
+      if (!targetMime) throw new RevExcelError(`El formato de imagen de la plantilla ${mediaExtension} no es compatible.`);
+      if (!formattedLogos.has(targetMime)) {
+        formattedLogos.set(targetMime, await sharp(logoBuffer).toFormat(targetMime).toBuffer());
+      }
+      zip.file(mediaPath, formattedLogos.get(targetMime));
+      logoReplaced = true;
+    }
   }
   if (!logoReplaced) throw new RevExcelError('La plantilla REV no contiene una imagen llamada logotipo.');
   templateBuffer = await zip.generateAsync({ type: 'nodebuffer' });

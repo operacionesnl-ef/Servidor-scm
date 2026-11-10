@@ -3,6 +3,7 @@
 const os = require('node:os');
 const { once } = require('node:events');
 const mongoose = require('mongoose');
+const JSZip = require('jszip');
 const { getResourceMetrics } = require('../services/resourceMonitor');
 const Agency = require('../models/Agency');
 const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
@@ -360,9 +361,37 @@ async function exportCollection(req, res, next) {
   }
 }
 
+async function exportFullDatabase(req, res, next) {
+  try {
+    const database = mongoose.connection.db;
+    const collections = await database.listCollections({}, { nameOnly: true }).toArray();
+    const zip = new JSZip();
+    const exportedAt = new Date().toISOString().slice(0, 10);
+
+    for (const { name } of collections) {
+      if (name.startsWith('system.')) continue;
+      const model = getExportModels().find((candidate) => candidate.collection.name === name);
+      const projection = model ? getExportProjection(model) : {};
+      const documents = await database.collection(name).find({}, { projection }).toArray();
+      const sanitizedDocuments = model
+        ? documents.map((document) => sanitizeExportDocument(model, document))
+        : documents;
+      zip.file(`${name}.json`, JSON.stringify(sanitizedDocuments));
+    }
+
+    const archive = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    res.attachment(`database-${exportedAt}.zip`);
+    res.type('application/zip');
+    return res.send(archive);
+  } catch (error) {
+    return next(error);
+  }
+}
+
 module.exports = {
   getDashboard,
   getSystemMetrics,
   getExportCollections,
   exportCollection,
+  exportFullDatabase,
 };

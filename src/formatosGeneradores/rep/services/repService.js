@@ -3,6 +3,7 @@
 const { DOCUMENT_MARKERS } = require('../formats/repFormat');
 
 const MAX_FINDINGS = 40;
+const MAX_IMAGES_PER_FINDING = 4;
 const MAX_TEXT_LENGTH = 2000;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9_-]{8,100}$/;
 const AREA_OPTIONS = [
@@ -67,8 +68,9 @@ function validateRepPayload(payload) {
         errors.push(`El hallazgo ${index + 1} no es válido.`);
         return;
       }
-      if (finding.images !== undefined && (!Array.isArray(finding.images) || finding.images.length > 1)) {
-        errors.push(`El hallazgo ${index + 1} puede incluir una sola foto.`);
+      if (finding.images !== undefined
+        && (!Array.isArray(finding.images) || finding.images.length > MAX_IMAGES_PER_FINDING)) {
+        errors.push(`El hallazgo ${index + 1} puede incluir hasta ${MAX_IMAGES_PER_FINDING} fotos.`);
       }
       if (Array.isArray(finding.images)) {
         finding.images.forEach((image) => {
@@ -208,6 +210,7 @@ function serializeRepReport(report) {
 
 module.exports = {
   AREA_OPTIONS,
+  MAX_IMAGES_PER_FINDING,
   MAX_FINDINGS,
   PRIORITY_OPTIONS,
   STATUS_OPTIONS,

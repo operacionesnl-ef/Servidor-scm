@@ -13,6 +13,7 @@ const {
   getDashboard,
   getSystemMetrics,
   exportCollection,
+  exportFullDatabase,
 } = require('../src/controllers/adminController');
 
 function createResponse() {
@@ -211,6 +212,44 @@ test('JSON exports omit password hashes and unique user tokens', async () => {
     assert.match(response.filename, /\.json$/);
   } finally {
     User.collection.find = originalFind;
+  }
+});
+
+test('full database export includes every non-system collection as JSON in a dated ZIP', async () => {
+  const originalDb = mongoose.connection.db;
+  const database = {
+    listCollections: () => ({
+      toArray: async () => [{ name: 'archive_test' }, { name: 'system.views' }],
+    }),
+    collection: (name) => {
+      assert.equal(name, 'archive_test');
+      return {
+        find: (_filter, options) => {
+          assert.deepEqual(options.projection, {});
+          return { toArray: async () => [{ _id: 'record-1', value: 'preserved' }] };
+        },
+      };
+    },
+  };
+  mongoose.connection.db = database;
+  const response = {
+    attachment(filename) { this.filename = filename; return this; },
+    type(contentType) { this.contentType = contentType; return this; },
+    send(body) { this.body = body; return this; },
+  };
+
+  try {
+    await exportFullDatabase({}, response, (error) => { throw error; });
+    const JSZip = require('jszip');
+    const archive = await JSZip.loadAsync(response.body);
+    assert.match(response.filename, /^database-\d{4}-\d{2}-\d{2}\.zip$/);
+    assert.equal(response.contentType, 'application/zip');
+    assert.deepEqual(JSON.parse(await archive.file('archive_test.json').async('string')), [
+      { _id: 'record-1', value: 'preserved' },
+    ]);
+    assert.equal(archive.file('system.views.json'), null);
+  } finally {
+    mongoose.connection.db = originalDb;
   }
 });
 

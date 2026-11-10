@@ -19,7 +19,7 @@ Para asignar logotipos explícitos, edita `src/config/repBrandLogoPaths.js`: usa
 - `POST /api/rep`: crea un reporte.
 - `GET /api/rep/:reportId`: obtiene sus datos y estado.
 - `PUT /api/rep/:reportId`: actualiza el reporte con `expectedRevision`.
-- `POST /api/rep/:reportId/findings/:findingId/images/:imageId`: guarda una foto multipart (`file`) en Google Drive y la asocia a ANX; admite JPEG, PNG y WebP de hasta 10 MiB.
+- `POST /api/rep/:reportId/findings/:findingId/images/:imageId`: guarda una foto multipart (`file`) en Google Drive y la asocia a ANX; admite JPEG, PNG y WebP de hasta 10 MiB, hasta cuatro fotos por hallazgo y 40 por anexo.
 - `GET /api/rep/:reportId/findings/:findingId/images/:imageId`: transmite la foto guardada para vista previa.
 - `POST /api/rep/:reportId/excel/generate`: encola la generación con `expectedRevision`.
 - `GET /api/rep/:reportId/excel`: consulta el estado de generación.
