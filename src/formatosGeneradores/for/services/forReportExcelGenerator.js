@@ -142,7 +142,7 @@ function buildReportValues(report) {
     const aspect = aspects.get(aspectId);
     const answer = aspect?.answer;
     values.set(markers.answer, answer === '1' ? 1 : answer === '0' ? 0 : answer || '');
-    values.set(markers.observation, aspect?.observation || '');
+    values.set(markers.observation, formatEnvironmentalObservation(aspect?.observation || ''));
   }
   const evidence = (report.evidence || []).filter((entry) => entry.status === 'active');
   if (evidence.length > EVIDENCE_COUNT) {
@@ -188,12 +188,18 @@ function buildDownloadFileName(report) {
   const month = date.slice(5, 7);
   const year = date.slice(0, 4);
   const endDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
-  endDate.setUTCMonth(endDate.getUTCMonth() + 1);
+  const intervalMonths = Number.isInteger(report.reviewIntervalMonths)
+    && report.reviewIntervalMonths >= 1
+    && report.reviewIntervalMonths <= 120
+    ? report.reviewIntervalMonths
+    : 1;
+  endDate.setUTCMonth(endDate.getUTCMonth() + intervalMonths);
   if (endDate.getUTCDate() !== Number(day)) endDate.setUTCDate(0);
   const endToken = `(${String(endDate.getUTCDate()).padStart(2, '0')}-${String(endDate.getUTCMonth() + 1).padStart(2, '0')}-${endDate.getUTCFullYear()})`;
   const startToken = `(${day}-${month}-${year})`;
   const agencyCode = safeFileNamePart(report.agencyFileNameCodeSnapshot, 'SIN-CODIGO');
-  return `FOR-AUD-AMB-${agencyCode}-${startToken}-${endToken}.xlsx`;
+  const periodToken = report.agencyPeriod ? `-PERIODO-${report.agencyPeriod}` : '';
+  return `FOR-AUD-AMB-${agencyCode}-${startToken}-${endToken}${periodToken}.xlsx`;
 }
 
 function xmlEscape(value) {
@@ -203,6 +209,23 @@ function xmlEscape(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+function formatEnvironmentalObservation(value) {
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return value || '';
+  }
+  if (parsed?.kind !== 'environmental-response') return value || '';
+  if (parsed.type === 'fixedWithFree') {
+    return [parsed.value, parsed.text].filter(Boolean).join(', ');
+  }
+  if (parsed.type === 'doubleList') {
+    return [parsed.option, parsed.detail, parsed.text].filter(Boolean).join(', ');
+  }
+  return value || '';
 }
 
 function xmlUnescape(value) {

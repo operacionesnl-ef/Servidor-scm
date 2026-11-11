@@ -4,7 +4,6 @@ const crypto = require('node:crypto');
 const { Readable } = require('node:stream');
 const mongoose = require('mongoose');
 const Agency = require('../../../models/Agency');
-const AgencyMonthlyFiles = require('../../../models/AgencyMonthlyFiles');
 const ForReport = require('../models/ForReport');
 const { createGoogleDriveClient } = require('../../../config/googleDrive');
 const {
@@ -30,9 +29,11 @@ const {
   getGeneratedForReportExcelPath,
 } = require('../services/forReportExcelFileStore');
 const { kickForReportExcelWorker } = require('../services/forReportExcelWorker');
+const { syncForReportMonthlyFile } = require('../services/forMonthlyFileSync');
+const { resolveReviewPeriod } = require('../../../utils/reviewPeriod');
+const { canSavePeriod } = require('../../../utils/reportPeriodAccess');
 const { enqueueGeneration } = require('../../services/generationQueue');
 const {
-  buildDownloadFileName,
   TEMPLATE_VERSION,
 } = require('../services/forReportExcelGenerator');
 
@@ -150,41 +151,6 @@ function getImageResponse(image) {
     status: image.status,
     uploadedAt: image.uploadedAt,
   };
-}
-
-async function syncForReportMonthlyFile(report) {
-  const period = report.agencyPeriod || report.generalData.inspectionDate.slice(0, 7);
-  const generatedExcelIsCurrent = report.generatedExcel?.status === 'ready'
-    && report.generatedExcel.reportRevision === report.revision
-    && report.generatedExcel.templateVersion === TEMPLATE_VERSION;
-  const file = {
-    mode: 'system',
-    systemReportId: report.reportId,
-    nombre: report.generatedExcel?.downloadFileName || buildDownloadFileName(report),
-    generatedExcelStatus: generatedExcelIsCurrent
-      ? 'ready'
-      : report.generatedExcel?.status === 'ready'
-        ? 'not_requested'
-        : report.generatedExcel?.status || 'not_requested',
-    generatedExcelError: report.generatedExcel?.error || '',
-    generatedExcelTemplateVersion: generatedExcelIsCurrent
-      ? report.generatedExcel.templateVersion
-      : '',
-    driveId: generatedExcelIsCurrent ? report.generatedExcel.driveFileId || '' : '',
-    ruta: generatedExcelIsCurrent ? report.drive?.generatedFolderId || '' : '',
-    reportRevision: report.revision,
-    generatedExcelRevision: generatedExcelIsCurrent ? report.revision : 0,
-  };
-  await AgencyMonthlyFiles.findOneAndUpdate(
-    { agencyId: report.agencyId, period },
-    {
-      $set: {
-        'archivos.archivo2': file,
-        updatedBy: report.updatedBy || report.createdBy,
-      },
-    },
-    { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
-  );
 }
 
 async function listForReports(req, res, next) {
@@ -415,11 +381,21 @@ async function saveReportContent(req, res, next) {
     requireCanCreate(req);
     const { errors, value } = validateReportPayload(req.body);
     if (errors.length) throw new RequestError(422, 'El contenido del reporte no es válido.', errors);
+    if (!canSavePeriod(req.user, value.generalData.inspectionDate)) {
+      throw new RequestError(403, 'Solo admin y developer pueden guardar un FOR de un período anterior.');
+    }
     const idempotencyKey = req.get('Idempotency-Key');
     if (!IDENTIFIER_PATTERN.test(idempotencyKey || '')) {
       throw new RequestError(400, 'Falta una clave de idempotencia válida.');
     }
     const agency = await getAccessibleAgency(req.user, req.body.agencyId);
+    value.agencyPeriod = resolveReviewPeriod(
+      value.generalData.inspectionDate.slice(0, 7),
+      agency.reviewPeriods?.get?.('ambiental') || agency.reviewPeriods?.ambiental,
+    );
+    value.reviewIntervalMonths = agency.reviewPeriods?.get?.('ambiental')?.intervalMonths
+      || agency.reviewPeriods?.ambiental?.intervalMonths
+      || 1;
     value.generalData.companyName = agency.nombre;
     value.generalData.legalName = agency.razonSocial || '';
     let report = await ForReport.findOne({ idempotencyKey }).select('+idempotencyKey');
@@ -436,14 +412,6 @@ async function saveReportContent(req, res, next) {
     const isNew = !report;
     if (report) report.agencyBrandSnapshot = agency.marca || '';
     if (!report) {
-      const currentMonthlyRecord = await AgencyMonthlyFiles.findOne({
-        agencyId: agency._id,
-        period: value.agencyPeriod,
-      }).select('archivos.archivo2').lean();
-      const monthlyForFile = currentMonthlyRecord?.archivos?.archivo2;
-      if (monthlyForFile?.driveId || (monthlyForFile?.nombre && monthlyForFile?.mode !== 'system')) {
-        throw new RequestError(409, 'El período ya tiene un archivo FOR vinculado desde Drive; no se puede crear otro en modo Sistema.');
-      }
       const reportForPeriod = await ForReport.findOne({
         agencyId: agency._id,
         agencyPeriod: value.agencyPeriod,

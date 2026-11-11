@@ -52,6 +52,7 @@ const revReportSchema = new mongoose.Schema({
   agencyAddressSnapshot: { type: String, trim: true, maxlength: 500, default: '' },
   agencyBrandSnapshot: { type: String, trim: true, maxlength: 80, default: '' },
   agencyFileNameCodeSnapshot: { type: String, trim: true, maxlength: 60, default: '' },
+  reviewIntervalMonths: { type: Number, min: 1, max: 120, default: 1 },
   revision: { type: Number, min: 1, default: 1 },
   generalData: {
     inspectionDate: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },

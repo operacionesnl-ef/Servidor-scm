@@ -285,4 +285,12 @@ test('hides only explicitly non-applicable sections and builds the requested dow
     generated.downloadFileName,
     'FOR-AUD-AMB-HYN-SAN-NL-(29-10-2026)-(29-11-2026).xlsx',
   );
+  const twoMonthReport = await generateForReportExcelBuffer(makeReport({
+    agencyFileNameCodeSnapshot: 'ALT-DEL-CUU',
+    reviewIntervalMonths: 2,
+  }), null);
+  assert.equal(
+    twoMonthReport.downloadFileName,
+    'FOR-AUD-AMB-ALT-DEL-CUU-(29-10-2026)-(29-12-2026).xlsx',
+  );
 });

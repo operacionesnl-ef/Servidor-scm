@@ -6,6 +6,7 @@ const AgencyMonthlyFiles = require('../src/models/AgencyMonthlyFiles');
 const {
   buildAgencyRefresh,
   listDescendants,
+  mergeSystemFileWithDrive,
   refreshAgencyFromDrive,
 } = require('../src/services/agencyDriveRefresh');
 
@@ -73,6 +74,37 @@ test('builds persisted file records and clears existing slots without a match', 
   assert.equal(result.summary.found, 1);
   assert.equal(result.summary.missing, 3);
   assert.equal(result.scannedFiles, 1);
+});
+
+test('Drive refresh keeps the system REV as an alternate and gives Drive priority', () => {
+  const systemFile = {
+    mode: 'system',
+    systemReportId: 'REV-12345678-1234-1234-1234-123456789012',
+    nombre: 'REV-EXT-generado.xlsx',
+    ruta: 'system-folder',
+    driveId: 'system-drive-file',
+    generatedExcelStatus: 'ready',
+    reportRevision: 3,
+    generatedExcelRevision: 3,
+  };
+  const driveFile = {
+    mode: 'drive',
+    nombre: 'REV-EXT-manual.xlsx',
+    ruta: 'manual-folder',
+    driveId: 'manual-drive-file',
+  };
+
+  const combined = mergeSystemFileWithDrive(systemFile, driveFile);
+  assert.equal(combined.mode, 'drive');
+  assert.equal(combined.driveId, 'manual-drive-file');
+  assert.equal(combined.systemReportId, systemFile.systemReportId);
+  assert.equal(combined.systemDriveId, 'system-drive-file');
+  assert.equal(combined.systemNombre, systemFile.nombre);
+
+  const systemOnly = mergeSystemFileWithDrive(combined, null);
+  assert.equal(systemOnly.mode, 'system');
+  assert.equal(systemOnly.driveId, 'system-drive-file');
+  assert.equal(systemOnly.systemReportId, systemFile.systemReportId);
 });
 
 test('does not store newer-month files in the requested period', async () => {

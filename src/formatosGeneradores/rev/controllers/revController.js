@@ -9,6 +9,7 @@ const { syncRevReportMonthlyFile } = require('../services/revMonthlyFileSync');
 const { kickRevExcelWorker } = require('../services/revExcelWorker');
 const { enqueueGeneration } = require('../../services/generationQueue');
 const { buildDownloadFileName, TEMPLATE_VERSION } = require('../services/revExcelGenerator');
+const { canSavePeriod } = require('../../../utils/reportPeriodAccess');
 const {
   CHECK_FIELDS,
   CHECK_VALUES,
@@ -139,6 +140,9 @@ async function createRevReport(req, res, next) {
     const errors = validateData(req.body);
     if (errors.length) throw new RevRequestError(400, errors.join(' '));
     if (!canEdit(req.user)) throw new RevRequestError(403, 'No tienes permiso para crear un REV.');
+    if (!canSavePeriod(req.user, req.body.generalData.inspectionDate)) {
+      throw new RevRequestError(403, 'Solo admin y developer pueden guardar un REV de un período anterior.');
+    }
     const agency = await getAccessibleAgency(req.user, req.body.agencyId);
     const report = await RevReport.create({
       reportId: `REV-${crypto.randomUUID()}`,
@@ -149,6 +153,9 @@ async function createRevReport(req, res, next) {
       agencyAddressSnapshot: agency.direccion || '',
       agencyBrandSnapshot: String(agency.brand || agency.marca || '').trim(),
       agencyFileNameCodeSnapshot: agency.fileNameCode || '',
+      reviewIntervalMonths: agency.reviewPeriods?.get?.('seguridad')?.intervalMonths
+        || agency.reviewPeriods?.seguridad?.intervalMonths
+        || 1,
       generalData: {
         inspectionDate: req.body.generalData.inspectionDate,
         responsible: req.body.generalData.responsible || '',
@@ -192,6 +199,9 @@ async function updateRevReport(req, res, next) {
     if (req.body.expectedRevision !== report.revision) throw new RevRequestError(409, 'El REV cambió; actualiza los datos antes de guardar.');
     const errors = validateData({ ...req.body, agencyId: report.agencyId });
     if (errors.length) throw new RevRequestError(400, errors.join(' '));
+    if (!canSavePeriod(req.user, req.body.generalData.inspectionDate)) {
+      throw new RevRequestError(403, 'Solo admin y developer pueden guardar un REV de un período anterior.');
+    }
     report.generalData = {
       inspectionDate: req.body.generalData.inspectionDate,
       responsible: req.body.generalData.responsible || '',
@@ -221,6 +231,12 @@ async function queueRevExcel(req, res, next) {
     const report = req.revReport;
     if (!canEdit(req.user)) throw new RevRequestError(403, 'No tienes permiso para generar el Excel REV.');
     if (req.body.expectedRevision !== report.revision) throw new RevRequestError(409, 'El REV cambió; actualiza los datos antes de generar.');
+    const agency = await Agency.findById(report.agencyId).select('reviewPeriods').lean();
+    const securityPeriod = agency?.reviewPeriods?.seguridad
+      || agency?.reviewPeriods?.get?.('seguridad');
+    report.reviewIntervalMonths = Number.isInteger(securityPeriod?.intervalMonths)
+      ? securityPeriod.intervalMonths
+      : 1;
     report.generatedExcel = {
       status: 'queued',
       reportRevision: report.revision,
@@ -278,6 +294,7 @@ async function downloadRevExcel(req, res, next) {
 
 module.exports = {
   createRevReport,
+  canSavePeriod,
   downloadRevExcel,
   getRevExcelStatus,
   getRevReport,

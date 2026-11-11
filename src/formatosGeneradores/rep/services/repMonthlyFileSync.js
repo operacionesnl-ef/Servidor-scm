@@ -3,6 +3,7 @@
 const AgencyMonthlyFiles = require('../../../models/AgencyMonthlyFiles');
 const ANX = require('../models/ANX');
 const { buildDownloadFileName, TEMPLATE_VERSION } = require('./repExcelGenerator');
+const { hasIndependentDriveFile } = require('../../../utils/monthlyFileSources');
 
 async function syncRepReportMonthlyFile(report) {
   const period = report.generalData.inspectionDate.slice(0, 7);
@@ -27,6 +28,9 @@ async function syncRepReportMonthlyFile(report) {
     generatedExcelTemplateVersion: isCurrent ? generated.templateVersion : '',
     driveId: isCurrent ? generated.driveFileId : '',
     ruta: isCurrent ? report.drive?.generatedFolderId || '' : '',
+    systemNombre: generated.downloadFileName || buildDownloadFileName(report),
+    systemDriveId: isCurrent ? generated.driveFileId : '',
+    systemRuta: isCurrent ? report.drive?.generatedFolderId || '' : '',
     reportRevision: report.revision,
     generatedExcelRevision: isCurrent ? report.revision : 0,
   };
@@ -44,17 +48,20 @@ async function syncRepReportMonthlyFile(report) {
     reportRevision: report.revision,
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   } : null;
+  const fileFilter = { agencyId: report.agencyId, period };
+  const existing = await AgencyMonthlyFiles.findOne(fileFilter).select('archivos.archivo3').lean();
+  const currentFile = existing?.archivos?.archivo3;
+  const hasDriveFile = hasIndependentDriveFile(currentFile);
+  const systemFields = Object.fromEntries(
+    Object.entries(file).filter(([field]) => field !== 'mode' && field !== 'nombre' && field !== 'driveId' && field !== 'ruta'),
+  );
+  const setFields = hasDriveFile
+    ? Object.fromEntries(Object.entries(systemFields)
+      .map(([field, value]) => [`archivos.archivo3.${field}`, value]))
+    : { 'archivos.archivo3': file };
   await AgencyMonthlyFiles.findOneAndUpdate(
-    {
-      agencyId: report.agencyId,
-      period,
-    },
-    {
-      $set: {
-        'archivos.archivo3': file,
-        updatedBy: report.updatedBy || report.createdBy,
-      },
-    },
+    fileFilter,
+    { $set: { ...setFields, updatedBy: report.updatedBy || report.createdBy } },
     { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
   );
   if (anxFile) {

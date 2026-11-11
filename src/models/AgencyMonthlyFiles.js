@@ -25,6 +25,9 @@ const monthlyFileSchema = new mongoose.Schema({
   sizeBytes: { type: Number, min: 0, default: null },
   mimeType: { type: String, trim: true, maxlength: 255, default: '' },
   modifiedTime: { type: Date, default: null },
+  systemNombre: { type: String, trim: true, maxlength: 255, default: '' },
+  systemRuta: { type: String, trim: true, maxlength: 2048, default: '' },
+  systemDriveId: { type: String, trim: true, maxlength: 2048, default: '' },
   periodYear: { type: Number, min: 1900, max: 2100 },
   periodMonth: { type: Number, min: 1, max: 12 },
 }, { _id: false });

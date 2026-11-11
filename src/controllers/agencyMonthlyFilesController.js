@@ -15,8 +15,51 @@ const FILE_PROPERTIES = new Set([
   'mode', 'systemReportId', 'generatedExcelStatus', 'reportRevision',
   'generatedExcelRevision', 'generatedExcelTemplateVersion', 'generatedExcelError',
   'generatedAnxStatus', 'generatedAnxError', 'generatedAnxRevision',
+  'systemNombre', 'systemRuta', 'systemDriveId',
 ]);
 const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/;
+const GENERATED_STATUSES = ['not_requested', 'queued', 'processing', 'ready', 'failed'];
+const SYSTEM_REFERENCE_PROPERTIES = [
+  'systemReportId', 'generatedExcelStatus', 'generatedExcelError',
+  'generatedExcelTemplateVersion', 'reportRevision', 'generatedExcelRevision',
+  'generatedAnxStatus', 'generatedAnxError', 'generatedAnxRevision',
+  'systemNombre', 'systemRuta', 'systemDriveId',
+];
+
+function isValidSystemReportId(key, reportId) {
+  const prefix = { archivo1: 'REP', archivo2: 'FOR', archivo3: 'REP', archivo4: 'REV' }[key];
+  return typeof reportId === 'string' && new RegExp(`^${prefix}-[a-f\\d-]{36}$`, 'i').test(reportId);
+}
+
+function addSystemReferenceErrors(key, file, errors) {
+  if (!isValidSystemReportId(key, file.systemReportId)) {
+    errors[`archivos.${key}.systemReportId`] = 'A valid system report ID is required';
+  }
+  if (file.generatedExcelStatus !== undefined && !GENERATED_STATUSES.includes(file.generatedExcelStatus)) {
+    errors[`archivos.${key}.generatedExcelStatus`] = 'Must be not_requested, queued, processing, ready, or failed';
+  }
+  for (const property of ['reportRevision', 'generatedExcelRevision', 'generatedAnxRevision']) {
+    if (file[property] !== undefined && (!Number.isInteger(file[property]) || file[property] < 0)) {
+      errors[`archivos.${key}.${property}`] = 'Must be a non-negative integer';
+    }
+  }
+  for (const [property, maxLength] of [
+    ['generatedExcelError', 1000],
+    ['generatedExcelTemplateVersion', 30],
+    ['generatedAnxError', 1000],
+    ['systemNombre', 255],
+    ['systemRuta', 2048],
+    ['systemDriveId', 2048],
+  ]) {
+    if (file[property] !== undefined
+      && (typeof file[property] !== 'string' || file[property].length > maxLength)) {
+      errors[`archivos.${key}.${property}`] = `Must be a string of at most ${maxLength} characters`;
+    }
+  }
+  if (file.generatedAnxStatus !== undefined && !GENERATED_STATUSES.includes(file.generatedAnxStatus)) {
+    errors[`archivos.${key}.generatedAnxStatus`] = 'Must be not_requested, queued, processing, ready, or failed';
+  }
+}
 
 function serializeMonthlyRecord(record, agency) {
   if (!record) return null;
@@ -25,13 +68,13 @@ function serializeMonthlyRecord(record, agency) {
     carpetaPrincipal: agency.archivos?.carpetaPrincipal || '',
     carpetaBase: agency.archivos?.carpetaBase || '',
   };
-  if (serialized.archivos?.archivo2?.mode === 'system') {
+  if (serialized.archivos?.archivo2?.systemReportId) {
     serialized.archivos.archivo2.currentGeneratedExcelTemplateVersion = TEMPLATE_VERSION;
   }
-  if (serialized.archivos?.archivo3?.mode === 'system') {
+  if (serialized.archivos?.archivo3?.systemReportId) {
     serialized.archivos.archivo3.currentGeneratedExcelTemplateVersion = REP_TEMPLATE_VERSION;
   }
-  if (serialized.archivos?.archivo4?.mode === 'system') {
+  if (serialized.archivos?.archivo4?.systemReportId) {
     serialized.archivos.archivo4.currentGeneratedExcelTemplateVersion = REV_TEMPLATE_VERSION;
   }
   return serialized;
@@ -45,7 +88,21 @@ function preserveSystemGeneratedFiles(existingFiles = {}, requestedFiles = {}) {
   const result = { ...requestedFiles };
   for (const key of FILE_FIELDS) {
     const current = existingFiles[key];
-    if (current?.mode === 'system' && current.systemReportId) result[key] = current;
+    if (!current?.systemReportId) continue;
+    const requested = result[key];
+    if (!requested || requested.mode !== 'drive') {
+      result[key] = current;
+      continue;
+    }
+    const systemReference = Object.fromEntries(SYSTEM_REFERENCE_PROPERTIES
+      .filter((property) => current[property] !== undefined)
+      .map((property) => [property, current[property]]));
+    if (current.mode === 'system') {
+      systemReference.systemNombre = current.systemNombre || current.nombre || '';
+      systemReference.systemRuta = current.systemRuta || current.ruta || '';
+      systemReference.systemDriveId = current.systemDriveId || current.driveId || '';
+    }
+    result[key] = { ...requested, ...systemReference, mode: 'drive' };
   }
   return result;
 }
@@ -118,12 +175,12 @@ function validateMonthlyFiles(body, period) {
         if (typeof file.driveId !== 'string' || !file.driveId.trim() || file.driveId.trim().length > 2048) {
           errors[`archivos.${key}.driveId`] = 'A Drive ID of at most 2048 characters is required';
         }
-      } else if (typeof file.systemReportId !== 'string'
-        || !(key === 'archivo1' && /^REP-[a-f\d-]{36}$/i.test(file.systemReportId))
-          && !(key === 'archivo2' && /^FOR-[a-f\d-]{36}$/i.test(file.systemReportId))
-          && !(key === 'archivo3' && /^REP-[a-f\d-]{36}$/i.test(file.systemReportId))
-          && !(key === 'archivo4' && /^REV-[a-f\d-]{36}$/i.test(file.systemReportId))) {
-        errors[`archivos.${key}.systemReportId`] = 'A valid system report ID is required';
+        if (file.systemReportId) addSystemReferenceErrors(key, file, errors);
+        else if (SYSTEM_REFERENCE_PROPERTIES.some((property) => file[property] !== undefined)) {
+          errors[`archivos.${key}.systemReportId`] = 'A valid system report ID is required';
+        }
+      } else {
+        addSystemReferenceErrors(key, file, errors);
       }
       if (file.pseudoPath !== undefined && (
         !Array.isArray(file.pseudoPath) ||
@@ -152,14 +209,6 @@ function validateMonthlyFiles(body, period) {
       }
 
       if (mode === 'system') {
-        if (file.generatedAnxStatus !== undefined
-          && !['not_requested', 'queued', 'processing', 'ready', 'failed'].includes(file.generatedAnxStatus)) {
-          errors[`archivos.${key}.generatedAnxStatus`] = 'Must be not_requested, queued, processing, ready, or failed';
-        }
-        if (file.generatedAnxRevision !== undefined
-          && (!Number.isInteger(file.generatedAnxRevision) || file.generatedAnxRevision < 0)) {
-          errors[`archivos.${key}.generatedAnxRevision`] = 'Must be a non-negative integer';
-        }
         value.archivos[key] = {
           mode,
           systemReportId: file.systemReportId,
@@ -195,6 +244,9 @@ function validateMonthlyFiles(body, period) {
           ...(file.sizeBytes !== undefined ? { sizeBytes: file.sizeBytes } : {}),
           ...(file.mimeType !== undefined ? { mimeType: file.mimeType.trim() } : {}),
           ...(file.modifiedTime !== undefined ? { modifiedTime: file.modifiedTime } : {}),
+          ...(file.systemReportId ? Object.fromEntries(SYSTEM_REFERENCE_PROPERTIES
+            .filter((property) => file[property] !== undefined)
+            .map((property) => [property, file[property]])) : {}),
           periodYear: Number(match?.[1]),
           periodMonth: Number(match?.[2]),
         };

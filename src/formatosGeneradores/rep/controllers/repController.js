@@ -20,6 +20,7 @@ const { kickRepExcelWorker } = require('../services/repExcelWorker');
 const { kickRepAnxWorker } = require('../services/repAnxWorker');
 const { enqueueGeneration } = require('../../services/generationQueue');
 const { logConsoleEvent } = require('../../../utils/serverLogger');
+const { canSavePeriod } = require('../../../utils/reportPeriodAccess');
 const {
   RepExcelError,
   TEMPLATE_VERSION,
@@ -215,6 +216,9 @@ async function createRepReport(req, res, next) {
       value.generalData.startTime = startParts.time;
       value.generalData.endTime = endParts.time;
     }
+    if (!canSavePeriod(req.user, value.generalData.inspectionDate)) {
+      throw new RepRequestError(403, 'Solo admin y developer pueden guardar un REP de un período anterior.');
+    }
     const idempotencyKey = value.idempotencyKey || crypto.randomUUID();
     const existing = await RepReport.findOne({ idempotencyKey });
     if (existing) {
@@ -243,10 +247,7 @@ async function createRepReport(req, res, next) {
       period: reportPeriod,
     }).lean();
     const linkedFile = monthlyFiles?.archivos?.archivo3;
-    if (linkedFile?.mode !== 'system' && (linkedFile?.driveId || linkedFile?.nombre)) {
-      throw new RepRequestError(409, 'El período ya tiene un archivo REP vinculado desde Drive; no se puede crear otro en modo Sistema.');
-    }
-    if (linkedFile?.mode === 'system' && linkedFile.systemReportId) {
+    if (linkedFile?.systemReportId) {
       const linkedReport = await RepReport.findOne({
         reportId: linkedFile.systemReportId,
         agencyId: agency._id,
@@ -576,6 +577,9 @@ async function updateRepReport(req, res, next) {
       startTime: report.generalData.startTime,
       endTime: report.generalData.endTime,
     };
+    if (!canSavePeriod(req.user, value.generalData.inspectionDate)) {
+      throw new RepRequestError(403, 'Solo admin y developer pueden guardar un REP de un período anterior.');
+    }
     const anx = await ANX.findOne({ reporteId: report.reportId });
     const before = JSON.stringify({
       generalData: report.generalData,

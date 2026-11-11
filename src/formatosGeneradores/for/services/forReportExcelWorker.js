@@ -129,26 +129,39 @@ async function processClaimedReport(report) {
     if (result.modifiedCount !== 1) {
       throw new Error('El reporte cambió durante la generación del Excel; solicita la generación nuevamente.');
     }
-    const monthlyUpdate = await AgencyMonthlyFiles.updateOne(
-      {
-        agencyId: report.agencyId,
-        period: report.agencyPeriod || report.generalData.inspectionDate.slice(0, 7),
-        'archivos.archivo2.systemReportId': report.reportId,
-        'archivos.archivo2.reportRevision': revision,
-        'archivos.archivo2.generatedExcelStatus': { $in: ['queued', 'processing'] },
-      },
-      {
+    const monthlyFilter = {
+      agencyId: report.agencyId,
+      period: report.agencyPeriod || report.generalData.inspectionDate.slice(0, 7),
+      'archivos.archivo2.systemReportId': report.reportId,
+      'archivos.archivo2.reportRevision': revision,
+      'archivos.archivo2.generatedExcelStatus': { $in: ['queued', 'processing'] },
+    };
+    const readyFields = {
+      'archivos.archivo2.generatedExcelStatus': 'ready',
+      'archivos.archivo2.generatedExcelRevision': revision,
+      'archivos.archivo2.generatedExcelError': '',
+      'archivos.archivo2.generatedExcelTemplateVersion': generated.templateVersion,
+      'archivos.archivo2.systemNombre': generated.downloadFileName,
+      'archivos.archivo2.systemDriveId': stored.driveFileId,
+      'archivos.archivo2.systemRuta': stored.folderId,
+    };
+    const driveMonthlyUpdate = await AgencyMonthlyFiles.updateOne({
+      ...monthlyFilter,
+      'archivos.archivo2.mode': 'drive',
+    }, { $set: readyFields });
+    const monthlyUpdate = driveMonthlyUpdate.matchedCount
+      ? driveMonthlyUpdate
+      : await AgencyMonthlyFiles.updateOne({
+        ...monthlyFilter,
+        'archivos.archivo2.mode': 'system',
+      }, {
         $set: {
+          ...readyFields,
           'archivos.archivo2.nombre': generated.downloadFileName,
           'archivos.archivo2.driveId': stored.driveFileId,
           'archivos.archivo2.ruta': stored.folderId,
-          'archivos.archivo2.generatedExcelStatus': 'ready',
-          'archivos.archivo2.generatedExcelRevision': revision,
-          'archivos.archivo2.generatedExcelError': '',
-          'archivos.archivo2.generatedExcelTemplateVersion': generated.templateVersion,
         },
-      },
-    );
+      });
     if (monthlyUpdate.matchedCount === 0) {
       throw new Error('No se encontró el archivo mensual correspondiente al reporte generado.');
     }

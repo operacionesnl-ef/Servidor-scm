@@ -11,6 +11,47 @@ const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const MAX_DESCENDANTS = 5000;
 const MAX_DEPTH = 8;
 const quoteDriveQueryValue = (value) => String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+const SYSTEM_REFERENCE_FIELDS = [
+  'systemReportId', 'generatedExcelStatus', 'generatedExcelError',
+  'generatedExcelTemplateVersion', 'reportRevision', 'generatedExcelRevision',
+  'generatedAnxStatus', 'generatedAnxError', 'generatedAnxRevision',
+];
+
+function mergeSystemFileWithDrive(existingFile, driveFile) {
+  if (!existingFile?.systemReportId) return driveFile;
+  const systemReference = Object.fromEntries(SYSTEM_REFERENCE_FIELDS
+    .filter((field) => existingFile[field] !== undefined)
+    .map((field) => [field, existingFile[field]]));
+  const systemName = existingFile.systemNombre
+    || (existingFile.mode === 'system' ? existingFile.nombre : '');
+  const systemPath = existingFile.systemRuta
+    || (existingFile.mode === 'system' ? existingFile.ruta : '');
+  const systemDriveId = existingFile.systemDriveId
+    || (existingFile.mode === 'system' ? existingFile.driveId : '');
+
+  if (driveFile) {
+    return {
+      ...driveFile,
+      ...systemReference,
+      mode: 'drive',
+      systemNombre: systemName,
+      systemRuta: systemPath,
+      systemDriveId,
+    };
+  }
+
+  return {
+    mode: 'system',
+    ...systemReference,
+    nombre: systemName || existingFile.nombre || '',
+    ruta: systemPath,
+    driveId: systemDriveId,
+    systemNombre: systemName,
+    systemRuta: systemPath,
+    systemDriveId,
+    mimeType: existingFile.mode === 'system' ? existingFile.mimeType || '' : '',
+  };
+}
 
 async function listDescendants(drive, rootFolderId) {
   const descendants = [];
@@ -144,9 +185,13 @@ async function refreshAgencyFromDrive(agency, drive, year, month, folderId) {
   }).lean();
   for (const { key } of FILE_TYPES) {
     const existing = existingRecord?.archivos?.[key];
-    if (existing?.mode !== 'system' || !existing.systemReportId) continue;
-    update.archivos[key] = existing;
-    update.results[key] = { status: 'system', file: existing };
+    if (!existing?.systemReportId) continue;
+    const refreshedDriveFile = update.archivos[key];
+    update.archivos[key] = mergeSystemFileWithDrive(existing, refreshedDriveFile);
+    update.results[key] = {
+      status: refreshedDriveFile ? 'both' : 'system',
+      file: update.archivos[key],
+    };
   }
   const policy = getAgencyFileRequirementPolicy(agency, update.archivos);
   update.status = policy.requirementSatisfied ? 'updated' : 'issues';
@@ -154,7 +199,7 @@ async function refreshAgencyFromDrive(agency, drive, year, month, folderId) {
   update.notices = policy.optionalMessage ? [policy.optionalMessage] : [];
   update.summary = {
     ...update.summary,
-    system: FILE_TYPES.filter(({ key }) => update.results[key].status === 'system').length,
+    system: FILE_TYPES.filter(({ key }) => ['system', 'both'].includes(update.results[key].status)).length,
     requiredFound: policy.isChihuahua
       ? Number(policy.requirementSatisfied)
       : (policy.requirementSatisfied ? 3 : 3 - policy.missingKeys.length),
@@ -175,4 +220,9 @@ async function refreshAgencyFromDrive(agency, drive, year, month, folderId) {
   return update;
 }
 
-module.exports = { listDescendants, buildAgencyRefresh, refreshAgencyFromDrive };
+module.exports = {
+  buildAgencyRefresh,
+  listDescendants,
+  mergeSystemFileWithDrive,
+  refreshAgencyFromDrive,
+};

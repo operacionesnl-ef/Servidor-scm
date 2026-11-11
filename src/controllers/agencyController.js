@@ -92,6 +92,7 @@ const ALLOWED_FIELDS = new Set([
   'status',
   'archivos',
   'consultantId',
+  'reviewPeriods',
 ]);
 const ALLOWED_STATUSES = new Set(['activa', 'inactiva', 'suspendida']);
 const FILE_FIELDS = new Set(['archivo1', 'archivo2', 'archivo3', 'archivo4']);
@@ -341,6 +342,33 @@ const validateAgencyInput = (body, partial) => {
     }
   }
 
+  if (body.reviewPeriods !== undefined) {
+    if (!body.reviewPeriods || typeof body.reviewPeriods !== 'object' || Array.isArray(body.reviewPeriods)) {
+      errors.reviewPeriods = 'Must be an object keyed by review category';
+    } else {
+      const periods = {};
+      for (const [category, setting] of Object.entries(body.reviewPeriods)) {
+        if (!/^[a-z][a-z0-9_-]{0,39}$/.test(category)
+          || !setting || typeof setting !== 'object' || Array.isArray(setting)) {
+          errors[`reviewPeriods.${category}`] = 'Invalid review category settings';
+          continue;
+        }
+        const { intervalMonths, startPeriod } = setting;
+        if (!Number.isInteger(intervalMonths) || intervalMonths < 1 || intervalMonths > 120) {
+          errors[`reviewPeriods.${category}.intervalMonths`] = 'Must be an integer between 1 and 120';
+        } else if (typeof startPeriod !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(startPeriod)) {
+          errors[`reviewPeriods.${category}.startPeriod`] = 'Must use YYYY-MM format';
+        } else {
+          periods[category] = { intervalMonths, startPeriod };
+        }
+        if (Object.keys(setting).some((key) => !['intervalMonths', 'startPeriod'].includes(key))) {
+          errors[`reviewPeriods.${category}`] = 'Unknown review setting';
+        }
+      }
+      value.reviewPeriods = periods;
+    }
+  }
+
   return { errors, value };
 };
 
@@ -511,6 +539,9 @@ const createAgency = async (req, res, next) => {
       message: 'Only administrators can assign the responsible consultant.',
     });
   }
+  if (value.reviewPeriods !== undefined && req.user?.rol !== 'admin') {
+    return res.status(403).json({ success: false, message: 'Solo los administradores pueden configurar los períodos de revisión.' });
+  }
 
   try {
     if (value.consultantId && !await isActiveConsultant(value.consultantId)) {
@@ -570,6 +601,9 @@ const updateAgency = async (req, res, next) => {
       message: 'Only administrators can assign the responsible consultant.',
     });
   }
+  if (value.reviewPeriods !== undefined && req.user?.rol !== 'admin') {
+    return res.status(403).json({ success: false, message: 'Solo los administradores pueden configurar los períodos de revisión.' });
+  }
 
   try {
     if (value.consultantId && !await isActiveConsultant(value.consultantId)) {
@@ -581,7 +615,7 @@ const updateAgency = async (req, res, next) => {
     const historyFields = [
       'nombre', 'razonSocial', 'direccion', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente',
       'seguimiento', 'cc', 'cco', 'entidadFederativa', 'status', 'consultantId', 'fileNameCode', 'archivos',
-      'marca',
+      'marca', 'reviewPeriods',
     ];
     const previousValues = Object.fromEntries(
       historyFields.map((field) => [field, historyValue(getAgencyField(agency, field))]),
@@ -591,6 +625,7 @@ const updateAgency = async (req, res, next) => {
       'cc', 'cco', 'entidadFederativa', 'status', 'consultantId',
       'marca',
       'fileNameCode',
+      'reviewPeriods',
     ]) {
       if (value[field] !== undefined) agency.set(field, value[field]);
     }

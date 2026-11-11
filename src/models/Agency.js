@@ -34,6 +34,14 @@ const agencySchema = new mongoose.Schema(
     brand: { type: String, trim: true, maxlength: 80, default: '' },
     marca: { type: String, trim: true, maxlength: 80, default: '' },
     fileNameCode: { type: String, trim: true, maxlength: 60, default: '' },
+    reviewPeriods: {
+      type: Map,
+      of: new mongoose.Schema({
+        intervalMonths: { type: Number, min: 1, max: 120, default: 1 },
+        startPeriod: { type: String, match: /^\d{4}-(0[1-9]|1[0-2])$/, default: '' },
+      }, { _id: false }),
+      default: () => new Map(),
+    },
     status: {
       type: String,
       enum: ['activa', 'inactiva', 'suspendida'],

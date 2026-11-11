@@ -147,6 +147,36 @@ test('validates system-generated ANX and REP references in their associated slot
   assert.ok(invalidSlot.errors['archivos.archivo2.systemReportId']);
 });
 
+test('preserves both a Drive REV and its system report reference in the same slot', () => {
+  const combinedFile = {
+    ...sampleFile,
+    mode: 'drive',
+    systemReportId: 'REV-12345678-1234-1234-1234-123456789012',
+    generatedExcelStatus: 'queued',
+    reportRevision: 3,
+    generatedExcelRevision: 0,
+    systemNombre: 'REV-EXT-SUCURSAL.xlsx',
+    systemDriveId: 'generated-rev-file',
+    systemRuta: 'generated-rev-folder',
+  };
+  const validated = validateMonthlyFiles({
+    archivos: { archivo1: null, archivo2: null, archivo3: null, archivo4: combinedFile },
+  }, '2026-10');
+  assert.deepEqual(validated.errors, {});
+  assert.equal(validated.value.archivos.archivo4.driveId, sampleFile.driveId);
+  assert.equal(validated.value.archivos.archivo4.systemReportId, combinedFile.systemReportId);
+  assert.equal(validated.value.archivos.archivo4.systemDriveId, combinedFile.systemDriveId);
+
+  const preserved = preserveSystemGeneratedFiles(
+    { archivo4: { ...combinedFile, mode: 'system', driveId: 'generated-rev-file' } },
+    { archivo4: { ...sampleFile, mode: 'drive', driveId: 'replacement-drive-file' } },
+  );
+  assert.equal(preserved.archivo4.mode, 'drive');
+  assert.equal(preserved.archivo4.driveId, 'replacement-drive-file');
+  assert.equal(preserved.archivo4.systemReportId, combinedFile.systemReportId);
+  assert.equal(preserved.archivo4.systemDriveId, 'generated-rev-file');
+});
+
 test('persists the developer filename code through the agency debug update route', async () => {
   const originalFindById = Agency.findById;
   const originalHistoryCreate = AgencyHistory.create;
