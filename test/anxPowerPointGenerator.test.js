@@ -159,11 +159,29 @@ test('normalizes photo orientation and caps embedded image dimensions', async ()
   assert.ok(x >= 0 && y >= 0);
 });
 
-test('uses the ANX-FOT filename convention from the report agency code and visit date', () => {
+test('uses a one-month interval by default in the ANX-FOT filename', () => {
   assert.equal(buildAnxFileName({
     agencyFileNameCodeSnapshot: 'TOY-SEN-NL',
     generalData: { inspectionDate: '2026-10-01' },
-  }), 'ANX-FOT-TOY-SEN-NL-(01-10-26)-(01-11-26).pptx');
+  }), 'ANX-FOT-TOY-SEN-NL-(01-10-2026)-(01-11-2026).pptx');
+});
+
+test('uses the configured month interval in the ANX-FOT filename', () => {
+  assert.equal(buildAnxFileName({
+    agencyFileNameCodeSnapshot: 'TOY-SEN-NL',
+    generalData: {
+      inspectionDate: '2026-10-01',
+      startDate: '2026-10-01',
+      endDate: '2026-10-01',
+    },
+  }, 2), 'ANX-FOT-TOY-SEN-NL-(01-10-2026)-(01-12-2026).pptx');
+});
+
+test('uses the configured two-month interval from September through November', () => {
+  assert.equal(buildAnxFileName({
+    agencyFileNameCodeSnapshot: 'ALT-DEL-CUU',
+    generalData: { inspectionDate: '2026-09-01', startDate: '2026-09-01' },
+  }, 2), 'ANX-FOT-ALT-DEL-CUU-(01-09-2026)-(01-11-2026).pptx');
 });
 
 test('retains three slides for ten images', async () => {

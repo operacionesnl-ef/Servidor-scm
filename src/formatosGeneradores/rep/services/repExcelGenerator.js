@@ -378,7 +378,7 @@ function findingValues(finding, index, report) {
     ['prioridad', finding.priority],
     ['responsable', finding.responsible],
     ['fundamento_legal', finding.legalBasis],
-    ['fecha_hallazgo', formatDate(report.generalData.startDate || report.generalData.inspectionDate)],
+    ['fecha_hallazgo', formatDate(finding.findingDate)],
     ['fecha_cumplimiento', formatDate(finding.dueDate)],
     ['status', finding.status],
     ['en_tiempo', finding.onTime],
@@ -502,13 +502,17 @@ async function replaceNamedLogo(zip, sheetPath, imageBuffer, imageMimeType) {
   zip.file(mediaPath, converted);
 }
 
-function buildDownloadFileName(report) {
+function buildDownloadFileName(report, intervalMonths = 1) {
   const date = report.generalData.inspectionDate;
   const day = date.slice(8, 10);
   const month = date.slice(5, 7);
   const year = date.slice(0, 4);
+  const parsedInterval = Number(intervalMonths);
+  const interval = Number.isInteger(parsedInterval) && parsedInterval >= 1 && parsedInterval <= 120
+    ? parsedInterval
+    : 1;
   const endDate = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
-  endDate.setUTCMonth(endDate.getUTCMonth() + 1);
+  endDate.setUTCMonth(endDate.getUTCMonth() + interval);
   if (endDate.getUTCDate() !== Number(day)) endDate.setUTCDate(0);
   const endToken = `(${String(endDate.getUTCDate()).padStart(2, '0')}-${String(endDate.getUTCMonth() + 1).padStart(2, '0')}-${endDate.getUTCFullYear()})`;
   const code = String(report.agencyFileNameCodeSnapshot || 'SIN-CODIGO')
@@ -520,7 +524,7 @@ function buildDownloadFileName(report) {
   return `REP-INS-${code}-(${day}-${month}-${year})-${endToken}.xlsx`;
 }
 
-async function generateRepExcelBuffer(report, { logoBuffer, logoMimeType }) {
+async function generateRepExcelBuffer(report, { logoBuffer, logoMimeType, intervalMonths = 1 }) {
   const templatePath = process.env.REP_EXCEL_TEMPLATE_PATH?.trim() || DEFAULT_TEMPLATE_PATH;
   let templateBuffer;
   try {
@@ -620,7 +624,7 @@ async function generateRepExcelBuffer(report, { logoBuffer, logoMimeType }) {
   return {
     buffer: outputBuffer,
     templateVersion: TEMPLATE_VERSION,
-    downloadFileName: buildDownloadFileName(report),
+    downloadFileName: buildDownloadFileName(report, intervalMonths),
   };
 }
 

@@ -16,6 +16,8 @@ const {
 } = require('../../services/generationQueue');
 const { generateRepExcelBuffer, RepExcelError, TEMPLATE_VERSION } = require('./repExcelGenerator');
 const { syncRepReportMonthlyFile } = require('./repMonthlyFileSync');
+const { enqueueRepAnxForReport } = require('./repAnxWorker');
+const { getReviewIntervalMonths } = require('../../../utils/reviewPeriod');
 const {
   ensureRepFolder,
   getBrandLogo,
@@ -72,28 +74,17 @@ async function setGenerationFailure(report, revision, error) {
 
 async function processClaimedReport(report) {
   const revision = report.generatedExcel.reportRevision;
-  const heartbeat = setInterval(() => {
-    RepReport.updateOne(
-      { _id: report._id, revision, 'generatedExcel.status': 'processing' },
-      { $set: { 'generatedExcel.startedAt': new Date() } },
-    ).catch((error) => {
-      logConsoleEvent('rep_excel_heartbeat_failed', { reportId: report.reportId, message: error.message });
-    });
-  }, 60_000);
-  heartbeat.unref?.();
 
   try {
     if (report.revision !== revision) return;
-    if (!report.agencyBrandSnapshot || !report.agencyAddressSnapshot
-      || !report.agencyLegalNameSnapshot || !report.agencyFileNameCodeSnapshot) {
-      const agency = await Agency.findById(report.agencyId)
-        .select('razonSocial direccion entidadFederativa brand marca fileNameCode')
-        .lean();
-      report.agencyBrandSnapshot ||= agency?.brand || agency?.marca || '';
-      report.agencyFileNameCodeSnapshot ||= agency?.fileNameCode || '';
-      report.agencyAddressSnapshot ||= agency?.direccion || '';
-      report.agencyLegalNameSnapshot ||= agency?.razonSocial || '';
-    }
+    const agency = await Agency.findById(report.agencyId)
+      .select('razonSocial direccion entidadFederativa brand marca fileNameCode reviewPeriods')
+      .lean();
+    report.agencyBrandSnapshot ||= agency?.brand || agency?.marca || '';
+    report.agencyFileNameCodeSnapshot ||= agency?.fileNameCode || '';
+    report.agencyAddressSnapshot ||= agency?.direccion || '';
+    report.agencyLegalNameSnapshot ||= agency?.razonSocial || '';
+    const intervalMonths = getReviewIntervalMonths(agency?.reviewPeriods, 'seguridad');
     const drive = createGoogleDriveClient();
     const retryDriveOperation = (stage, operation) => retryTransientGoogleDriveOperation(operation, {
       onRetry: ({ attempt, status }) => logConsoleEvent('rep_excel_drive_retry', {
@@ -110,6 +101,7 @@ async function processClaimedReport(report) {
     const generated = await generateRepExcelBuffer(report, {
       logoBuffer: logo.buffer,
       logoMimeType: logo.mimeType,
+      intervalMonths,
     });
     if (generated.templateVersion !== TEMPLATE_VERSION) {
       throw new RepExcelError('La versión de plantilla REP generada no coincide con la versión activa.');
@@ -174,8 +166,6 @@ async function processClaimedReport(report) {
         message: persistError.message,
       });
     }
-  } finally {
-    clearInterval(heartbeat);
   }
 }
 
@@ -227,6 +217,7 @@ async function startRepExcelWorker() {
       );
       throw new Error(current?.generatedExcel?.error || 'No se confirmó la generación REP.');
     }
+    await enqueueRepAnxForReport(report, report.updatedBy || report.createdBy);
     await logStep('file_verified', 'processing', 'Archivo y estado de generación confirmados.');
   });
   const queued = await RepReport.find({ 'generatedExcel.status': 'queued' })

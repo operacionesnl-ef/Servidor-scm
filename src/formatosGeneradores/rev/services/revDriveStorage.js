@@ -6,6 +6,7 @@ const BRAND_LOGO_PATHS = require('../../../config/repBrandLogoPaths');
 const { findDriveFileByAppProperties, findOrCreateFolder, uploadDriveFile } = require('../../../services/googleDriveService');
 const { getBrandLogo: getRepBrandLogo } = require('../../rep/services/repDriveStorage');
 const { logConsoleEvent } = require('../../../utils/serverLogger');
+const { MONTH_NAMES_ES } = require('../../../utils/drivePatternUtils');
 
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const FILE_PROPERTIES = { efcoreGeneratedExcel: 'REV-EXT' };
@@ -42,8 +43,9 @@ async function ensureRevFolder(drive, report) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('La fecha de inspección REV no es válida para crear la carpeta de Drive.');
   const brand = String(report.agencyBrandSnapshot || '').trim();
   if (!brand) throw new Error('La agencia no tiene una marca configurada.');
+  const monthName = MONTH_NAMES_ES[Number(date.slice(5, 7)) - 1];
   let parentId = rootFolderId;
-  for (const name of ['Servicios EF', 'Recorridos Medio Ambiente', date.slice(0, 4), date.slice(5, 7), brand]) {
+  for (const name of ['Servicios EF', 'Recorrido de extintores', date.slice(0, 4), monthName, brand]) {
     parentId = (await findOrCreateFolder(drive, parentId, name)).id;
   }
   return parentId;

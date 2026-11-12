@@ -5,7 +5,7 @@ const ANX = require('../models/ANX');
 const { buildDownloadFileName, TEMPLATE_VERSION } = require('./repExcelGenerator');
 const { hasIndependentDriveFile } = require('../../../utils/monthlyFileSources');
 
-async function syncRepReportMonthlyFile(report) {
+async function syncRepReportMonthlyFile(report, { syncExcel = true, syncAnx = true } = {}) {
   const period = report.generalData.inspectionDate.slice(0, 7);
   const anx = await ANX.findOne({ reporteId: report.reportId }).lean();
   const generatedAnx = anx?.archivoGenerado || {};
@@ -49,22 +49,24 @@ async function syncRepReportMonthlyFile(report) {
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   } : null;
   const fileFilter = { agencyId: report.agencyId, period };
-  const existing = await AgencyMonthlyFiles.findOne(fileFilter).select('archivos.archivo3').lean();
-  const currentFile = existing?.archivos?.archivo3;
-  const hasDriveFile = hasIndependentDriveFile(currentFile);
-  const systemFields = Object.fromEntries(
-    Object.entries(file).filter(([field]) => field !== 'mode' && field !== 'nombre' && field !== 'driveId' && field !== 'ruta'),
-  );
-  const setFields = hasDriveFile
-    ? Object.fromEntries(Object.entries(systemFields)
-      .map(([field, value]) => [`archivos.archivo3.${field}`, value]))
-    : { 'archivos.archivo3': file };
-  await AgencyMonthlyFiles.findOneAndUpdate(
-    fileFilter,
-    { $set: { ...setFields, updatedBy: report.updatedBy || report.createdBy } },
-    { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
-  );
-  if (anxFile) {
+  if (syncExcel) {
+    const existing = await AgencyMonthlyFiles.findOne(fileFilter).select('archivos.archivo3').lean();
+    const currentFile = existing?.archivos?.archivo3;
+    const hasDriveFile = hasIndependentDriveFile(currentFile);
+    const systemFields = Object.fromEntries(
+      Object.entries(file).filter(([field]) => field !== 'mode' && field !== 'nombre' && field !== 'driveId' && field !== 'ruta'),
+    );
+    const setFields = hasDriveFile
+      ? Object.fromEntries(Object.entries(systemFields)
+        .map(([field, value]) => [`archivos.archivo3.${field}`, value]))
+      : { 'archivos.archivo3': file };
+    await AgencyMonthlyFiles.findOneAndUpdate(
+      fileFilter,
+      { $set: { ...setFields, updatedBy: report.updatedBy || report.createdBy } },
+      { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
+    );
+  }
+  if (syncAnx && anxFile) {
     const anxFileFilter = {
         agencyId: report.agencyId,
         period,
@@ -85,7 +87,7 @@ async function syncRepReportMonthlyFile(report) {
       },
       { new: true, runValidators: true },
     );
-  } else {
+  } else if (syncAnx) {
     await AgencyMonthlyFiles.findOneAndUpdate(
       {
         agencyId: report.agencyId,

@@ -15,4 +15,12 @@ function resolveReviewPeriod(inspectionPeriod, settings) {
   return `${scheduledYear}-${String(normalizedMonth).padStart(2, '0')}`;
 }
 
-module.exports = { resolveReviewPeriod };
+function getReviewIntervalMonths(reviewPeriods, category) {
+  const settings = reviewPeriods?.get?.(category) || reviewPeriods?.[category];
+  const intervalMonths = Number(settings?.intervalMonths);
+  return Number.isInteger(intervalMonths) && intervalMonths >= 1 && intervalMonths <= 120
+    ? intervalMonths
+    : 1;
+}
+
+module.exports = { getReviewIntervalMonths, resolveReviewPeriod };

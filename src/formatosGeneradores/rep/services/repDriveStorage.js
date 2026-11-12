@@ -9,6 +9,7 @@ const {
   uploadDriveFile,
 } = require('../../../services/googleDriveService');
 const { logConsoleEvent } = require('../../../utils/serverLogger');
+const { MONTH_NAMES_ES } = require('../../../utils/drivePatternUtils');
 
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const PPTX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
@@ -293,7 +294,8 @@ async function ensureRepFolder(drive, report) {
   const brand = String(report.agencyBrandSnapshot || '').trim();
   if (!brand) throw new RepDriveStorageError('La agencia no tiene una marca configurada.');
   let parentId = rootFolderId;
-  for (const name of ['Servicios EF', 'Recorridos Medio Ambiente', period.slice(0, 4), period.slice(5, 7), brand]) {
+  const monthName = MONTH_NAMES_ES[Number(period.slice(5, 7)) - 1];
+  for (const name of ['Servicios EF', 'Recorridos Seguridad', period.slice(0, 4), monthName, brand]) {
     parentId = (await findOrCreateFolder(drive, parentId, name)).id;
   }
   return parentId;

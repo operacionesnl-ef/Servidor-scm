@@ -9,6 +9,7 @@ const {
   retryTransientGoogleDriveOperation,
 } = require('../../../services/googleDriveService');
 const { logConsoleEvent } = require('../../../utils/serverLogger');
+const { getReviewIntervalMonths } = require('../../../utils/reviewPeriod');
 const { shouldPauseComplexJobs } = require('../../../services/resourceMonitor');
 const {
   enqueueGeneration,
@@ -76,7 +77,7 @@ async function setGenerationFailure(anx, report, revision, error, generationStag
       },
     },
   );
-  if (result.modifiedCount === 1 && report) await syncRepReportMonthlyFile(report);
+  if (result.modifiedCount === 1 && report) await syncRepReportMonthlyFile(report, { syncExcel: false });
   const errorMessage = error instanceof Error ? error.message : String(error);
   const causeMessage = error instanceof Error && error.cause instanceof Error
     ? `; causa: ${error.cause.message}`
@@ -91,15 +92,6 @@ async function setGenerationFailure(anx, report, revision, error, generationStag
 
 async function processClaimedAnx(anx) {
   const revision = anx.archivoGenerado.revision;
-  const heartbeat = setInterval(() => {
-    ANX.updateOne(
-      { _id: anx._id, 'archivoGenerado.revision': revision, 'archivoGenerado.estado': 'processing' },
-      { $set: { 'archivoGenerado.startedAt': new Date() } },
-    ).catch((error) => {
-      logConsoleEvent('rep_anx_heartbeat_failed', { reportId: anx.reporteId, message: error.message });
-    });
-  }, 60_000);
-  heartbeat.unref?.();
 
   let report = null;
   let generationStage = 'cargar REP';
@@ -108,15 +100,16 @@ async function processClaimedAnx(anx) {
     if (!report || report.revision !== revision) {
       throw new AnxPowerPointError('El REP cambió durante la generación; vuelve a validar el reporte.');
     }
+    const agency = await Agency.findById(report.agencyId)
+      .select('brand marca fileNameCode reviewPeriods')
+      .lean();
     if (!report.agencyBrandSnapshot || !report.agencyFileNameCodeSnapshot) {
-      const agency = await Agency.findById(report.agencyId)
-        .select('brand marca fileNameCode')
-        .lean();
       report.agencyBrandSnapshot ||= agency?.brand || agency?.marca || '';
       report.agencyFileNameCodeSnapshot ||= agency?.fileNameCode || '';
     }
+    const intervalMonths = getReviewIntervalMonths(agency?.reviewPeriods, 'seguridad');
     generationStage = 'sincronizar REP mensual';
-    await syncRepReportMonthlyFile(report);
+    await syncRepReportMonthlyFile(report, { syncExcel: false });
     if (!anx.totalImagenes || anx.totalImagenes !== anx.imagenes.length) {
       throw new AnxPowerPointError('El total de imágenes de ANX no coincide con sus registros.');
     }
@@ -137,7 +130,7 @@ async function processClaimedAnx(anx) {
       folderId,
       reportId: report.reportId,
       revision,
-      fileName: buildAnxFileName(report),
+      fileName: buildAnxFileName(report, intervalMonths),
       buffer,
     }), {
       attempts: 4,
@@ -193,7 +186,7 @@ async function processClaimedAnx(anx) {
       nombre: stored.fileName,
     };
     generationStage = 'sincronizar REP mensual';
-    await syncRepReportMonthlyFile(report);
+    await syncRepReportMonthlyFile(report, { syncExcel: false });
     logConsoleEvent('rep_anx_ready', { reportId: report.reportId, reportRevision: revision });
   } catch (error) {
     try {
@@ -204,8 +197,6 @@ async function processClaimedAnx(anx) {
         message: persistError.message,
       });
     }
-  } finally {
-    clearInterval(heartbeat);
   }
 }
 
@@ -227,6 +218,48 @@ async function requeueStaleAnxJobs() {
 
 async function processQueuedAnx() {
   kickGenerationQueue();
+}
+
+async function enqueueRepAnxForReport(report, userId) {
+  const anx = await ANX.findOne({ reporteId: report.reportId });
+  if (!anx?.totalImagenes) return null;
+  if (anx.totalImagenes !== anx.imagenes.length) {
+    throw new AnxPowerPointError('El total de imágenes de ANX no coincide con sus registros.');
+  }
+  const generated = anx.archivoGenerado || {};
+  const agency = await Agency.findById(report.agencyId).select('fileNameCode reviewPeriods').lean();
+  const expectedFileName = buildAnxFileName({
+    generalData: report.generalData,
+    agencyFileNameCodeSnapshot: report.agencyFileNameCodeSnapshot || agency?.fileNameCode || '',
+  }, getReviewIntervalMonths(agency?.reviewPeriods, 'seguridad'));
+  if (generated.estado === 'ready'
+    && generated.revision === report.revision
+    && generated.driveFileId
+    && generated.nombre === expectedFileName) return anx;
+  if (['queued', 'processing'].includes(generated.estado)
+    && generated.revision === report.revision) return anx;
+
+  anx.archivoGenerado = {
+    estado: 'queued',
+    revision: report.revision,
+    driveFileId: '',
+    nombre: expectedFileName,
+    queuedAt: new Date(),
+    startedAt: null,
+    generadoEn: null,
+    error: '',
+  };
+  await anx.save();
+  await enqueueGeneration({
+    type: 'ANX',
+    entityId: anx._id,
+    reportId: report.reportId,
+    revision: report.revision,
+    userId,
+  });
+  await syncRepReportMonthlyFile(report, { syncExcel: false });
+  kickRepAnxWorker();
+  return anx;
 }
 
 function kickRepAnxWorker() {
@@ -275,6 +308,7 @@ async function startRepAnxWorker() {
 }
 
 module.exports = {
+  enqueueRepAnxForReport,
   kickRepAnxWorker,
   processClaimedAnx,
   startRepAnxWorker,

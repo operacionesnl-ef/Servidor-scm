@@ -198,8 +198,7 @@ function buildDownloadFileName(report) {
   const endToken = `(${String(endDate.getUTCDate()).padStart(2, '0')}-${String(endDate.getUTCMonth() + 1).padStart(2, '0')}-${endDate.getUTCFullYear()})`;
   const startToken = `(${day}-${month}-${year})`;
   const agencyCode = safeFileNamePart(report.agencyFileNameCodeSnapshot, 'SIN-CODIGO');
-  const periodToken = report.agencyPeriod ? `-PERIODO-${report.agencyPeriod}` : '';
-  return `FOR-AUD-AMB-${agencyCode}-${startToken}-${endToken}${periodToken}.xlsx`;
+  return `FOR-AUD-AMB-${agencyCode}-${startToken}-${endToken}.xlsx`;
 }
 
 function xmlEscape(value) {

@@ -15,6 +15,7 @@ const {
   uploadGeneratedExcelToDrive,
 } = require('./forReportDriveStorage');
 const { logConsoleEvent } = require('../../../utils/serverLogger');
+const { getReviewIntervalMonths } = require('../../../utils/reviewPeriod');
 const { shouldPauseComplexJobs } = require('../../../services/resourceMonitor');
 const {
   enqueueGeneration,
@@ -80,14 +81,13 @@ async function processClaimedReport(report) {
 
   try {
     if (report.revision !== revision) return;
-    if (!report.agencyStateSnapshot || !report.agencyFileNameCodeSnapshot || !report.agencyBrandSnapshot) {
-      const agency = await Agency.findById(report.agencyId)
-        .select('entidadFederativa fileNameCode marca')
-        .lean();
-      report.agencyStateSnapshot ||= agency?.entidadFederativa || '';
-      report.agencyFileNameCodeSnapshot ||= agency?.fileNameCode || '';
-      report.agencyBrandSnapshot ||= agency?.marca || '';
-    }
+    const agency = await Agency.findById(report.agencyId)
+      .select('entidadFederativa fileNameCode marca reviewPeriods')
+      .lean();
+    report.agencyStateSnapshot ||= agency?.entidadFederativa || '';
+    report.agencyFileNameCodeSnapshot ||= agency?.fileNameCode || '';
+    report.agencyBrandSnapshot ||= agency?.marca || '';
+    report.reviewIntervalMonths = getReviewIntervalMonths(agency?.reviewPeriods, 'ambiental');
     if (!report.agencyBrandSnapshot) {
       throw new ForReportDriveStorageError('Configura la marca de la agencia desde el modo Debug antes de generar el Excel.');
     }

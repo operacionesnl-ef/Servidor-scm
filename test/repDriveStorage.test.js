@@ -26,7 +26,7 @@ function makeFolderDrive() {
   };
 }
 
-test('creates the REP workbook folder using the FOR year/month/brand hierarchy', async () => {
+test('creates the REP and ANX folder under Recorridos Seguridad by year, month name and brand', async () => {
   const previousRoot = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
   process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID = 'root';
   const { client, files } = makeFolderDrive();
@@ -36,7 +36,7 @@ test('creates the REP workbook folder using the FOR year/month/brand hierarchy',
       generalData: { inspectionDate: '2026-10-29' },
     });
     assert.deepEqual(files.map(({ name }) => name), [
-      'Servicios EF', 'Recorridos Medio Ambiente', '2026', '10', 'HYUNDAI',
+      'Servicios EF', 'Recorridos Seguridad', '2026', 'octubre', 'HYUNDAI',
     ]);
     assert.equal(folderId, files[4].id);
   } finally {

@@ -86,3 +86,34 @@ test('preserves a Drive REP while syncing its generated system report', async ()
   assert.equal(updates[0][1].$set['archivos.archivo3.systemReportId'], 'REP-123');
   assert.equal(updates[0][1].$set['archivos.archivo3.systemNombre'], 'REP-INS-generado.xlsx');
 });
+
+test('syncs ANX status without overwriting the REP Excel status', async () => {
+  const updates = [];
+  ANX.findOne = () => ({
+    lean: async () => ({
+      totalImagenes: 1,
+      archivoGenerado: {
+        estado: 'ready',
+        revision: 3,
+        driveFileId: 'anx-drive-id',
+        nombre: 'ANX-FOT-TEST.pptx',
+      },
+    }),
+  });
+  AgencyMonthlyFiles.findOne = () => {
+    throw new Error('ANX-only sync must not read the REP slot');
+  };
+  AgencyMonthlyFiles.findOneAndUpdate = async (...args) => { updates.push(args); return {}; };
+
+  await syncRepReportMonthlyFile({
+    reportId: 'REP-123',
+    agencyId: 'agency-1',
+    revision: 3,
+    generalData: { inspectionDate: '2026-10-29' },
+    generatedExcel: { status: 'ready', reportRevision: 3 },
+    updatedBy: 'user-1',
+  }, { syncExcel: false });
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0][1].$set['archivos.archivo1'].generatedAnxStatus, 'ready');
+});

@@ -18,7 +18,7 @@ function jobKey(type, entityId, revision, templateVersion) {
 async function enqueueGeneration({ type, entityId, reportId, revision, userId, templateVersion }) {
   const key = jobKey(type, entityId, revision, templateVersion);
   const existing = await GenerationJob.findOne({ key });
-  if (existing && ['queued', 'processing', 'ready'].includes(existing.status)) return existing;
+  if (existing && ['queued', 'processing'].includes(existing.status)) return existing;
 
   const update = {
     $set: {
@@ -111,21 +111,7 @@ async function processQueue() {
         continue;
       }
       try {
-        const heartbeat = setInterval(() => {
-          GenerationJob.updateOne(
-            { _id: job._id, status: 'processing' },
-            { $set: { startedAt: new Date() } },
-          ).catch((error) => logConsoleEvent('generation_job_heartbeat_failed', {
-            jobId: String(job._id),
-            message: error.message,
-          }));
-        }, 60_000);
-        heartbeat.unref?.();
-        try {
         await processor(job, (step, status, message) => recordGenerationStep(job, step, status, message));
-        } finally {
-          clearInterval(heartbeat);
-        }
         await GenerationJob.updateOne(
           { _id: job._id, status: 'processing' },
           {

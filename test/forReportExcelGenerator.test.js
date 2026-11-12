@@ -288,6 +288,7 @@ test('hides only explicitly non-applicable sections and builds the requested dow
   const twoMonthReport = await generateForReportExcelBuffer(makeReport({
     agencyFileNameCodeSnapshot: 'ALT-DEL-CUU',
     reviewIntervalMonths: 2,
+    agencyPeriod: '2026-10',
   }), null);
   assert.equal(
     twoMonthReport.downloadFileName,
