@@ -539,7 +539,7 @@ const createAgency = async (req, res, next) => {
       message: 'Only administrators can assign the responsible consultant.',
     });
   }
-  if (value.reviewPeriods !== undefined && req.user?.rol !== 'admin') {
+  if (value.reviewPeriods !== undefined && !['admin', 'developer'].includes(req.user?.rol)) {
     return res.status(403).json({ success: false, message: 'Solo los administradores pueden configurar los períodos de revisión.' });
   }
 
@@ -598,10 +598,10 @@ const updateAgency = async (req, res, next) => {
   if (value.consultantId !== undefined && !['admin', 'developer'].includes(req.user.rol)) {
     return res.status(403).json({
       success: false,
-      message: 'Only administrators can assign the responsible consultant.',
+      message: 'Solo los administradores pueden asignar el consultor responsable.',
     });
   }
-  if (value.reviewPeriods !== undefined && req.user?.rol !== 'admin') {
+  if (value.reviewPeriods !== undefined && !['admin', 'developer'].includes(req.user?.rol)) {
     return res.status(403).json({ success: false, message: 'Solo los administradores pueden configurar los períodos de revisión.' });
   }
 
