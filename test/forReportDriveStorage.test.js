@@ -82,7 +82,7 @@ test('creates the configured Drive hierarchy through brand and monthly period', 
     'Servicios EF',
     'Recorridos Medio Ambiente',
     '2026',
-    '10',
+    'octubre',
     'HYUNDAI',
   ]);
   assert.equal(folderId, files[4].id);

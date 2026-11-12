@@ -1,6 +1,6 @@
 # REP-INS
 
-Los Excel REP y los PowerPoint ANX se guardan bajo `Servicios EF/Recorridos Medio Ambiente/<año>/<mes>/<marca>`, con la misma jerarquía de FOR. Las fotografías se guardan por separado bajo `Evidencias/<año>/<mes>/<agencia>/REP/<reporteId>`. Los archivos generados se registran en el expediente mensual en modo Sistema; el ANX usa el slot ANX y el ID del REP asociado.
+Los Excel REP y los PowerPoint ANX se guardan bajo `Servicios EF/Recorridos Seguridad/<año>/<mes en español>/<marca>`. Las fotografías se guardan por separado bajo `Evidencias/<año>/<mes numérico>/<agencia>/REP/<reporteId>`. Los archivos generados se registran en el expediente mensual en modo Sistema; el ANX usa el slot ANX y el ID del REP asociado.
 
 El módulo REST se monta en `/api/rep` y almacena reportes REP en MongoDB. La generación se procesa en segundo plano y el XLSX resultante se guarda en Google Drive.
 

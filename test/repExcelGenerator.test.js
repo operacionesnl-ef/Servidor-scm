@@ -65,6 +65,15 @@ test('builds the REP workbook name with the agency code and FOR date convention'
   );
 });
 
+test('builds the REP workbook name using the configured two-month security interval', () => {
+  const report = makeReport();
+  report.generalData.inspectionDate = '2026-09-01';
+  assert.equal(
+    buildDownloadFileName(report, 2),
+    'REP-INS-HYU-SEN-NL-(01-09-2026)-(01-11-2026).xlsx',
+  );
+});
+
 async function makeLogo() {
   return sharp({
     create: { width: 64, height: 32, channels: 4, background: { r: 230, g: 10, b: 10, alpha: 1 } },
@@ -84,6 +93,17 @@ test('generates the workbook with general data, distinct actions, documentary va
   const generated = await generateRepExcelBuffer(makeReport(), {
     logoBuffer: await makeLogo(),
     logoMimeType: 'image/png',
+  });
+
+  test('uses the configured interval in the generated workbook filename', async () => {
+    const report = makeReport();
+    report.generalData.inspectionDate = '2026-09-01';
+    const generated = await generateRepExcelBuffer(report, {
+      logoBuffer: await makeLogo(),
+      logoMimeType: 'image/png',
+      intervalMonths: 2,
+    });
+    assert.equal(generated.downloadFileName, 'REP-INS-HYU-SEN-NL-(01-09-2026)-(01-11-2026).xlsx');
   });
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(generated.buffer);

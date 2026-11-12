@@ -15,6 +15,7 @@ const {
   uploadGeneratedExcelToDrive,
 } = require('./forReportDriveStorage');
 const { logConsoleEvent } = require('../../../utils/serverLogger');
+const { getReviewIntervalMonths } = require('../../../utils/reviewPeriod');
 const { shouldPauseComplexJobs } = require('../../../services/resourceMonitor');
 const {
   enqueueGeneration,
@@ -80,14 +81,13 @@ async function processClaimedReport(report) {
 
   try {
     if (report.revision !== revision) return;
-    if (!report.agencyStateSnapshot || !report.agencyFileNameCodeSnapshot || !report.agencyBrandSnapshot) {
-      const agency = await Agency.findById(report.agencyId)
-        .select('entidadFederativa fileNameCode marca')
-        .lean();
-      report.agencyStateSnapshot ||= agency?.entidadFederativa || '';
-      report.agencyFileNameCodeSnapshot ||= agency?.fileNameCode || '';
-      report.agencyBrandSnapshot ||= agency?.marca || '';
-    }
+    const agency = await Agency.findById(report.agencyId)
+      .select('entidadFederativa fileNameCode marca reviewPeriods')
+      .lean();
+    report.agencyStateSnapshot ||= agency?.entidadFederativa || '';
+    report.agencyFileNameCodeSnapshot ||= agency?.fileNameCode || '';
+    report.agencyBrandSnapshot ||= agency?.marca || '';
+    report.reviewIntervalMonths = getReviewIntervalMonths(agency?.reviewPeriods, 'ambiental');
     if (!report.agencyBrandSnapshot) {
       throw new ForReportDriveStorageError('Configura la marca de la agencia desde el modo Debug antes de generar el Excel.');
     }
@@ -129,26 +129,39 @@ async function processClaimedReport(report) {
     if (result.modifiedCount !== 1) {
       throw new Error('El reporte cambió durante la generación del Excel; solicita la generación nuevamente.');
     }
-    const monthlyUpdate = await AgencyMonthlyFiles.updateOne(
-      {
-        agencyId: report.agencyId,
-        period: report.agencyPeriod || report.generalData.inspectionDate.slice(0, 7),
-        'archivos.archivo2.systemReportId': report.reportId,
-        'archivos.archivo2.reportRevision': revision,
-        'archivos.archivo2.generatedExcelStatus': { $in: ['queued', 'processing'] },
-      },
-      {
+    const monthlyFilter = {
+      agencyId: report.agencyId,
+      period: report.agencyPeriod || report.generalData.inspectionDate.slice(0, 7),
+      'archivos.archivo2.systemReportId': report.reportId,
+      'archivos.archivo2.reportRevision': revision,
+      'archivos.archivo2.generatedExcelStatus': { $in: ['queued', 'processing'] },
+    };
+    const readyFields = {
+      'archivos.archivo2.generatedExcelStatus': 'ready',
+      'archivos.archivo2.generatedExcelRevision': revision,
+      'archivos.archivo2.generatedExcelError': '',
+      'archivos.archivo2.generatedExcelTemplateVersion': generated.templateVersion,
+      'archivos.archivo2.systemNombre': generated.downloadFileName,
+      'archivos.archivo2.systemDriveId': stored.driveFileId,
+      'archivos.archivo2.systemRuta': stored.folderId,
+    };
+    const driveMonthlyUpdate = await AgencyMonthlyFiles.updateOne({
+      ...monthlyFilter,
+      'archivos.archivo2.mode': 'drive',
+    }, { $set: readyFields });
+    const monthlyUpdate = driveMonthlyUpdate.matchedCount
+      ? driveMonthlyUpdate
+      : await AgencyMonthlyFiles.updateOne({
+        ...monthlyFilter,
+        'archivos.archivo2.mode': 'system',
+      }, {
         $set: {
+          ...readyFields,
           'archivos.archivo2.nombre': generated.downloadFileName,
           'archivos.archivo2.driveId': stored.driveFileId,
           'archivos.archivo2.ruta': stored.folderId,
-          'archivos.archivo2.generatedExcelStatus': 'ready',
-          'archivos.archivo2.generatedExcelRevision': revision,
-          'archivos.archivo2.generatedExcelError': '',
-          'archivos.archivo2.generatedExcelTemplateVersion': generated.templateVersion,
         },
-      },
-    );
+      });
     if (monthlyUpdate.matchedCount === 0) {
       throw new Error('No se encontró el archivo mensual correspondiente al reporte generado.');
     }

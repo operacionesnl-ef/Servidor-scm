@@ -20,7 +20,10 @@ const { kickRepExcelWorker } = require('../services/repExcelWorker');
 const { kickRepAnxWorker } = require('../services/repAnxWorker');
 const { enqueueGeneration } = require('../../services/generationQueue');
 const { logConsoleEvent } = require('../../../utils/serverLogger');
+const { canSavePeriod } = require('../../../utils/reportPeriodAccess');
+const { getReviewIntervalMonths } = require('../../../utils/reviewPeriod');
 const {
+  buildDownloadFileName,
   RepExcelError,
   TEMPLATE_VERSION,
 } = require('../services/repExcelGenerator');
@@ -188,7 +191,8 @@ async function createRepReport(req, res, next) {
       if (!finding.findingId) finding.findingId = crypto.randomUUID();
     });
     const agency = await getAccessibleAgency(req.user, req.body.agencyId);
-    if (!req.body.calendarEventId) {
+    const isAdminDeveloper = ADMIN_ROLES.has(String(req.user?.rol || '').trim().toLowerCase());
+    if (!req.body.calendarEventId && !isAdminDeveloper) {
       throw new RepRequestError(400, 'El REP debe estar relacionado con una programación de recorrido.');
     }
     let calendarEvent = null;
@@ -215,6 +219,9 @@ async function createRepReport(req, res, next) {
       value.generalData.startTime = startParts.time;
       value.generalData.endTime = endParts.time;
     }
+    if (!canSavePeriod(req.user, value.generalData.inspectionDate)) {
+      throw new RepRequestError(403, 'Solo admin y developer pueden guardar un REP de un período anterior.');
+    }
     const idempotencyKey = value.idempotencyKey || crypto.randomUUID();
     const existing = await RepReport.findOne({ idempotencyKey });
     if (existing) {
@@ -229,13 +236,15 @@ async function createRepReport(req, res, next) {
       logConsoleEvent('rep_create_idempotent', { reportId: existing.reportId, revision: existing.revision });
       return res.status(200).json({ success: true, data: { report: responseReport } });
     }
-    const reportForVisit = await RepReport.findOne({
-      agencyId: agency._id,
-      calendarEventId: calendarEvent._id,
-      status: { $ne: 'archived' },
-    });
-    if (reportForVisit) {
-      throw new RepRequestError(409, 'Ya existe un REP para este recorrido. Abre el reporte existente para continuar.');
+    if (calendarEvent) {
+      const reportForVisit = await RepReport.findOne({
+        agencyId: agency._id,
+        calendarEventId: calendarEvent._id,
+        status: { $ne: 'archived' },
+      });
+      if (reportForVisit) {
+        throw new RepRequestError(409, 'Ya existe un REP para este recorrido. Abre el reporte existente para continuar.');
+      }
     }
     const reportPeriod = value.generalData.inspectionDate.slice(0, 7);
     const monthlyFiles = await AgencyMonthlyFiles.findOne({
@@ -243,10 +252,7 @@ async function createRepReport(req, res, next) {
       period: reportPeriod,
     }).lean();
     const linkedFile = monthlyFiles?.archivos?.archivo3;
-    if (linkedFile?.mode !== 'system' && (linkedFile?.driveId || linkedFile?.nombre)) {
-      throw new RepRequestError(409, 'El período ya tiene un archivo REP vinculado desde Drive; no se puede crear otro en modo Sistema.');
-    }
-    if (linkedFile?.mode === 'system' && linkedFile.systemReportId) {
+    if (linkedFile?.systemReportId) {
       const linkedReport = await RepReport.findOne({
         reportId: linkedFile.systemReportId,
         agencyId: agency._id,
@@ -576,6 +582,9 @@ async function updateRepReport(req, res, next) {
       startTime: report.generalData.startTime,
       endTime: report.generalData.endTime,
     };
+    if (!canSavePeriod(req.user, value.generalData.inspectionDate)) {
+      throw new RepRequestError(403, 'Solo admin y developer pueden guardar un REP de un período anterior.');
+    }
     const anx = await ANX.findOne({ reporteId: report.reportId });
     const before = JSON.stringify({
       generalData: report.generalData,
@@ -683,15 +692,23 @@ function canGenerateReport(user, report) {
 }
 
 async function getCurrentAnxFileName(report) {
-  let agencyCode = report.agencyFileNameCodeSnapshot;
-  if (!agencyCode) {
-    const agency = await Agency.findById(report.agencyId).select('fileNameCode').lean();
-    agencyCode = agency?.fileNameCode || '';
-  }
+  const agency = await Agency.findById(report.agencyId).select('fileNameCode reviewPeriods').lean();
+  const agencyCode = report.agencyFileNameCodeSnapshot || agency?.fileNameCode || '';
+  const intervalMonths = getReviewIntervalMonths(agency?.reviewPeriods, 'seguridad');
   return buildAnxFileName({
     generalData: report.generalData,
     agencyFileNameCodeSnapshot: agencyCode,
-  });
+  }, intervalMonths);
+}
+
+async function getCurrentRepFileName(report) {
+  const agency = await Agency.findById(report.agencyId).select('fileNameCode reviewPeriods').lean();
+  const intervalMonths = getReviewIntervalMonths(agency?.reviewPeriods, 'seguridad');
+  const reportValues = typeof report.toObject === 'function' ? report.toObject() : report;
+  return buildDownloadFileName({
+    ...reportValues,
+    agencyFileNameCodeSnapshot: report.agencyFileNameCodeSnapshot || agency?.fileNameCode || '',
+  }, intervalMonths);
 }
 
 async function queueRepExcel(req, res, next) {
@@ -704,10 +721,12 @@ async function queueRepExcel(req, res, next) {
       throw new RepRequestError(409, 'El REP cambió antes de solicitar el Excel. Guarda nuevamente para regenerarlo.');
     }
     const generated = report.generatedExcel || {};
+    const expectedFileName = await getCurrentRepFileName(report);
     if (generated.status === 'ready'
       && generated.reportRevision === report.revision
       && generated.templateVersion === TEMPLATE_VERSION
-      && generated.driveFileId) {
+      && generated.driveFileId
+      && generated.downloadFileName === expectedFileName) {
       try {
         const file = await getDriveFileMetadata(createGoogleDriveClient(), generated.driveFileId);
         if (!file.trashed) return res.json({ success: true, data: { generatedExcel: generated } });
@@ -807,6 +826,10 @@ async function generateRepAnx(req, res, next) {
     if (!canGenerateReport(req.user, report)) {
       throw new RepRequestError(403, 'No tienes permiso para generar el anexo fotográfico.');
     }
+    if (report.generatedExcel?.status !== 'ready'
+      || report.generatedExcel.reportRevision !== report.revision) {
+      throw new RepRequestError(409, 'El Excel REP debe estar listo antes de generar el ANX.');
+    }
     const anx = await ANX.findOne({ reporteId: report.reportId });
     if (!anx || anx.estado === 'cancelado' || !anx.totalImagenes) {
       throw new RepRequestError(404, 'El reporte no tiene fotografías asociadas en ANX.');
@@ -850,7 +873,7 @@ async function generateRepAnx(req, res, next) {
       revision: report.revision,
       userId: req.user._id,
     });
-    await syncRepReportMonthlyFile(report);
+    await syncRepReportMonthlyFile(report, { syncExcel: false });
     kickRepAnxWorker();
     return res.status(202).json({
       success: true,

@@ -34,6 +34,15 @@ function formatDate(value) {
   return `${day}/${month}/${year}`;
 }
 
+function formatMonthYear(value) {
+  if (!value) return '';
+  const [year, month] = value.slice(0, 10).split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, 1));
+  const monthName = new Intl.DateTimeFormat('es-MX', { month: 'short', timeZone: 'UTC' })
+    .format(date).replace(/\.$/, '').toLocaleLowerCase('es-MX');
+  return `${monthName}-${String(year).slice(-2)}`;
+}
+
 function getCheckFontColor(value) {
   const normalized = String(value ?? '').trim();
   if (!normalized) return '';
@@ -46,7 +55,12 @@ function buildDownloadFileName(report) {
   const [year, month, day] = report.generalData.inspectionDate.slice(0, 10).split('-').map(Number);
   const start = new Date(Date.UTC(year, month - 1, day));
   const end = new Date(start);
-  end.setUTCMonth(end.getUTCMonth() + 1);
+  const intervalMonths = Number.isInteger(report.reviewIntervalMonths)
+    && report.reviewIntervalMonths >= 1
+    && report.reviewIntervalMonths <= 120
+    ? report.reviewIntervalMonths
+    : 1;
+  end.setUTCMonth(end.getUTCMonth() + intervalMonths);
   if (end.getUTCDate() !== day) end.setUTCDate(0);
   const format = (value) => `(${String(value.getUTCDate()).padStart(2, '0')}-${String(value.getUTCMonth() + 1).padStart(2, '0')}-${String(value.getUTCFullYear()).slice(-2)})`;
   const code = String(report.agencyFileNameCodeSnapshot || 'SIN-CODIGO')
@@ -227,10 +241,18 @@ async function generateRevExcelBuffer(report, { logoBuffer, logoMimeType }) {
       }
       const field = marker === 'señalizacion' ? 'senalizacion' : marker;
       target.value = marker === 'fecha_carga' || marker === 'fecha_vencimiento'
-        ? formatDate(extinguisher[field])
+        ? formatMonthYear(extinguisher[field])
         : marker === 'ubicacion'
           ? extinguisher.ubicacion || report.agencyAddressSnapshot || ''
           : extinguisher[field] ?? '';
+      if (marker === 'status') {
+        const status = String(target.value).trim();
+        if (status === 'En mal estado') {
+          target.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } };
+        } else if (status === 'NR' || status === 'NT') {
+          target.fill = { type: 'pattern', pattern: 'none' };
+        }
+      }
       if (CHECK_MARKERS.has(marker)) {
         const fontColor = getCheckFontColor(target.value);
         if (fontColor) {

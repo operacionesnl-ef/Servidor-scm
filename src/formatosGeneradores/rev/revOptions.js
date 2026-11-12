@@ -6,7 +6,7 @@ const CHECK_FIELDS = [
   'manometro', 'manguera', 'ring', 'boquilla', 'senalizacion', 'libre', 'limpio',
 ];
 const CHECK_VALUES = ['', '1', '0', 'NA', 'NT', '2', 'NR'];
-const STATUS_OPTIONS = ['', 'En buen estado', 'Próximo a vencer', 'Vencido'];
+const STATUS_OPTIONS = ['', 'En buen estado', 'En mal estado', 'NR', 'NT'];
 module.exports = {
   CHECK_FIELDS,
   CHECK_VALUES,

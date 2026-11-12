@@ -7,6 +7,7 @@ const {
   findOrCreateFolder,
   uploadDriveFile,
 } = require('../../../services/googleDriveService');
+const { MONTH_NAMES_ES } = require('../../../utils/drivePatternUtils');
 
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const GENERATED_FILE_PROPERTIES = {
@@ -34,12 +35,13 @@ async function ensureGeneratedExcelFolder(drive, report) {
     throw new ForReportDriveStorageError('El período del reporte no es válido para crear su carpeta en Drive.');
   }
 
+  const monthName = MONTH_NAMES_ES[Number(period.slice(5, 7)) - 1];
   let parentId = rootFolderId;
   for (const folderName of [
     'Servicios EF',
     'Recorridos Medio Ambiente',
     period.slice(0, 4),
-    period.slice(5, 7),
+    monthName,
     brand,
   ]) {
     const folder = await findOrCreateFolder(drive, parentId, folderName);

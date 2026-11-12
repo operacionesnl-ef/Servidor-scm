@@ -37,7 +37,7 @@ function createGoogleDriveClient(config = getGoogleDriveOAuthConfig()) {
   }
   const oauthClient = createGoogleDriveOAuthClient(config);
   oauthClient.setCredentials({ refresh_token: config.refreshToken });
-  return google.drive({ version: 'v3', auth: oauthClient });
+  return google.drive({ version: 'v3', auth: oauthClient, timeout: 120_000 });
 }
 
 module.exports = {

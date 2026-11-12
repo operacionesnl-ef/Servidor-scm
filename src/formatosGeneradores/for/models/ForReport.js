@@ -37,6 +37,7 @@ const forReportSchema = new mongoose.Schema({
   agencyBrandSnapshot: { type: String, trim: true, maxlength: 80, default: '' },
   agencyFileNameCodeSnapshot: { type: String, trim: true, maxlength: 60, default: '' },
   agencyPeriod: { type: String, trim: true, match: /^\d{4}-(0[1-9]|1[0-2])$/, default: undefined },
+  reviewIntervalMonths: { type: Number, min: 1, max: 120, default: 1 },
   capturedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   status: { type: String, enum: ['draft', 'completed', 'archived'], default: 'draft', index: true },
   revision: { type: Number, min: 1, default: 1 },

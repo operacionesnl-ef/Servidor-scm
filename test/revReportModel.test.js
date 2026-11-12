@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const test = require('node:test');
 const mongoose = require('mongoose');
 const RevReport = require('../src/formatosGeneradores/rev/models/RevReport');
+const { canSavePeriod } = require('../src/utils/reportPeriodAccess');
 
 function makeReport(extinguisher) {
   const userId = new mongoose.Types.ObjectId();
@@ -54,4 +55,11 @@ test('REV rejects multiple extinguisher types and accepts free-text locations', 
 test('REV limits each report to 80 extinguishers', async () => {
   const report = makeReport(Array.from({ length: 81 }, (_, index) => ({ n: index + 1 })));
   await assert.rejects(report.validate(), /máximo de 80 extintores/);
+});
+
+test('only admin and developer can save REV reports for previous periods', () => {
+  assert.equal(canSavePeriod({ rol: 'admin' }, '2026-10-01', '2026-11'), true);
+  assert.equal(canSavePeriod({ rol: 'developer' }, '2026-10-01', '2026-11'), true);
+  assert.equal(canSavePeriod({ rol: 'consultor' }, '2026-10-01', '2026-11'), false);
+  assert.equal(canSavePeriod({ rol: 'consultor' }, '2026-11-01', '2026-11'), true);
 });

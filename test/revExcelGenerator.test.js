@@ -6,7 +6,7 @@ const test = require('node:test');
 const ExcelJS = require('exceljs');
 const JSZip = require('jszip');
 const sharp = require('sharp');
-const { DEFAULT_TEMPLATE_PATH, generateRevExcelBuffer } = require('../src/formatosGeneradores/rev/services/revExcelGenerator');
+const { DEFAULT_TEMPLATE_PATH, buildDownloadFileName, generateRevExcelBuffer } = require('../src/formatosGeneradores/rev/services/revExcelGenerator');
 
 async function getDrawingImage(zip, drawingNumber, pictureName) {
   const drawingPath = `xl/drawings/drawing${drawingNumber}.xml`;
@@ -51,7 +51,7 @@ test('genera REV con datos automáticos, copia fila de inspección y conserva la
     limpio: 'SI',
     fecha_carga: '2026-01-02',
     fecha_vencimiento: '2027-01-02',
-    status: 'VIGENTE',
+    status: n === 1 ? 'En buen estado' : 'En mal estado',
     observaciones: '',
     ubicacion: n === 1 ? 'Show room' : 'Taller',
   });
@@ -76,8 +76,13 @@ test('genera REV con datos automáticos, copia fila de inspección y conserva la
   assert.equal(inspection.getCell('X3').value, 'NOVIEMBRE');
   assert.equal(inspection.getCell('G4').value, 'Responsable');
   assert.equal(inspection.getCell('A11').value, 1);
+  assert.equal(inspection.getCell('U11').value, 'ene-26');
+  assert.equal(inspection.getCell('V11').value, 'ene-27');
+  assert.equal(inspection.getCell('W11').value, 'En buen estado');
   assert.equal(inspection.getCell('Y11').value, 'Show room');
   assert.equal(inspection.getCell('A12').value, 2);
+  assert.equal(inspection.getCell('W12').value, 'En mal estado');
+  assert.deepEqual(inspection.getCell('W12').fill.fgColor, { argb: 'FFFF0000' });
   assert.equal(inspection.getCell('Y12').value, 'Taller');
 
   const zip = await JSZip.loadAsync(generated.buffer);
@@ -89,6 +94,12 @@ test('genera REV con datos automáticos, copia fila de inspección y conserva la
   assert.match(drawing, /name="cleber"/);
   assert.doesNotMatch(drawing, /\{(?:mes|year|razon_social|sucursal)\}/);
   assert.equal(generated.downloadFileName, 'REV-EXT-SUC-01-(05-11-26)-(05-12-26).xlsx');
+  assert.equal(buildDownloadFileName({
+    ...report,
+    generalData: { inspectionDate: '2026-10-01' },
+    agencyFileNameCodeSnapshot: 'ALT-DEL-CUU',
+    reviewIntervalMonths: 2,
+  }), 'REV-EXT-ALT-DEL-CUU-(01-10-26)-(01-12-26).xlsx');
   const templateZip = await JSZip.loadAsync(await fs.readFile(DEFAULT_TEMPLATE_PATH));
   const expectedLogo = await sharp(logoBuffer).png().toBuffer();
   for (const drawingNumber of [1, 2]) {
@@ -184,4 +195,5 @@ test('colorea solo la fuente de las 13 respuestas REV según su valor', async ()
     assert.deepEqual(withoutColor(cell.font), withoutColor(templateCell.font), `${field} conserva el resto de la fuente`);
     assert.deepEqual(cell.fill, templateCell.fill, `${field} conserva su relleno`);
   });
+  assert.equal(inspection.getCell('W11').value, 'En buen estado');
 });

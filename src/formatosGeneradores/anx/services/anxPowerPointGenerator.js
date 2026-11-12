@@ -23,20 +23,25 @@ class AnxPowerPointError extends Error {
   }
 }
 
-function buildAnxFileName(report) {
-  const date = report.generalData.startDate || report.generalData.inspectionDate;
-  const [year, month, day] = date.slice(0, 10).split('-').map(Number);
-  const endDate = new Date(Date.UTC(year, month - 1, day));
-  endDate.setUTCMonth(endDate.getUTCMonth() + 1);
+function buildAnxFileName(report, intervalMonths = 1) {
+  const startDate = report.generalData.startDate || report.generalData.inspectionDate;
+  const [year, month, day] = startDate.slice(0, 10).split('-').map(Number);
+  const start = new Date(Date.UTC(year, month - 1, day));
+  const parsedInterval = Number(intervalMonths);
+  const interval = Number.isInteger(parsedInterval) && parsedInterval >= 1 && parsedInterval <= 120
+    ? parsedInterval
+    : 1;
+  const endDate = new Date(start);
+  endDate.setUTCMonth(endDate.getUTCMonth() + interval);
   if (endDate.getUTCDate() !== day) endDate.setUTCDate(0);
-  const dateToken = (value) => `(${String(value.getUTCDate()).padStart(2, '0')}-${String(value.getUTCMonth() + 1).padStart(2, '0')}-${String(value.getUTCFullYear()).slice(-2)})`;
+  const dateToken = (value) => `(${String(value.getUTCDate()).padStart(2, '0')}-${String(value.getUTCMonth() + 1).padStart(2, '0')}-${value.getUTCFullYear()})`;
   const code = String(report.agencyFileNameCodeSnapshot || 'SIN-CODIGO')
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^A-Za-z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80) || 'SIN-CODIGO';
-  return `ANX-FOT-${code}-${dateToken(new Date(Date.UTC(year, month - 1, day)))}-${dateToken(endDate)}.pptx`;
+  return `ANX-FOT-${code}-${dateToken(start)}-${dateToken(endDate)}.pptx`;
 }
 
 function escapeXml(value) {
