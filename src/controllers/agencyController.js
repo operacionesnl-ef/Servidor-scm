@@ -78,6 +78,7 @@ const ALLOWED_FIELDS = new Set([
   'nombre',
   'razonSocial',
   'direccion',
+  'ciudad',
   'longitud',
   'latitud',
   'correo',
@@ -103,6 +104,7 @@ const AGENCY_HISTORY_FIELD_LABELS = {
   nombre: 'Nombre',
   razonSocial: 'Razon Social',
   direccion: 'Dirección',
+  ciudad: 'Ciudad',
   longitud: 'Longitud',
   latitud: 'Latitud',
   correo: 'Correo',
@@ -248,10 +250,12 @@ const validateAgencyInput = (body, partial) => {
     }
   }
 
-  for (const field of ['razonSocial', 'direccion']) {
+  for (const field of ['razonSocial', 'direccion', 'ciudad']) {
     if (body[field] === undefined) continue;
     if (typeof body[field] !== 'string') {
       errors[field] = 'Must be a string';
+    } else if (field === 'ciudad' && body[field].trim().length > 200) {
+      errors[field] = 'Must not exceed 200 characters';
     } else {
       value[field] = body[field].trim();
     }
@@ -613,7 +617,7 @@ const updateAgency = async (req, res, next) => {
     if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
 
     const historyFields = [
-      'nombre', 'razonSocial', 'direccion', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente',
+      'nombre', 'razonSocial', 'direccion', 'ciudad', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente',
       'seguimiento', 'cc', 'cco', 'entidadFederativa', 'status', 'consultantId', 'fileNameCode', 'archivos',
       'marca', 'reviewPeriods',
     ];
@@ -621,7 +625,7 @@ const updateAgency = async (req, res, next) => {
       historyFields.map((field) => [field, historyValue(getAgencyField(agency, field))]),
     );
     for (const field of [
-      'nombre','razonSocial','direccion', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
+      'nombre','razonSocial','direccion', 'ciudad', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
       'cc', 'cco', 'entidadFederativa', 'status', 'consultantId',
       'marca',
       'fileNameCode',

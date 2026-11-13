@@ -420,14 +420,16 @@ async function saveReportContent(req, res, next) {
       if (reportForPeriod) {
         throw new RequestError(409, 'Ya existe un reporte del sistema para esta agencia y período. Debe actualizarse el reporte existente.');
       }
-      const previousReport = await ForReport.findOne({
-        agencyId: agency._id,
-        'generalData.inspectionDate': value.generalData.inspectionDate,
-        status: { $ne: 'archived' },
-      }).sort({ 'generalData.visitNumber': -1, createdAt: -1 }).select('generalData.visitNumber').lean();
-      value.generalData.visitNumber = Number.isInteger(previousReport?.generalData?.visitNumber)
-        ? previousReport.generalData.visitNumber + 1
-        : 1;
+      if (value.generalData.visitNumber === undefined) {
+        const previousReport = await ForReport.findOne({
+          agencyId: agency._id,
+          'generalData.inspectionDate': value.generalData.inspectionDate,
+          status: { $ne: 'archived' },
+        }).sort({ 'generalData.visitNumber': -1, createdAt: -1 }).select('generalData.visitNumber').lean();
+        value.generalData.visitNumber = Number.isInteger(previousReport?.generalData?.visitNumber)
+          ? previousReport.generalData.visitNumber + 1
+          : 1;
+      }
       report = new ForReport({
         reportId: `FOR-${crypto.randomUUID()}`,
         idempotencyKey,

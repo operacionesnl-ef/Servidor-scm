@@ -4,6 +4,7 @@ const os = require('node:os');
 const { once } = require('node:events');
 const mongoose = require('mongoose');
 const JSZip = require('jszip');
+const { EJSON } = mongoose.mongo.BSON;
 const { getResourceMetrics } = require('../services/resourceMonitor');
 const Agency = require('../models/Agency');
 const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
@@ -332,14 +333,11 @@ async function exportCollection(req, res, next) {
   const cursor = model.collection.find({}, { projection: getExportProjection(model) });
   try {
     if (format === 'json') {
-      if (!await writeWithBackpressure(res, '[')) return;
-      let first = true;
       for await (const document of cursor) {
-        const item = JSON.stringify(sanitizeExportDocument(model, document));
-        if (!await writeWithBackpressure(res, `${first ? '' : ','}${item}`)) return;
-        first = false;
+        const item = EJSON.stringify(sanitizeExportDocument(model, document), { relaxed: true });
+        if (!await writeWithBackpressure(res, `${item}\n`)) return;
       }
-      res.end(']');
+      res.end();
       return;
     }
 
@@ -376,7 +374,10 @@ async function exportFullDatabase(req, res, next) {
       const sanitizedDocuments = model
         ? documents.map((document) => sanitizeExportDocument(model, document))
         : documents;
-      zip.file(`${name}.json`, JSON.stringify(sanitizedDocuments));
+      const contents = sanitizedDocuments
+        .map((document) => EJSON.stringify(document, { relaxed: true }))
+        .join('\n');
+      zip.file(`${name}.json`, contents ? `${contents}\n` : '');
     }
 
     const archive = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });

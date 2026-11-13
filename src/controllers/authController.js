@@ -13,6 +13,19 @@ const {
 
 const googleClient = new OAuth2Client();
 
+async function updateGoogleLoginMetadata(user) {
+  const result = await User.updateOne(
+    { correo: user.correo, status: 'activo' },
+    {
+      $set: {
+        'autenticacion.proveedor': 'google',
+        'autenticacion.ultimoAcceso': new Date(),
+      },
+    }
+  );
+  return result.matchedCount === 1;
+}
+
 async function completeGoogleLogin(payload, req, res, next) {
   if (!payload?.email || payload.email_verified !== true) {
     return res.status(401).json({ message: 'Google account email is not verified' });
@@ -24,9 +37,9 @@ async function completeGoogleLogin(payload, req, res, next) {
       return res.status(403).json({ message: 'This account is not authorized to access the application' });
     }
 
-    user.set('autenticacion.proveedor', 'google');
-    user.set('autenticacion.ultimoAcceso', new Date());
-    await user.save();
+    if (!await updateGoogleLoginMetadata(user)) {
+      return res.status(403).json({ message: 'This account is not authorized to access the application' });
+    }
 
     const token = jwt.sign(
       { sub: user._id.toString(), correo: user.correo, client: 'legacy' },
@@ -64,11 +77,11 @@ async function completeGoogleWebLogin(payload, req, res, next) {
       return res.status(403).json({ message: 'This account is not authorized to access the application' });
     }
 
-    user.set('autenticacion.proveedor', 'google');
-    user.set('autenticacion.ultimoAcceso', new Date());
-    await user.save();
+    if (!await updateGoogleLoginMetadata(user)) {
+      return res.status(403).json({ message: 'This account is not authorized to access the application' });
+    }
 
-    const session = await createAuthSession(user._id);
+    const session = await createAuthSession(user.correo, user._id);
     await logServerEvent('session_started', { userId: user._id });
     res.set('Cache-Control', 'no-store, private');
     res.cookie(SESSION_COOKIE_NAME, session.token, getSessionCookieOptions(session.maxAge));

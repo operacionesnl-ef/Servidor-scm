@@ -11,12 +11,16 @@ const controller = require('../src/formatosGeneradores/for/controllers/forReport
 const originalAgencyFindOne = Agency.findOne;
 const originalReportFindOne = ForReport.findOne;
 const originalReportFindOneAndUpdate = ForReport.findOneAndUpdate;
+const originalReportSave = ForReport.prototype.save;
+const originalMonthlyFindOne = AgencyMonthlyFiles.findOne;
 const originalMonthlyFindOneAndUpdate = AgencyMonthlyFiles.findOneAndUpdate;
 
 afterEach(() => {
   Agency.findOne = originalAgencyFindOne;
   ForReport.findOne = originalReportFindOne;
   ForReport.findOneAndUpdate = originalReportFindOneAndUpdate;
+  ForReport.prototype.save = originalReportSave;
+  AgencyMonthlyFiles.findOne = originalMonthlyFindOne;
   AgencyMonthlyFiles.findOneAndUpdate = originalMonthlyFindOneAndUpdate;
 });
 
@@ -96,6 +100,58 @@ test('does not allow a regular user role to update a report', async () => {
     user: { _id: '507f1f77bcf86cd799439011', rol: 'user' },
   }, res, (error) => { throw error; });
   assert.equal(res.statusCode, 403);
+});
+
+test('persists the visit number submitted for a new report', async () => {
+  const agencyId = '507f1f77bcf86cd799439012';
+  const userId = '507f1f77bcf86cd799439011';
+  const idempotencyKey = 'request-key-0001';
+  let savedReport;
+  ForReport.findOne = (filter) => ({
+    select: (fields) => (filter.idempotencyKey
+      ? Promise.resolve(null)
+      : { lean: async () => null }),
+  });
+  ForReport.prototype.save = async function save() {
+    savedReport = this;
+    return this;
+  };
+  Agency.findOne = () => ({
+    select: () => ({
+      lean: async () => ({
+        _id: agencyId,
+        nombre: 'Agencia Norte',
+        razonSocial: 'Empresa Norte',
+        marca: 'Marca',
+        fileNameCode: 'AG-NOR',
+      }),
+    }),
+  });
+  AgencyMonthlyFiles.findOne = () => ({
+    select: () => ({ lean: async () => null }),
+  });
+  AgencyMonthlyFiles.findOneAndUpdate = async () => ({});
+
+  const res = makeResponse();
+  await controller.saveReportContent({
+    body: {
+      agencyId,
+      agencyPeriod: '2026-10',
+      generalData: {
+        inspectionDate: '2026-10-23',
+        observations: '',
+        visitNumber: 2,
+      },
+      environmentalAspects: [],
+      evidence: [],
+    },
+    get: (name) => (name === 'Idempotency-Key' ? idempotencyKey : undefined),
+    user: { _id: userId, rol: 'admin' },
+  }, res, (error) => { throw error; });
+
+  assert.equal(res.statusCode, 201);
+  assert.equal(savedReport.generalData.visitNumber, 2);
+  assert.equal(res.body.data.report.generalData.visitNumber, 2);
 });
 
 test('rejects an update with a stale revision without saving', async () => {

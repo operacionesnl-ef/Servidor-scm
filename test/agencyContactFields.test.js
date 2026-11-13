@@ -40,6 +40,28 @@ test('validates and trims agency company name and address', () => {
   assert.equal(value.direccion, 'Av. Central 123');
 });
 
+test('validates and trims the optional agency city', () => {
+  const { errors, value } = validateAgencyInput({
+    nombre: 'Agencia Centro',
+    entidadFederativa: 'Jalisco',
+    ciudad: '  Guadalajara  ',
+  }, false);
+
+  assert.deepEqual(errors, {});
+  assert.equal(value.ciudad, 'Guadalajara');
+  assert.equal(new Agency({ ...value }).validateSync(), undefined);
+});
+
+test('rejects an overlong agency city', () => {
+  const { errors } = validateAgencyInput({
+    nombre: 'Agencia Centro',
+    entidadFederativa: 'Jalisco',
+    ciudad: 'x'.repeat(201),
+  }, false);
+
+  assert.equal(errors.ciudad, 'Must not exceed 200 characters');
+});
+
 test('rejects non-string agency company name and address', () => {
   const { errors } = validateAgencyInput({
     nombre: 'Agencia Centro',

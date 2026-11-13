@@ -39,14 +39,15 @@ function readSessionCookie(request) {
   }
 }
 
-async function createAuthSession(userId) {
+async function createAuthSession(userEmail, userId) {
   const token = crypto.randomBytes(32).toString('base64url');
   const now = new Date();
   const absoluteExpiresAt = new Date(now.getTime() + ABSOLUTE_SESSION_MS);
   const expiresAt = new Date(Math.min(now.getTime() + IDLE_SESSION_MS, absoluteExpiresAt.getTime()));
 
   await AuthSession.create({
-    userId,
+    userEmail,
+    userIdString: String(userId),
     tokenHash: hashSessionToken(token),
     lastActivityAt: now,
     absoluteExpiresAt,

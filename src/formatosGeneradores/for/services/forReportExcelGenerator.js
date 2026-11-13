@@ -646,6 +646,34 @@ function updateRowVisibility(sheetXml, hiddenRows) {
   });
 }
 
+function updateApplicableRowHeights(sheetXml, markerLocations) {
+  const rows = new Set();
+  for (const category of Object.values(CATEGORY_CODES)) {
+    const markers = [...markerLocations.keys()].filter((marker) => (
+      new RegExp(`^\\{${category.answer}\\d+\\}$`).test(marker)
+    ));
+    for (const marker of markers) {
+      const location = markerLocations.get(marker)?.[0];
+      if (location) rows.add(Number(location.address.match(/\d+$/)[0]));
+    }
+  }
+  return sheetXml.replace(/<row\b([^>]*)>/g, (rowXml, attributes) => {
+    const rowNumber = Number(attributes.match(/\br="(\d+)"/)?.[1]);
+    if (!rows.has(rowNumber)) return rowXml;
+    const updatedAttributes = attributes
+      .replace(/\s+ht="[^"]*"/, '')
+      .replace(/\s+customHeight="[^"]*"/, '');
+    return `<row${updatedAttributes}>`;
+  });
+}
+
+async function autoFitApplicableRows({ zip, markerLocations, sheetFiles }) {
+  const sheetPath = sheetFiles.get('APLICA');
+  const sheetXml = await zip.file(sheetPath)?.async('string');
+  if (!sheetXml) throw new ForReportExcelError('No se pudo leer la hoja APLICA de la plantilla.');
+  zip.file(sheetPath, updateApplicableRowHeights(sheetXml, markerLocations));
+}
+
 async function hideNotApplicableCategoryRows({ zip, markerLocations, sheetFiles, notApplicableCategories }) {
   const hiddenRows = new Set();
   for (const categoryId of notApplicableCategories) {
@@ -845,6 +873,7 @@ async function generateForReportExcelBuffer(report, drive) {
     sheetFiles,
   });
   await hideUnusedEvidenceColumns({ zip, evidence, markerLocations, sheetFiles });
+  await autoFitApplicableRows({ zip, markerLocations, sheetFiles });
   await hideNotApplicableCategoryRows({
     zip,
     markerLocations,

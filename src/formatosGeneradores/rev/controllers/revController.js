@@ -20,6 +20,7 @@ const {
 const ALLOWED_ROLES = new Set(['admin', 'developer', 'consultor']);
 const ADMIN_ROLES = new Set(['admin', 'developer']);
 const REPORT_ID_PATTERN = /^REV-[a-f\d-]{36}$/i;
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{8,100}$/;
 const EXTINGUISHER_TEXT_FIELDS = new Set([
   'fecha_carga', 'fecha_vencimiento', 'observaciones',
 ]);
@@ -139,14 +140,32 @@ async function createRevReport(req, res, next) {
   try {
     const errors = validateData(req.body);
     if (errors.length) throw new RevRequestError(400, errors.join(' '));
+    const providedIdempotencyKey = req.body.idempotencyKey;
+    if (providedIdempotencyKey !== undefined
+      && !IDEMPOTENCY_KEY_PATTERN.test(providedIdempotencyKey || '')) {
+      throw new RevRequestError(400, 'Falta una clave de idempotencia válida.');
+    }
+    const idempotencyKey = providedIdempotencyKey || crypto.randomUUID();
     if (!canEdit(req.user)) throw new RevRequestError(403, 'No tienes permiso para crear un REV.');
     if (!canSavePeriod(req.user, req.body.generalData.inspectionDate)) {
       throw new RevRequestError(403, 'Solo admin y developer pueden guardar un REV de un período anterior.');
     }
     const agency = await getAccessibleAgency(req.user, req.body.agencyId);
-    const report = await RevReport.create({
+    const existing = await RevReport.findOne({ idempotencyKey });
+    if (existing) {
+      if (String(existing.agencyId) !== String(agency._id)
+        || String(existing.createdBy) !== String(req.user._id)
+        || existing.generalData.inspectionDate !== req.body.generalData.inspectionDate) {
+        throw new RevRequestError(409, 'La clave de solicitud ya se utilizó para otro REV.');
+      }
+      await syncRevReportMonthlyFile(existing);
+      return res.status(200).json({ success: true, data: serialize(existing) });
+    }
+    let report;
+    try {
+      report = await RevReport.create({
       reportId: `REV-${crypto.randomUUID()}`,
-      idempotencyKey: crypto.randomUUID(),
+      idempotencyKey,
       agencyId: agency._id,
       agencyNameSnapshot: agency.nombre,
       agencyLegalNameSnapshot: agency.razonSocial || '',
@@ -168,7 +187,19 @@ async function createRevReport(req, res, next) {
       })),
       createdBy: req.user._id,
       updatedBy: req.user._id,
-    });
+      });
+    } catch (createError) {
+      if (createError.code !== 11000) throw createError;
+      const duplicate = await RevReport.findOne({ idempotencyKey });
+      if (!duplicate
+        || String(duplicate.agencyId) !== String(agency._id)
+        || String(duplicate.createdBy) !== String(req.user._id)
+        || duplicate.generalData.inspectionDate !== req.body.generalData.inspectionDate) {
+        throw createError;
+      }
+      await syncRevReportMonthlyFile(duplicate);
+      return res.status(200).json({ success: true, data: serialize(duplicate) });
+    }
     await syncRevReportMonthlyFile(report);
     return res.status(201).json({ success: true, data: serialize(report) });
   } catch (error) {

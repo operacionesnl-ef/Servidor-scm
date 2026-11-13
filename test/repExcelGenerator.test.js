@@ -2,6 +2,8 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 const { test } = require('node:test');
 const ExcelJS = require('exceljs');
 const JSZip = require('jszip');
@@ -22,6 +24,8 @@ function makeReport(findings = [{}]) {
     agencyNameSnapshot: 'Sucursal Norte',
     agencyLegalNameSnapshot: 'Empresa Norte',
     agencyAddressSnapshot: 'Calle Uno 123',
+    agencyCitySnapshot: 'Monterrey',
+    agencyStateSnapshot: 'Nuevo León',
     agencyBrandSnapshot: 'MARCA',
     agencyFileNameCodeSnapshot: 'HYU-SEN-NL',
     generalData: {
@@ -86,6 +90,67 @@ test('validates the uploaded REP template sheets, markers, and duplicate action 
   const result = validateTemplate(workbook);
   assert.equal(result.mainSheet.name, 'REPORTE REVISION PISO');
   assert.equal(result.documentSheet.name, 'REVISION DOCUMENTAL');
+});
+
+test('replaces agency and period markers from snapshots and the recorrido start date', async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rep-template-'));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const tempTemplatePath = path.join(tempDir, 'REP-INS.xlsx');
+  const template = new ExcelJS.Workbook();
+  await template.xlsx.readFile(templatePath);
+  const sheet = template.getWorksheet('REPORTE REVISION PISO');
+  const markerCells = {
+    AA1: '{ciudad}',
+    AB1: '{estado}',
+    AC1: '{semana}',
+    AD1: '{year_mes}',
+    AE1: '{year_semana}',
+    AF1: '{marca}',
+  };
+  for (const [address, marker] of Object.entries(markerCells)) {
+    sheet.getCell(address).value = marker;
+  }
+  await template.xlsx.writeFile(tempTemplatePath);
+  const templateZip = await JSZip.loadAsync(await fs.readFile(tempTemplatePath));
+  const drawingPath = 'xl/drawings/drawing1.xml';
+  const drawing = await templateZip.file(drawingPath).async('string');
+  const drawingWithLogo = drawing.replace(
+    /(<xdr:pic>[\s\S]*?<xdr:cNvPr\b[^>]*\bname=")[^"]+(")/,
+    '$1logo$2',
+  );
+  assert.notEqual(drawingWithLogo, drawing);
+  templateZip.file(drawingPath, drawingWithLogo);
+  await fs.writeFile(tempTemplatePath, await templateZip.generateAsync({ type: 'nodebuffer' }));
+
+  const previousTemplatePath = process.env.REP_EXCEL_TEMPLATE_PATH;
+  process.env.REP_EXCEL_TEMPLATE_PATH = tempTemplatePath;
+  try {
+    const report = makeReport();
+    report.generalData.startDate = '2026-10-05';
+    const generated = await generateRepExcelBuffer(report, {
+      logoBuffer: await makeLogo(),
+      logoMimeType: 'image/png',
+    });
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(generated.buffer);
+    const main = workbook.getWorksheet('REPORTE REVISION PISO');
+
+    assert.equal(main.getCell('AA1').value, 'Monterrey');
+    assert.equal(main.getCell('AB1').value, 'Nuevo León');
+    assert.equal(main.getCell('AC1').value, '41');
+    assert.equal(main.getCell('AD1').value, '2026/10');
+    assert.equal(main.getCell('AE1').value, '2026/41');
+    assert.equal(main.getCell('AF1').value, 'MARCA');
+    assert.equal(main.getCell('B5').value, 'Monterrey');
+    assert.equal(main.getCell('C5').value, 'Nuevo León');
+    assert.equal(main.getCell('U5').value, '41');
+    assert.equal(main.getCell('X5').value, '2026/10');
+    assert.equal(main.getCell('Y5').value, '2026/41');
+    assert.equal(main.getCell('Z5').value, 'MARCA');
+  } finally {
+    if (previousTemplatePath === undefined) delete process.env.REP_EXCEL_TEMPLATE_PATH;
+    else process.env.REP_EXCEL_TEMPLATE_PATH = previousTemplatePath;
+  }
 });
 
 test('generates the workbook with general data, distinct actions, documentary values, and the brand logo', async () => {

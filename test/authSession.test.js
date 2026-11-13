@@ -44,8 +44,10 @@ test('stores only a hash and applies temporary idle and absolute expiry to each 
   let stored;
   AuthSession.create = async (record) => { stored = record; };
   try {
-    const session = await createAuthSession('507f1f77bcf86cd799439011');
+    const session = await createAuthSession('ana@example.com', '507f1f77bcf86cd799439011');
     assert.match(session.token, /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(stored.userEmail, 'ana@example.com');
+    assert.equal(stored.userIdString, '507f1f77bcf86cd799439011');
     assert.notEqual(stored.tokenHash, session.token);
     assert.equal(stored.tokenHash, hashSessionToken(session.token));
     assert.equal(stored.expiresAt.getTime() - stored.lastActivityAt.getTime(), IDLE_SESSION_MS);
@@ -113,6 +115,7 @@ test('web Google session login creates a cookie and does not return a bearer tok
   const originals = {
     verifyIdToken: OAuth2Client.prototype.verifyIdToken,
     findOne: User.findOne,
+    updateOne: User.updateOne,
     createSession: AuthSession.create,
     eventCreate: ServerEvent.create,
     clientId: process.env.GOOGLE_CLIENT_ID,
@@ -123,14 +126,17 @@ test('web Google session login creates a cookie and does not return a bearer tok
     correo: 'ana@example.com',
     rol: 'admin',
     status: 'activo',
-    set: () => {},
-    save: async () => {},
   };
   let storedSession;
+  let userUpdate;
   OAuth2Client.prototype.verifyIdToken = async () => ({
     getPayload: () => ({ email: 'ana@example.com', email_verified: true }),
   });
   User.findOne = async () => user;
+  User.updateOne = async (filter, update) => {
+    userUpdate = { filter, update };
+    return { matchedCount: 1 };
+  };
   AuthSession.create = async (record) => { storedSession = record; };
   ServerEvent.create = async () => ({});
   process.env.GOOGLE_CLIENT_ID = 'web.apps.googleusercontent.com';
@@ -139,12 +145,17 @@ test('web Google session login creates a cookie and does not return a bearer tok
     const response = createResponse();
     await googleSessionLogin({ body: { idToken: 'google-id-token' } }, response, (error) => { throw error; });
     assert.equal(response.statusCode, 200);
+    assert.deepEqual(userUpdate.filter, { correo: user.correo, status: 'activo' });
+    assert.equal(userUpdate.update.$set['autenticacion.proveedor'], 'google');
+    assert.equal(userUpdate.update.$set['autenticacion.ultimoAcceso'] instanceof Date, true);
+    assert.equal(storedSession.userEmail, user.correo);
     assert.deepEqual(response.body.user, {
       _id: user._id,
       nombre: user.nombre,
       correo: user.correo,
       rol: user.rol,
       status: user.status,
+      canEditForReports: false,
     });
     assert.equal(Object.hasOwn(response.body, 'token'), false);
     assert.equal(response.cookies[0].name, SESSION_COOKIE_NAME);
@@ -154,6 +165,7 @@ test('web Google session login creates a cookie and does not return a bearer tok
   } finally {
     OAuth2Client.prototype.verifyIdToken = originals.verifyIdToken;
     User.findOne = originals.findOne;
+    User.updateOne = originals.updateOne;
     AuthSession.create = originals.createSession;
     ServerEvent.create = originals.eventCreate;
     if (originals.clientId === undefined) delete process.env.GOOGLE_CLIENT_ID;
@@ -165,6 +177,7 @@ test('legacy web login issues only migration-tagged bearer tokens', async () => 
   const originals = {
     verifyIdToken: OAuth2Client.prototype.verifyIdToken,
     findOne: User.findOne,
+    updateOne: User.updateOne,
     eventCreate: ServerEvent.create,
     clientId: process.env.GOOGLE_CLIENT_ID,
     jwtSecret: process.env.JWT_SECRET,
@@ -175,13 +188,16 @@ test('legacy web login issues only migration-tagged bearer tokens', async () => 
     correo: 'ana@example.com',
     rol: 'user',
     status: 'activo',
-    set: () => {},
-    save: async () => {},
   };
+  let userUpdate;
   OAuth2Client.prototype.verifyIdToken = async () => ({
     getPayload: () => ({ email: 'ana@example.com', email_verified: true }),
   });
   User.findOne = async () => user;
+  User.updateOne = async (filter, update) => {
+    userUpdate = { filter, update };
+    return { matchedCount: 1 };
+  };
   ServerEvent.create = async () => ({});
   process.env.GOOGLE_CLIENT_ID = 'web.apps.googleusercontent.com';
   process.env.JWT_SECRET = 'legacy-session-migration-secret';
@@ -190,11 +206,14 @@ test('legacy web login issues only migration-tagged bearer tokens', async () => 
     const response = createResponse();
     await googleLogin({ body: { idToken: 'google-id-token' } }, response, (error) => { throw error; });
     assert.equal(response.statusCode, 200);
+    assert.deepEqual(userUpdate.filter, { correo: user.correo, status: 'activo' });
+    assert.equal(userUpdate.update.$set['autenticacion.proveedor'], 'google');
     assert.equal(jwt.decode(response.body.token).client, 'legacy');
     assert.equal(response.cookies.length, 0);
   } finally {
     OAuth2Client.prototype.verifyIdToken = originals.verifyIdToken;
     User.findOne = originals.findOne;
+    User.updateOne = originals.updateOne;
     ServerEvent.create = originals.eventCreate;
     if (originals.clientId === undefined) delete process.env.GOOGLE_CLIENT_ID;
     else process.env.GOOGLE_CLIENT_ID = originals.clientId;
@@ -211,13 +230,19 @@ test('accepts only configured browser origins for login and rejects cross-site m
   assert.equal(continued, false);
 
   const originalFind = AuthSession.findOne;
-  const originalFindUser = User.findById;
+  const originalFindUser = User.findOne;
   AuthSession.findOne = async () => ({
+    userEmail: 'ana@example.com',
+    userIdString: '507f1f77bcf86cd799439011',
     lastActivityAt: new Date(),
     absoluteExpiresAt: new Date(Date.now() + 60_000),
     save: async () => {},
   });
-  User.findById = async () => ({ status: 'activo' });
+  User.findOne = async (filter) => ({
+    _id: '507f1f77bcf86cd799439011',
+    status: 'activo',
+    correo: filter.correo,
+  });
   try {
     const response = createResponse();
     const request = {
@@ -240,7 +265,7 @@ test('accepts only configured browser origins for login and rejects cross-site m
     assert.equal(allowedRequest.user.status, 'activo');
   } finally {
     AuthSession.findOne = originalFind;
-    User.findById = originalFindUser;
+    User.findOne = originalFindUser;
   }
 });
 

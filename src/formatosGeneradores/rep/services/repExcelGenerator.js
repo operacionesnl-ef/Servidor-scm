@@ -9,6 +9,7 @@ const {
   DOCUMENT_MARKERS,
   FINDING_MARKERS,
   GENERAL_MARKERS,
+  OPTIONAL_GENERAL_MARKERS,
   REVIEW_ROW,
 } = require('../formats/repFormat');
 
@@ -68,7 +69,12 @@ function validateTemplate(workbook) {
   }
   const unknown = found
     .map(({ marker }) => marker)
-    .filter((marker) => ![...GENERAL_MARKERS, ...DOCUMENT_MARKERS, ...FINDING_MARKERS].includes(marker));
+    .filter((marker) => ![
+      ...GENERAL_MARKERS,
+      ...OPTIONAL_GENERAL_MARKERS,
+      ...DOCUMENT_MARKERS,
+      ...FINDING_MARKERS,
+    ].includes(marker));
   if (missing.length || unknown.length) {
     throw new RepExcelError([
       missing.length ? `faltan marcadores ${[...new Set(missing)].join(', ')}` : '',
@@ -87,26 +93,46 @@ function formatDate(value) {
   return `${day}/${month}/${year}`;
 }
 
+function getIsoWeek(value) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  const day = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - day);
+  const year = date.getUTCFullYear();
+  const firstDay = new Date(Date.UTC(year, 0, 1));
+  const week = Math.ceil((((date - firstDay) / 86400000) + 1) / 7);
+  return { year, week };
+}
+
 function buildGeneralValues(report) {
   const date = report.generalData.inspectionDate;
   const dateObject = new Date(`${date}T00:00:00.000Z`);
   const month = new Intl.DateTimeFormat('es-MX', { month: 'long', timeZone: 'UTC' }).format(dateObject).toLocaleUpperCase('es-MX');
   const year = date.slice(0, 4);
+  const periodDate = report.generalData.startDate || date;
+  const periodMonth = periodDate.slice(5, 7);
+  const isoWeek = getIsoWeek(periodDate);
   const start = report.generalData.startTime;
   const end = report.generalData.endTime;
   const company = (report.agencyLegalNameSnapshot || report.agencyNameSnapshot).toLocaleUpperCase('es-MX');
   const branch = (report.agencyNameSnapshot || '').toLocaleUpperCase('es-MX');
+  const city = report.agencyCitySnapshot || report.generalData.city || '';
   const startText = [formatDate(report.generalData.startDate || date), start].filter(Boolean).join(' ');
   const endText = [formatDate(report.generalData.endDate || date), end].filter(Boolean).join(' ');
   return new Map([
     ['razon_social', company],
     ['sucursal', branch],
+    ['ciudad', city],
+    ['estado', report.agencyStateSnapshot || ''],
+    ['marca', report.agencyBrandSnapshot || ''],
     ['direccion', report.agencyAddressSnapshot || ''],
     ['tipo_recorrido_or', report.generalData.visitType === 'ordinario' ? 'X' : ''],
     ['tipo_recorrido_ext', report.generalData.visitType === 'extraordinario' ? 'X' : ''],
     ['mes', month],
     ['year', year],
     ['año', year],
+    ['semana', String(isoWeek.week)],
+    ['year_mes', `${periodDate.slice(0, 4)}/${periodMonth}`],
+    ['year_semana', `${isoWeek.year}/${String(isoWeek.week).padStart(2, '0')}`],
     ['fecha_inicio', startText],
     ['hora_inicio', start],
     ['fecha_fin', endText],
@@ -275,12 +301,20 @@ function shiftWorksheetRanges(xml, delta) {
 
 function writeFindingRow(rowXml, rowNumber, finding, index, report, sharedStrings) {
   let result = replaceRowNumber(rowXml, rowNumber);
-  const values = findingValues(finding, index, report);
+  const values = new Map([
+    ...buildGeneralValues(report),
+    ...findingValues(finding, index, report),
+  ]);
   values.set('accion0', finding.correctiveAction);
   values.set('accion1', finding.preventiveAction);
   result = markerValuesForRow(result, sharedStrings, values);
   result = replaceRowCell(result, `A${rowNumber}`, report.agencyNameSnapshot || '', sharedStrings);
-  result = replaceRowCell(result, `B${rowNumber}`, report.generalData.city || '', sharedStrings);
+  result = replaceRowCell(
+    result,
+    `B${rowNumber}`,
+    report.agencyCitySnapshot || report.generalData.city || '',
+    sharedStrings,
+  );
   return replaceRowCell(result, `C${rowNumber}`, report.agencyStateSnapshot || '', sharedStrings);
 }
 
@@ -295,7 +329,13 @@ function writeFindingsToWorksheet(xml, findings, report, sharedStrings) {
   let firstFindingRow;
   const insertedFindingRows = [];
   if (!findings.length) {
-    const emptyValues = new Map([...FINDING_MARKERS, ...GENERAL_MARKERS, ...DOCUMENT_MARKERS, 'fecha_recorrido']
+    const emptyValues = new Map([
+      ...FINDING_MARKERS,
+      ...GENERAL_MARKERS,
+      ...OPTIONAL_GENERAL_MARKERS,
+      ...DOCUMENT_MARKERS,
+      'fecha_recorrido',
+    ]
       .map((marker) => [marker, '']));
     emptyValues.set('n', '');
     emptyValues.set('sancion', '');

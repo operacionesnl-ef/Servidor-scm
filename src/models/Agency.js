@@ -22,6 +22,7 @@ const agencySchema = new mongoose.Schema(
     nombre: { type: String, required: true, trim: true },
     razonSocial: { type: String, trim: true },
     direccion: { type: String, trim: true },
+    ciudad: { type: String, trim: true, maxlength: 200, default: '' },
     longitud: { type: Number, min: -180, max: 180 },
     latitud: { type: Number, min: -90, max: 90 },
     correo: { type: String, required: false, lowercase: true, trim: true },

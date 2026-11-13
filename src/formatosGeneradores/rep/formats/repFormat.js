@@ -44,9 +44,19 @@ const GENERAL_MARKERS = [
   'hora_fin',
 ];
 
+const OPTIONAL_GENERAL_MARKERS = [
+  'ciudad',
+  'estado',
+  'semana',
+  'year_mes',
+  'year_semana',
+  'marca',
+];
+
 module.exports = {
   DOCUMENT_MARKERS,
   FINDING_MARKERS,
   GENERAL_MARKERS,
+  OPTIONAL_GENERAL_MARKERS,
   REVIEW_ROW,
 };

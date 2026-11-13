@@ -28,6 +28,7 @@ const repReportSchema = new mongoose.Schema({
   agencyNameSnapshot: { type: String, required: true, trim: true, maxlength: 200 },
   agencyLegalNameSnapshot: { type: String, trim: true, maxlength: 200, default: '' },
   agencyAddressSnapshot: { type: String, trim: true, maxlength: 500, default: '' },
+  agencyCitySnapshot: { type: String, trim: true, maxlength: 200, default: '' },
   agencyStateSnapshot: { type: String, trim: true, maxlength: 100, default: '' },
   agencyBrandSnapshot: { type: String, trim: true, maxlength: 80, default: '' },
   agencyFileNameCodeSnapshot: { type: String, trim: true, maxlength: 60, default: '' },
