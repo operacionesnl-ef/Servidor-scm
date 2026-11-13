@@ -169,14 +169,17 @@ test('system metrics compare MongoDB storage to the configured limit', async () 
   }
 });
 
-test('JSON exports omit password hashes and unique user tokens', async () => {
+test('JSON exports use mongoimport-compatible Extended JSON and omit sensitive user fields', async () => {
   const originalFind = User.collection.find;
   let projection;
+  const objectId = new mongoose.Types.ObjectId();
+  const createdAt = new Date('2026-10-03T00:00:00.000Z');
   const cursor = {
     async *[Symbol.asyncIterator]() {
       yield {
-        _id: 'user-1',
+        _id: objectId,
         nombre: 'Ana',
+        createdAt,
         autenticacion: { proveedor: 'local', passwordHash: 'must-not-export' },
         tokenUnico: 'must-not-export-either',
       };
@@ -203,12 +206,18 @@ test('JSON exports omit password hashes and unique user tokens', async () => {
       response,
       (error) => { throw error; }
     );
-    const exported = JSON.parse(chunks.join(''));
+    const lines = chunks.join('').trimEnd().split('\n');
+    assert.equal(lines.length, 1);
+    const exported = mongoose.mongo.BSON.EJSON.parse(lines[0]);
     assert.equal(projection['autenticacion.passwordHash'], 0);
     assert.equal(projection.tokenUnico, 0);
-    assert.equal(exported[0].nombre, 'Ana');
-    assert.equal(exported[0].autenticacion.passwordHash, undefined);
-    assert.equal(exported[0].tokenUnico, undefined);
+    assert.equal(exported.nombre, 'Ana');
+    assert.ok(exported._id.equals(objectId));
+    assert.equal(exported.createdAt.toISOString(), createdAt.toISOString());
+    assert.equal(exported.autenticacion.passwordHash, undefined);
+    assert.equal(exported.tokenUnico, undefined);
+    assert.match(lines[0], /"\$oid"/);
+    assert.match(lines[0], /"\$date"/);
     assert.match(response.filename, /\.json$/);
   } finally {
     User.collection.find = originalFind;
@@ -242,9 +251,10 @@ test('full database export includes every non-system collection as JSON in a dat
     await exportFullDatabase({}, response, (error) => { throw error; });
     const JSZip = require('jszip');
     const archive = await JSZip.loadAsync(response.body);
+    const contents = await archive.file('archive_test.json').async('string');
     assert.match(response.filename, /^database-\d{4}-\d{2}-\d{2}\.zip$/);
     assert.equal(response.contentType, 'application/zip');
-    assert.deepEqual(JSON.parse(await archive.file('archive_test.json').async('string')), [
+    assert.deepEqual(contents.trimEnd().split('\n').map((line) => JSON.parse(line)), [
       { _id: 'record-1', value: 'preserved' },
     ]);
     assert.equal(archive.file('system.views.json'), null);
@@ -284,9 +294,9 @@ test('JSON exports never include authentication session token hashes', async () 
       response,
       (error) => { throw error; }
     );
-    const exported = JSON.parse(chunks.join(''));
+    const exported = mongoose.mongo.BSON.EJSON.parse(chunks.join('').trim());
     assert.equal(projection.tokenHash, 0);
-    assert.equal(exported[0].tokenHash, undefined);
+    assert.equal(exported.tokenHash, undefined);
   } finally {
     AuthSession.collection.find = originalFind;
   }

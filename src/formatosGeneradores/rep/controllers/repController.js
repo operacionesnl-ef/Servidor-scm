@@ -91,7 +91,7 @@ async function getAccessibleAgency(user, agencyId) {
   const filter = { _id: agencyId };
   if (role === 'consultor') filter.consultantId = user._id;
   const agency = await Agency.findOne(filter)
-    .select('_id nombre razonSocial direccion entidadFederativa brand marca fileNameCode consultantId')
+    .select('_id nombre razonSocial direccion ciudad entidadFederativa brand marca fileNameCode consultantId')
     .lean();
   if (!agency) throw new RepRequestError(404, 'No se encontró la agencia o no tienes acceso asignado.');
   return agency;
@@ -270,6 +270,7 @@ async function createRepReport(req, res, next) {
       agencyNameSnapshot: agency.nombre,
       agencyLegalNameSnapshot: agency.razonSocial || '',
       agencyAddressSnapshot: agency.direccion || '',
+      agencyCitySnapshot: agency.ciudad || '',
       agencyStateSnapshot: agency.entidadFederativa || '',
       agencyBrandSnapshot: getAgencyBrand(agency),
       agencyFileNameCodeSnapshot: agency.fileNameCode || '',

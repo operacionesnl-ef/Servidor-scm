@@ -33,7 +33,13 @@ const requireAuth = async (req, res, next) => {
     }
 
     try {
-      const user = await User.findById(session.userId);
+      let user;
+      if (session.userEmail) {
+        user = await User.findOne({ correo: session.userEmail });
+        if (user && String(user._id) !== session.userIdString) user = null;
+      } else {
+        user = await User.findById(session.userId);
+      }
       if (!user || user.status !== 'activo') {
         await revokeAuthSession(cookieToken);
         res.clearCookie(SESSION_COOKIE_NAME, getSessionCookieClearOptions());

@@ -78,11 +78,12 @@ async function processClaimedReport(report) {
   try {
     if (report.revision !== revision) return;
     const agency = await Agency.findById(report.agencyId)
-      .select('razonSocial direccion entidadFederativa brand marca fileNameCode reviewPeriods')
+      .select('razonSocial direccion ciudad entidadFederativa brand marca fileNameCode reviewPeriods')
       .lean();
     report.agencyBrandSnapshot ||= agency?.brand || agency?.marca || '';
     report.agencyFileNameCodeSnapshot ||= agency?.fileNameCode || '';
     report.agencyAddressSnapshot ||= agency?.direccion || '';
+    report.agencyCitySnapshot ||= agency?.ciudad || '';
     report.agencyLegalNameSnapshot ||= agency?.razonSocial || '';
     const intervalMonths = getReviewIntervalMonths(agency?.reviewPeriods, 'seguridad');
     const drive = createGoogleDriveClient();
@@ -133,6 +134,7 @@ async function processClaimedReport(report) {
           'drive.generatedFolderId': stored.folderId,
           agencyBrandSnapshot: report.agencyBrandSnapshot,
           agencyAddressSnapshot: report.agencyAddressSnapshot,
+          agencyCitySnapshot: report.agencyCitySnapshot,
           agencyLegalNameSnapshot: report.agencyLegalNameSnapshot,
         },
       },

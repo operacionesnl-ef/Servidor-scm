@@ -40,6 +40,7 @@ test('creates a REP snapshot for an assigned consultant and persists the defined
         nombre: 'Sucursal Norte',
         razonSocial: 'Empresa Norte',
         direccion: 'Calle Uno',
+        ciudad: 'Monterrey',
         entidadFederativa: 'Nuevo León',
         brand: 'MARCA-DIRECTA',
         marca: 'MARCA',
@@ -53,12 +54,16 @@ test('creates a REP snapshot for an assigned consultant and persists the defined
     select: () => ({
       lean: async () => ({
         _id: calendarEventId,
-        startAt: new Date('2026-10-29T14:00:00.000Z'),
-        endAt: new Date('2026-10-29T16:00:00.000Z'),
+        startAt: new Date('2099-10-29T14:00:00.000Z'),
+        endAt: new Date('2099-10-29T16:00:00.000Z'),
       }),
     }),
   });
-  AgencyMonthlyFiles.findOne = () => ({ lean: async () => null });
+  AgencyMonthlyFiles.findOne = () => {
+    const query = { lean: async () => null };
+    query.select = () => query;
+    return query;
+  };
   AgencyMonthlyFiles.findOneAndUpdate = async () => ({});
   RepReport.create = async (value) => {
     created = value;
@@ -82,7 +87,13 @@ test('creates a REP snapshot for an assigned consultant and persists the defined
         endDate: '2026-10-29',
         visitType: 'ordinario',
       },
-      findings: [{ area: 'Patio', element: 'Extintor', correctiveAction: 'Reparar', preventiveAction: 'Inspeccionar' }],
+      findings: [{
+        area: 'Patio',
+        element: 'Extintor',
+        legalBasis: 'NOM aplicable',
+        correctiveAction: 'Reparar',
+        preventiveAction: 'Inspeccionar',
+      }],
       documents: {},
     },
   }, response, (error) => { nextError = error; });
@@ -90,6 +101,7 @@ test('creates a REP snapshot for an assigned consultant and persists the defined
   assert.equal(nextError, undefined);
   assert.equal(response.statusCode, 201);
   assert.equal(created.agencyLegalNameSnapshot, 'Empresa Norte');
+  assert.equal(created.agencyCitySnapshot, 'Monterrey');
   assert.equal(created.agencyBrandSnapshot, 'MARCA-DIRECTA');
   assert.equal(created.agencyFileNameCodeSnapshot, 'HYU-SEN-NL');
   assert.equal(created.calendarEventId, calendarEventId);

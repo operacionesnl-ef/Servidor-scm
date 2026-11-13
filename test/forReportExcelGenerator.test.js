@@ -251,6 +251,24 @@ test('writes 0 and 1 as numeric cells in APLICA and leaves NA as text', async ()
   assert.equal(applies.getCell('C4').value, 'NA');
 });
 
+test('allows APLICA question rows to expand automatically for wrapped observations', async () => {
+  const observation = 'Observación detallada que debe ocupar varias líneas. '.repeat(12);
+  const environmentalAspects = [{
+    categoryId: ASPECTS[0].categoryId,
+    aspectId: ASPECTS[0].id,
+    answer: '1',
+    observation,
+  }];
+  const generated = await generateForReportExcelBuffer(makeReport({ environmentalAspects }), null);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(generated.buffer);
+  const applies = workbook.getWorksheet('APLICA');
+
+  assert.equal(applies.getCell('D2').value, observation);
+  assert.equal(applies.getCell('D2').alignment.wrapText, true);
+  assert.equal(applies.getRow(2).height, undefined);
+});
+
 test('hides the columns for every unused evidence block', async () => {
   const generated = await generateForReportExcelBuffer(makeReport(), null);
   const workbook = new ExcelJS.Workbook();
