@@ -52,6 +52,25 @@ test('validates and trims the optional agency city', () => {
   assert.equal(new Agency({ ...value }).validateSync(), undefined);
 });
 
+test('normalizes and validates the optional agency RFC', () => {
+  const { errors, value } = validateAgencyInput({
+    nombre: 'Agencia Centro',
+    entidadFederativa: 'Jalisco',
+    RFC: '  abc010203xyz  ',
+  }, false);
+
+  assert.deepEqual(errors, {});
+  assert.equal(value.RFC, 'ABC010203XYZ');
+  assert.equal(new Agency({ ...value }).validateSync(), undefined);
+
+  const invalid = validateAgencyInput({
+    nombre: 'Agencia Centro',
+    entidadFederativa: 'Jalisco',
+    RFC: 'x'.repeat(14),
+  }, false);
+  assert.equal(invalid.errors.RFC, 'Must not exceed 13 characters');
+});
+
 test('rejects an overlong agency city', () => {
   const { errors } = validateAgencyInput({
     nombre: 'Agencia Centro',

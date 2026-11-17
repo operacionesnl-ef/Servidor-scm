@@ -29,6 +29,7 @@ const authMiddleware = require('./middlewares/requireAuth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+app.set('trust proxy', 1);
 
 // ====== CORS + parsers ======
 app.use(cors({

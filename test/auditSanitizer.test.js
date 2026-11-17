@@ -7,6 +7,7 @@ test('redacts credential fields recursively and bounds request data', () => {
     googleAccessToken: 'secret-token',
     code: 'oauth-code',
     state: 'oauth-state',
+    curp: 'GODE561231HDFRRN09',
     nested: { passwordHash: 'secret-hash', value: 'visible' },
     values: Array.from({ length: 35 }, (_, index) => index),
   });
@@ -14,6 +15,7 @@ test('redacts credential fields recursively and bounds request data', () => {
   assert.equal(safe.googleAccessToken, '[redacted]');
   assert.equal(safe.code, '[redacted]');
   assert.equal(safe.state, '[redacted]');
+  assert.equal(safe.curp, '[redacted]');
   assert.equal(safe.nested.passwordHash, '[redacted]');
   assert.equal(safe.nested.value, 'visible');
   assert.equal(safe.values.length, 31);
