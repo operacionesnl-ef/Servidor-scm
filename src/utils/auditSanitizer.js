@@ -1,4 +1,4 @@
-const SECRET_KEY = /(token|password|secret|credential|authorization|^code$|^state$)/i;
+const SECRET_KEY = /(token|password|secret|credential|authorization|curp|^code$|^state$)/i;
 const MAX_AUDIT_DOCUMENT_BYTES = 10 * 1024 * 1024;
 
 function sanitizeAuditValue(value, options = {}, depth = 0) {

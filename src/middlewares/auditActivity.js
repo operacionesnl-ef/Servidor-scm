@@ -15,11 +15,17 @@ function auditActivity(req, res, next) {
 
     const finishedAt = new Date();
     const method = req.method;
-    const path = `${req.baseUrl}${req.path}`;
+    const rawPath = `${req.baseUrl}${req.path}`;
+    const path = rawPath.replace(
+      /^\/api\/publico\/formularios\/[^/]+/,
+      '/api/publico/formularios/[token]',
+    );
     const user = req.user;
     const readOnly = method === 'GET' || method === 'HEAD';
     const isForReportRequest = path.startsWith('/api/for-aud-amb');
     const isRepRequest = path.startsWith('/api/rep');
+    const isPublicFormularioRequest = path.startsWith('/api/publico/formularios/');
+    const isFormularioRecordsQuery = /^\/api\/formularios\/[^/]+\/registros$/.test(path) && readOnly;
     const reportRequestSummary = {
       reportId: req.params?.reportId,
       evidenceId: req.params?.evidenceId,
@@ -40,11 +46,23 @@ function auditActivity(req, res, next) {
       status: req.body?.status,
       findingCount: Array.isArray(req.body?.findings) ? req.body.findings.length : undefined,
     };
-    const safeRequestData = sanitizeAuditValue(isForReportRequest
+    const requestData = isPublicFormularioRequest
+      ? req.auditRequestSummary || { hasRequestData: method !== 'GET' }
+      : isFormularioRecordsQuery
+        ? {
+          page: req.query?.page,
+          limit: req.query?.limit,
+          hasSearch: Boolean(req.query?.search),
+          hasMarcaFilter: Boolean(req.query?.marcaId),
+          hasAgencyFilter: Boolean(req.query?.agenciaId),
+          status: req.query?.estado,
+        }
+        : (isForReportRequest
       ? Object.fromEntries(Object.entries(reportRequestSummary).filter(([, value]) => value !== undefined))
       : isRepRequest
         ? Object.fromEntries(Object.entries(repRequestSummary).filter(([, value]) => value !== undefined))
         : (readOnly ? req.query : req.body || {}));
+    const safeRequestData = sanitizeAuditValue(requestData);
     const entry = {
       timestamp: finishedAt.toISOString(),
       user: user

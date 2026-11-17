@@ -77,6 +77,7 @@ const updateAgencySearchPeriod = async (req, res, next) => {
 const ALLOWED_FIELDS = new Set([
   'nombre',
   'razonSocial',
+  'RFC',
   'direccion',
   'ciudad',
   'longitud',
@@ -103,6 +104,7 @@ const REQUIRED_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 const AGENCY_HISTORY_FIELD_LABELS = {
   nombre: 'Nombre',
   razonSocial: 'Razon Social',
+  RFC: 'RFC',
   direccion: 'Dirección',
   ciudad: 'Ciudad',
   longitud: 'Longitud',
@@ -250,14 +252,15 @@ const validateAgencyInput = (body, partial) => {
     }
   }
 
-  for (const field of ['razonSocial', 'direccion', 'ciudad']) {
+  for (const field of ['razonSocial', 'RFC', 'direccion', 'ciudad']) {
     if (body[field] === undefined) continue;
     if (typeof body[field] !== 'string') {
       errors[field] = 'Must be a string';
-    } else if (field === 'ciudad' && body[field].trim().length > 200) {
-      errors[field] = 'Must not exceed 200 characters';
+    } else if ((field === 'ciudad' && body[field].trim().length > 200)
+      || (field === 'RFC' && body[field].trim().length > 13)) {
+      errors[field] = `Must not exceed ${field === 'RFC' ? 13 : 200} characters`;
     } else {
-      value[field] = body[field].trim();
+      value[field] = field === 'RFC' ? body[field].trim().toLocaleUpperCase('es-MX') : body[field].trim();
     }
 
   }
@@ -528,15 +531,6 @@ const getAgencyById = async (req, res, next) => {
 const createAgency = async (req, res, next) => {
   const { errors, value } = validateAgencyInput(req.body, false);
   if (Object.keys(errors).length) return validationFailure(res, errors);
-  if (
-    ['fileNameCode', 'marca'].some((field) => Object.hasOwn(req.body || {}, field))
-    && req.user?.rol !== 'developer'
-  ) {
-    return res.status(403).json({
-      success: false,
-      message: 'Solo un developer puede editar la marca o el código de nombre de archivo.',
-    });
-  }
   if (value.consultantId !== undefined && !['admin', 'developer'].includes(req.user.rol)) {
     return res.status(403).json({
       success: false,
@@ -590,15 +584,6 @@ const updateAgency = async (req, res, next) => {
       message: 'Solo un developer puede editar las coordenadas de la agencia.',
     });
   }
-  if (
-    ['fileNameCode', 'marca'].some((field) => Object.hasOwn(req.body || {}, field))
-    && req.user?.rol !== 'developer'
-  ) {
-    return res.status(403).json({
-      success: false,
-      message: 'Solo un developer puede editar la marca o el código de nombre de archivo.',
-    });
-  }
   if (value.consultantId !== undefined && !['admin', 'developer'].includes(req.user.rol)) {
     return res.status(403).json({
       success: false,
@@ -617,7 +602,7 @@ const updateAgency = async (req, res, next) => {
     if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
 
     const historyFields = [
-      'nombre', 'razonSocial', 'direccion', 'ciudad', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente',
+      'nombre', 'razonSocial', 'RFC', 'direccion', 'ciudad', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente',
       'seguimiento', 'cc', 'cco', 'entidadFederativa', 'status', 'consultantId', 'fileNameCode', 'archivos',
       'marca', 'reviewPeriods',
     ];
@@ -625,7 +610,7 @@ const updateAgency = async (req, res, next) => {
       historyFields.map((field) => [field, historyValue(getAgencyField(agency, field))]),
     );
     for (const field of [
-      'nombre','razonSocial','direccion', 'ciudad', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
+      'nombre','razonSocial','RFC','direccion', 'ciudad', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
       'cc', 'cco', 'entidadFederativa', 'status', 'consultantId',
       'marca',
       'fileNameCode',

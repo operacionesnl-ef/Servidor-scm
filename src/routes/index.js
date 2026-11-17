@@ -9,6 +9,8 @@ const mailJobRoutes = require('./mailJobRoutes');
 const maillogRoutes = require('./maillogRoutes');
 const userRoutes = require('./userRoutes');
 const templateRoutes = require('./templateRoutes');
+const formularioRoutes = require('./formularioRoutes');
+const publicFormRoutes = require('./publicFormRoutes');
 const notificationRoutes = require('./notificationRoutes');
 const adminRoutes = require('./adminRoutes');
 const calendarRoutes = require('./calendarRoutes');
@@ -26,6 +28,7 @@ const denyConsultor = (req, res, next) => {
 };
 
 router.use('/auth', authRoutes);
+router.use('/publico/formularios', publicFormRoutes);
 router.use(requireAuth, (req, res, next) => {
   const isOrganizer = req.user?.rol === 'organizador';
   const path = req.path;
@@ -47,6 +50,7 @@ router.use(requireAuth, (req, res, next) => {
   return next();
 });
 router.use('/templates', requireAuth, denyConsultor, templateRoutes);
+router.use('/formularios', formularioRoutes);
 router.use('/agencies', agencyRoutes);
 router.use('/activity', requireAuth, denyConsultor, activityRoutes);
 router.use('/gmail', requireAuth, denyConsultor, gmailRoutes);
