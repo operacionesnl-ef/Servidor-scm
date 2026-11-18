@@ -389,7 +389,11 @@ function receiveRepFindingImage(req, res, next) {
 async function uploadRepFindingImage(req, res, next) {
   try {
     const report = req.repReport;
-    requireCanEdit(req.user, report);
+    const role = String(req.user?.rol || '').trim().toLowerCase();
+    const canUploadAsCreator = role === 'consultor'
+      && report.status === 'draft'
+      && String(report.createdBy) === String(req.user._id);
+    if (!canUploadAsCreator) requireCanEdit(req.user, report);
     const { findingId, imageId } = req.params;
     if (!IMAGE_ID_PATTERN.test(findingId || '') || !IMAGE_ID_PATTERN.test(imageId || '')) {
       throw new RepRequestError(400, 'El registro o identificador de foto no es válido.');

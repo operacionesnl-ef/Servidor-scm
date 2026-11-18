@@ -186,3 +186,35 @@ test('rejects a fifth photo for a finding', async () => {
   assert.equal(response.statusCode, 409);
   assert.match(response.body.message, /hasta 4 fotografías/);
 });
+
+test('allows a consultant to upload photos to their own draft REP', async () => {
+  const userId = new mongoose.Types.ObjectId();
+  ANX.findOne = async () => ({
+    imagenes: Array.from({ length: 4 }, (_, index) => ({
+      imageId: `photo-id-12345${index}`,
+      registroId: 'finding-123456',
+    })),
+  });
+  const response = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; return this; },
+  };
+  let nextError;
+
+  await controller.uploadRepFindingImage({
+    user: { _id: userId, rol: 'consultor' },
+    repReport: {
+      reportId: 'REP-123',
+      status: 'draft',
+      createdBy: userId,
+      findings: [{ findingId: 'finding-123456' }],
+    },
+    params: { findingId: 'finding-123456', imageId: 'photo-id-123456' },
+    file: { buffer: Buffer.from('image') },
+  }, response, (error) => { nextError = error; });
+
+  assert.equal(nextError, undefined);
+  assert.equal(response.statusCode, 409);
+  assert.match(response.body.message, /hasta 4 fotografías/);
+});

@@ -61,6 +61,11 @@ function canEdit(user) {
   return ADMIN_ROLES.has(role) || (role === 'consultor' && user?.canEditForReports === true);
 }
 
+function canCreate(user) {
+  const role = String(user?.rol || '').trim().toLowerCase();
+  return ADMIN_ROLES.has(role) || role === 'consultor';
+}
+
 async function loadRevReport(req, res, next, reportId) {
   try {
     if (!REPORT_ID_PATTERN.test(reportId || '')) return res.status(404).json({ success: false, message: 'No se encontró el REV.' });
@@ -146,7 +151,7 @@ async function createRevReport(req, res, next) {
       throw new RevRequestError(400, 'Falta una clave de idempotencia válida.');
     }
     const idempotencyKey = providedIdempotencyKey || crypto.randomUUID();
-    if (!canEdit(req.user)) throw new RevRequestError(403, 'No tienes permiso para crear un REV.');
+    if (!canCreate(req.user)) throw new RevRequestError(403, 'No tienes permiso para crear un REV.');
     if (!canSavePeriod(req.user, req.body.generalData.inspectionDate)) {
       throw new RevRequestError(403, 'Solo admin y developer pueden guardar un REV de un período anterior.');
     }
