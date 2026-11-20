@@ -27,6 +27,7 @@ async function findPublicForm(token) {
 function publicFormulario(form) {
   const config = form.configuracionFechas;
   return {
+    tituloCurso: form.tituloCurso || form.nombreCurso,
     nombreCurso: form.nombreCurso,
     areaTematica: form.areaTematica,
     descripcion: form.descripcion || '',
@@ -35,7 +36,8 @@ function publicFormulario(form) {
     fechaApertura: config?.fechaApertura || null,
     fechaCierre: config?.fechaCierre || null,
     duracionFormulario: config?.duracionFormulario || null,
-    fechaInicioVigencia: config?.fechaInicioVigencia || null,
+    fechaCurso: config?.fechaCurso || config?.fechaInicioVigencia || null,
+    fechaInicioVigencia: config?.fechaCurso || config?.fechaInicioVigencia || null,
     fechaFinVigencia: config?.fechaFinVigencia || null,
     duracionCursoHoras: config?.duracionCursoHoras || null,
     camposParticipante: Formulario.CAMPOS_PARTICIPANTE,
@@ -47,6 +49,21 @@ async function getPublicFormulario(req, res, next) {
     const form = await findPublicForm(req.params.token);
     if (!form) return publicError(res, 404, 'FORMULARIO_NO_ENCONTRADO', 'No se encontró el formulario solicitado.');
     return res.json({ success: true, data: publicFormulario(form) });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function getPublicFormularioShortUrl(req, res, next) {
+  if (!/^[A-Za-z0-9_-]{16}$/.test(req.params.codigo || '')) {
+    return publicError(res, 404, 'FORMULARIO_NO_ENCONTRADO', 'No se encontró el formulario solicitado.');
+  }
+  try {
+    const form = await Formulario.findOne({ codigoCorto: req.params.codigo })
+      .select('tokenPublico')
+      .lean();
+    if (!form) return publicError(res, 404, 'FORMULARIO_NO_ENCONTRADO', 'No se encontró el formulario solicitado.');
+    return res.json({ success: true, data: { tokenPublico: form.tokenPublico } });
   } catch (error) {
     return next(error);
   }
@@ -160,7 +177,7 @@ async function createPublicRegistro(req, res, next) {
     const agency = await Agency.findOne({
       _id: participant.agenciaId,
       status: 'activa',
-    }).select('_id nombre razonSocial rfc brand marca').lean();
+    }).select('_id nombre razonSocial RFC rfc brand marca').lean();
     if (!agency || brandKey(getAgencyBrand(agency)) !== brandKey(participant.marcaId)) {
       return publicError(res, 400, 'AGENCIA_NO_VALIDA', 'La agencia seleccionada no pertenece a la marca indicada o ya no está activa.');
     }
@@ -199,9 +216,10 @@ async function createPublicRegistro(req, res, next) {
           rfc: agency.rfc || agency.RFC || '',
         },
         datosConstancia: {
+          tituloCurso: form.tituloCurso || form.nombreCurso,
           nombreCurso: form.nombreCurso,
           areaTematica: form.areaTematica,
-          fechaInicioVigencia: form.configuracionFechas.fechaInicioVigencia,
+          fechaInicioVigencia: form.configuracionFechas.fechaCurso || form.configuracionFechas.fechaInicioVigencia,
           fechaFinVigencia: form.configuracionFechas.fechaFinVigencia,
           duracionHoras: form.configuracionFechas.duracionCursoHoras,
         },
@@ -230,6 +248,7 @@ async function createPublicRegistro(req, res, next) {
 
 module.exports = {
   getPublicFormulario,
+  getPublicFormularioShortUrl,
   getPublicMarcas,
   getPublicAgencias,
   createPublicRegistro,

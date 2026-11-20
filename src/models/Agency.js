@@ -21,6 +21,7 @@ const agencySchema = new mongoose.Schema(
   {
     nombre: { type: String, required: true, trim: true },
     razonSocial: { type: String, trim: true },
+    rfc: { type: String, trim: true, uppercase: true, maxlength: 13, default: '' },
     RFC: { type: String, trim: true, uppercase: true, maxlength: 13, default: '' },
     direccion: { type: String, trim: true },
     ciudad: { type: String, trim: true, maxlength: 200, default: '' },

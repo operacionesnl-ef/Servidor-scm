@@ -34,16 +34,16 @@ function createResponse() {
   };
 }
 
-test('parses administrator wall-time in America/Monterrey and calculates the close instant', () => {
-  const apertura = dateFromZonedInput('2026-11-17T08:00');
-  const cierre = calculateCloseDate(apertura, { valor: 7, unidad: 'dias' });
+test('parses course wall-time in America/Monterrey and closes registration one week later', () => {
+  const curso = dateFromZonedInput('2026-11-17T08:00');
+  const cierre = calculateCloseDate(curso);
 
-  assert.equal(apertura.toISOString(), '2026-11-17T14:00:00.000Z');
+  assert.equal(curso.toISOString(), '2026-11-17T14:00:00.000Z');
   assert.equal(cierre.toISOString(), '2026-11-24T14:00:00.000Z');
 });
 
-test('requires a valid duration, vigency dates and CURP structure', () => {
-  assert.throws(() => calculateCloseDate(new Date(), { valor: 0, unidad: 'dias' }));
+test('requires a valid course date, vigency dates and CURP structure', () => {
+  assert.throws(() => calculateCloseDate(null));
   assert.throws(() => dateFromZonedInput('2026-02-30T12:00'));
   assert.equal(isValidCurp('GODE561231HDFRRN00'), true);
   assert.equal(isValidCurp('GODE561231HDFRRN09'), false);
@@ -71,13 +71,13 @@ test('creates a fully configured form with fixed participant fields and a genera
 
   await createFormulario({
     body: {
+      tituloCurso: 'Prevención de riesgos',
       nombreCurso: '  Seguridad industrial ',
       areaTematica: 'Higiene y Seguridad',
       descripcion: '',
       configuracionFechas: {
         fechaApertura: '2099-01-01T08:00',
-        duracionFormulario: { valor: 7, unidad: 'dias' },
-        fechaInicioVigencia: '2099-01-10',
+        fechaCurso: '2099-01-10T09:00',
         fechaFinVigencia: '2099-01-11',
         duracionCursoHoras: 4,
       },
@@ -88,8 +88,11 @@ test('creates a fully configured form with fixed participant fields and a genera
   assert.equal(nextError, undefined);
   assert.equal(response.statusCode, 201);
   assert.match(saved.tokenPublico, /^[A-Za-z0-9_-]{43}$/);
+  assert.match(saved.codigoCorto, /^[A-Za-z0-9_-]{16}$/);
+  assert.equal(saved.tituloCurso, 'Prevención de riesgos');
   assert.equal(saved.nombreCurso, 'Seguridad industrial');
-  assert.equal(saved.configuracionFechas.fechaCierre.toISOString(), '2099-01-08T14:00:00.000Z');
+  assert.equal(saved.configuracionFechas.fechaCierre.toISOString(), '2099-01-17T15:00:00.000Z');
+  assert.equal(saved.agenteCapacitador, Formulario.DEFAULT_AGENT);
   assert.deepEqual(saved.camposParticipante, ['nombreCompleto', 'curp', 'puesto', 'marca', 'agencia']);
   assert.equal(response.body.data.estado, 'programado');
 });
@@ -198,6 +201,7 @@ test('creates a participant snapshot and returns a controlled duplicate-registra
   const form = {
     _id: formId,
     tokenPublico,
+    tituloCurso: 'Capacitación de seguridad',
     nombreCurso: 'Seguridad industrial',
     areaTematica: 'Higiene y Seguridad',
     agenteCapacitador: 'ANA GARCÍA',
@@ -218,12 +222,17 @@ test('creates a participant snapshot and returns a controlled duplicate-registra
     reservationReleased = true;
     return { matchedCount: 1 };
   };
+  let selectedAgencyFields;
   Agency.findOne = () => ({
-    select() { return this; },
+    select(fields) {
+      selectedAgencyFields = fields;
+      return this;
+    },
     lean: async () => ({
       _id: agencyId,
       nombre: 'Agencia Centro',
       razonSocial: 'Empresa de ejemplo',
+      rfc: 'ABC010203XYZ',
       brand: 'Marca Uno',
     }),
   });
@@ -256,8 +265,12 @@ test('creates a participant snapshot and returns a controlled duplicate-registra
   assert.equal(capturedRegistration.trabajador.puesto, 'SUPERVISOR');
   assert.equal(capturedRegistration.trabajador.agenteCapacitador, 'ANA GARCÍA');
   assert.equal(capturedRegistration.datosAgencia.nombreAgencia, 'Agencia Centro');
+  assert.match(selectedAgencyFields, /\bRFC\b/);
+  assert.equal(capturedRegistration.datosAgencia.rfc, 'ABC010203XYZ');
   assert.equal(capturedRegistration.datosConstancia.nombreCurso, 'Seguridad industrial');
   assert.equal(capturedRegistration.avisoPrivacidad.aceptado, true);
+  assert.equal(capturedRegistration.datosConstancia.tituloCurso, 'Capacitación de seguridad');
+  assert.equal(capturedRegistration.datosConstancia.nombreCurso, 'Seguridad industrial');
   assert.equal(reservationReleased, true);
   assert.equal(request.auditRequestSummary.curp, undefined);
 });

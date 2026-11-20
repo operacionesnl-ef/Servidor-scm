@@ -68,13 +68,11 @@ function dateFromZonedInput(value, dateOnly = false) {
   return result;
 }
 
-function calculateCloseDate(fechaApertura, duracionFormulario) {
-  const duration = Number(duracionFormulario?.valor);
-  const unitHours = { horas: 1, dias: 24, semanas: 168 }[duracionFormulario?.unidad];
-  if (!Number.isFinite(duration) || duration <= 0 || !unitHours) {
-    throw new Error('La duración del formulario debe ser mayor que cero y usar horas, días o semanas.');
+function calculateCloseDate(fechaCurso) {
+  if (!(fechaCurso instanceof Date) || Number.isNaN(fechaCurso.getTime())) {
+    throw new Error('La fecha del curso no es válida.');
   }
-  return new Date(fechaApertura.getTime() + duration * unitHours * 60 * 60 * 1000);
+  return new Date(fechaCurso.getTime() + 7 * 24 * 60 * 60 * 1000);
 }
 
 function calculateFormStatus(formulario, now = new Date()) {
