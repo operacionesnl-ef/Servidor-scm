@@ -822,10 +822,7 @@ async function loadTemplateBuffer(templateLocation) {
 }
 
 async function generateForReportExcelBuffer(report, drive) {
-  const templatePath = process.env.FOR_REPORT_EXCEL_TEMPLATE_PATH?.trim();
-  if (!templatePath) {
-    throw new ForReportExcelError('Falta configurar FOR_REPORT_EXCEL_TEMPLATE_PATH en el archivo .env.');
-  }
+  const templatePath = process.env.FOR_REPORT_EXCEL_TEMPLATE_PATH?.trim() || DEFAULT_TEMPLATE_PATH;
   let templateBuffer;
   try {
     templateBuffer = await loadTemplateBuffer(templatePath);

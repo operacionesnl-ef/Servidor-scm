@@ -62,6 +62,22 @@ test('validates every marker from the official workbook and replaces data withou
   assert.equal(generated.imageCount, 0);
 });
 
+test('uses the bundled template when no template path is configured', async () => {
+  const originalTemplatePath = process.env.FOR_REPORT_EXCEL_TEMPLATE_PATH;
+  delete process.env.FOR_REPORT_EXCEL_TEMPLATE_PATH;
+
+  try {
+    const generated = await generateForReportExcelBuffer(makeReport(), null);
+    assert.ok(generated.buffer.length);
+  } finally {
+    if (originalTemplatePath === undefined) {
+      delete process.env.FOR_REPORT_EXCEL_TEMPLATE_PATH;
+    } else {
+      process.env.FOR_REPORT_EXCEL_TEMPLATE_PATH = originalTemplatePath;
+    }
+  }
+});
+
 test('downloads a public Google Sheets template as an Excel workbook', async () => {
   const template = await fs.readFile(DEFAULT_TEMPLATE_PATH);
   const originalFetch = global.fetch;
