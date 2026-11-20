@@ -2,6 +2,7 @@ const express = require('express');
 const { rateLimit } = require('express-rate-limit');
 const {
   getPublicFormulario,
+  getPublicFormularioShortUrl,
   getPublicMarcas,
   getPublicAgencias,
   createPublicRegistro,
@@ -32,6 +33,7 @@ const publicRegistrationLimit = rateLimit({
 });
 
 router.use(publicReadLimit);
+router.get('/corto/:codigo', getPublicFormularioShortUrl);
 router.get('/:token', getPublicFormulario);
 router.get('/:token/marcas', getPublicMarcas);
 router.get('/:token/agencias/:marcaId', getPublicAgencias);

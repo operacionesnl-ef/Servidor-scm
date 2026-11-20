@@ -21,6 +21,7 @@ const datosAgenciaSchema = new mongoose.Schema(
 
 const datosConstanciaSchema = new mongoose.Schema(
   {
+    tituloCurso: { type: String, required: true },
     nombreCurso: { type: String, required: true },
     areaTematica: { type: String, required: true },
     fechaInicioVigencia: { type: Date, required: true },

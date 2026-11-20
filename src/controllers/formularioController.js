@@ -1,10 +1,10 @@
 const crypto = require('node:crypto');
 const ExcelJS = require('exceljs');
 const mongoose = require('mongoose');
+const Agency = require('../models/Agency');
 const Formulario = require('../models/Formulario');
 const RegistroFormulario = require('../models/RegistroFormulario');
 const {
-  FORM_TIME_ZONE,
   calculateCloseDate,
   calculateFormStatus,
   dateFromZonedInput,
@@ -19,6 +19,7 @@ const PROTECTED_FIELDS = new Set([
   'fechaCreacion',
   'fechaActualizacion',
   'fechaCierre',
+  'codigoCorto',
   'id',
   '_id',
 ]);
@@ -46,14 +47,19 @@ function rejectProtectedField(body) {
 function normalizeFormularioBody(body = {}) {
   const data = {
     nombreCurso: typeof body.nombreCurso === 'string' ? body.nombreCurso.trim().replace(/\s+/g, ' ') : '',
+    tituloCurso: typeof body.tituloCurso === 'string'
+      ? body.tituloCurso.trim().replace(/\s+/g, ' ')
+      : (typeof body.nombreCurso === 'string' ? body.nombreCurso.trim().replace(/\s+/g, ' ') : ''),
     areaTematica: typeof body.areaTematica === 'string' ? body.areaTematica.trim().replace(/\s+/g, ' ') : '',
     descripcion: typeof body.descripcion === 'string' ? body.descripcion.trim() : '',
     agenteCapacitador: typeof body.agenteCapacitador === 'string'
       ? body.agenteCapacitador.trim().replace(/\s+/g, ' ')
-      : '',
+      : Formulario.DEFAULT_AGENT,
   };
   const errors = {};
 
+  if (!data.tituloCurso) errors.tituloCurso = 'El título del curso es obligatorio.';
+  else if (data.tituloCurso.length > 120) errors.tituloCurso = 'El título no puede superar 120 caracteres.';
   if (!data.nombreCurso) errors.nombreCurso = 'El nombre del curso es obligatorio.';
   else if (data.nombreCurso.length > 120) errors.nombreCurso = 'El nombre no puede superar 120 caracteres.';
   if (!data.areaTematica) errors.areaTematica = 'El área temática es obligatoria.';
@@ -67,10 +73,11 @@ function normalizeFormularioBody(body = {}) {
   } catch (error) {
     errors.fechaApertura = error.message;
   }
+  const courseDate = input.fechaCurso ?? input.fechaInicioVigencia;
   try {
-    data.fechaInicioVigencia = dateFromZonedInput(input.fechaInicioVigencia, true);
+    data.fechaCurso = dateFromZonedInput(courseDate, !input.fechaCurso);
   } catch (error) {
-    errors.fechaInicioVigencia = error.message;
+    errors.fechaCurso = error.message;
   }
   try {
     data.fechaFinVigencia = dateFromZonedInput(input.fechaFinVigencia, true);
@@ -78,32 +85,26 @@ function normalizeFormularioBody(body = {}) {
     errors.fechaFinVigencia = error.message;
   }
 
-  const durationValue = Number(input.duracionFormulario?.valor);
-  const durationUnit = input.duracionFormulario?.unidad;
-  if (!Number.isFinite(durationValue) || durationValue <= 0) {
-    errors.duracionFormulario = 'La duración del formulario debe ser mayor que cero.';
-  } else {
-    data.duracionFormulario = { valor: durationValue, unidad: durationUnit };
-    if (!['horas', 'dias', 'semanas'].includes(durationUnit)) {
-      errors.duracionFormulario = 'Selecciona horas, días o semanas para la duración del formulario.';
-    } else if (data.fechaApertura) {
-      try {
-        data.fechaCierre = calculateCloseDate(data.fechaApertura, data.duracionFormulario);
-      } catch (error) {
-        errors.duracionFormulario = error.message;
-      }
+  if (data.fechaCurso) {
+    try {
+      data.fechaCierre = calculateCloseDate(data.fechaCurso);
+    } catch (error) {
+      errors.fechaCurso = error.message;
     }
   }
 
-  const durationCourse = Number(input.duracionCursoHoras);
+  const durationCourse = Number(input.duracionCursoHoras ?? 8);
   if (!Number.isFinite(durationCourse) || durationCourse <= 0) {
     errors.duracionCursoHoras = 'La duración de capacitación debe ser mayor que cero.';
   } else {
     data.duracionCursoHoras = durationCourse;
   }
-  if (data.fechaInicioVigencia && data.fechaFinVigencia
-    && data.fechaFinVigencia <= data.fechaInicioVigencia) {
-    errors.fechaFinVigencia = 'El fin de vigencia debe ser posterior al inicio.';
+  if (data.fechaApertura && data.fechaCurso && data.fechaApertura > data.fechaCurso) {
+    errors.fechaApertura = 'La apertura debe ser anterior o igual a la fecha del curso.';
+  }
+  if (data.fechaCurso && data.fechaFinVigencia
+    && data.fechaFinVigencia <= data.fechaCurso) {
+    errors.fechaFinVigencia = 'El fin de vigencia debe ser posterior a la fecha del curso.';
   }
 
   return { data, errors };
@@ -112,14 +113,18 @@ function normalizeFormularioBody(body = {}) {
 function serializeFormulario(form, cantidadParticipantes = 0) {
   return {
     _id: String(form._id),
+    tituloCurso: form.tituloCurso || form.nombreCurso,
     nombreCurso: form.nombreCurso,
     areaTematica: form.areaTematica,
     descripcion: form.descripcion || '',
     agenteCapacitador: form.agenteCapacitador || '',
-    configuracionFechas: form.configuracionFechas,
+    configuracionFechas: {
+      ...form.configuracionFechas,
+      fechaCurso: form.configuracionFechas?.fechaCurso || form.configuracionFechas?.fechaInicioVigencia,
+    },
     camposParticipante: Formulario.CAMPOS_PARTICIPANTE,
     tokenPublico: form.tokenPublico,
-    urlPublica: `/registro/${form.tokenPublico}`,
+    urlPublica: form.codigoCorto ? `/r/${form.codigoCorto}` : `/registro/${form.tokenPublico}`,
     estado: calculateFormStatus(form),
     cancelacion: form.cancelacion,
     creadoPor: form.creadoPor,
@@ -151,7 +156,10 @@ function getListFilter(query, now) {
   const filter = {};
   const search = String(query.search || '').trim();
   const area = String(query.areaTematica || '').trim();
-  if (search) filter.nombreCurso = { $regex: escapeRegExp(search), $options: 'i' };
+  if (search) {
+    const pattern = { $regex: escapeRegExp(search), $options: 'i' };
+    filter.$or = [{ nombreCurso: pattern }, { tituloCurso: pattern }];
+  }
   if (area) filter.areaTematica = { $regex: escapeRegExp(area), $options: 'i' };
   if (query.estado) {
     const statusFilter = getStatusFilter(String(query.estado), now);
@@ -228,15 +236,15 @@ async function normalizeFormularioInput(body) {
   const { data, errors } = normalizeFormularioBody(body);
   return {
     data: {
+      tituloCurso: data.tituloCurso,
       nombreCurso: data.nombreCurso,
       areaTematica: data.areaTematica,
       descripcion: data.descripcion,
       agenteCapacitador: data.agenteCapacitador,
       configuracionFechas: {
         fechaApertura: data.fechaApertura,
-        duracionFormulario: data.duracionFormulario,
         fechaCierre: data.fechaCierre,
-        fechaInicioVigencia: data.fechaInicioVigencia,
+        fechaCurso: data.fechaCurso,
         fechaFinVigencia: data.fechaFinVigencia,
         duracionCursoHoras: data.duracionCursoHoras,
       },
@@ -248,6 +256,10 @@ async function normalizeFormularioInput(body) {
 
 function newPublicToken() {
   return crypto.randomBytes(32).toString('base64url');
+}
+
+function newShortCode() {
+  return crypto.randomBytes(12).toString('base64url');
 }
 
 async function createFormulario(req, res, next) {
@@ -262,7 +274,14 @@ async function createFormulario(req, res, next) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         const tokenPublico = newPublicToken();
-        const initialForm = { ...data, tokenPublico, creadoPor: req.user._id, actualizadoPor: req.user._id };
+        const codigoCorto = newShortCode();
+        const initialForm = {
+          ...data,
+          tokenPublico,
+          codigoCorto,
+          creadoPor: req.user._id,
+          actualizadoPor: req.user._id,
+        };
         initialForm.estado = calculateFormStatus(initialForm);
         formulario = await Formulario.create(initialForm);
         break;
@@ -369,12 +388,40 @@ async function getFormularioQR(req, res, next) {
     return res.status(404).json({ success: false, message: 'Formulario no encontrado.' });
   }
   try {
-    const formulario = await Formulario.findById(req.params.id).select('_id tokenPublico').lean();
+    const formulario = await Formulario.findById(req.params.id).select('_id tokenPublico codigoCorto').lean();
     if (!formulario) return res.status(404).json({ success: false, message: 'Formulario no encontrado.' });
-    return res.json({ success: true, data: { urlPublica: `/registro/${formulario.tokenPublico}` } });
+    const codigoCorto = await ensureShortCode(formulario);
+    return res.json({ success: true, data: { urlPublica: `/r/${codigoCorto}` } });
   } catch (error) {
     return next(error);
   }
+}
+
+async function ensureShortCode(formulario) {
+  if (formulario.codigoCorto) return formulario.codigoCorto;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const updated = await Formulario.findOneAndUpdate(
+        {
+          _id: formulario._id,
+          $or: [
+            { codigoCorto: { $exists: false } },
+            { codigoCorto: null },
+            { codigoCorto: '' },
+          ],
+        },
+        { $set: { codigoCorto: newShortCode() } },
+        { new: true },
+      ).select('_id codigoCorto').lean();
+      if (updated?.codigoCorto) return updated.codigoCorto;
+
+      const current = await Formulario.findById(formulario._id).select('_id codigoCorto').lean();
+      if (current?.codigoCorto) return current.codigoCorto;
+    } catch (error) {
+      if (error?.code !== 11000 || attempt === 4) throw error;
+    }
+  }
+  throw new Error('No se pudo asignar un enlace corto al formulario.');
 }
 
 function buildRegistrationFilter(formularioId, query) {
@@ -435,15 +482,39 @@ function excelCell(value) {
   return /^[=+\-@]/.test(text) ? `'${text}` : text;
 }
 
+function excelDateCell(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Monterrey',
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.month}/${values.day}/${values.year}`;
+}
+
 async function exportFormularioRegistros(req, res, next) {
   if (!mongoose.isValidObjectId(req.params.id)) {
     return res.status(404).json({ success: false, message: 'Formulario no encontrado.' });
   }
   try {
-    const formulario = await Formulario.findById(req.params.id).select('nombreCurso').lean();
+    const formulario = await Formulario.findById(req.params.id)
+      .select('tituloCurso nombreCurso areaTematica agenteCapacitador configuracionFechas')
+      .lean();
     if (!formulario) return res.status(404).json({ success: false, message: 'Formulario no encontrado.' });
     const filter = buildRegistrationFilter(new mongoose.Types.ObjectId(req.params.id), req.query);
-    const safeName = formulario.nombreCurso.replace(/[^\p{L}\p{N}-]+/gu, '_').slice(0, 80) || 'formularios';
+    const agencyIds = await RegistroFormulario.distinct('agenciaId', filter);
+    const agencies = agencyIds.length
+      ? await Agency.find({ _id: { $in: agencyIds } }).select('_id rfc RFC').lean()
+      : [];
+    const rfcByAgencyId = new Map(agencies.map((agency) => [
+      String(agency._id),
+      agency.rfc || agency.RFC || '',
+    ]));
+    const safeName = (formulario.tituloCurso || formulario.nombreCurso).replace(/[^\p{L}\p{N}-]+/gu, '_').slice(0, 80) || 'formularios';
     res.status(200);
     res.set({
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -453,16 +524,19 @@ async function exportFormularioRegistros(req, res, next) {
     const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: res, useStyles: true });
     const sheet = workbook.addWorksheet('Participantes');
     sheet.columns = [
-      { header: 'Nombre completo', key: 'nombre', width: 30 },
+      { header: 'Nombre', key: 'nombre', width: 30 },
       { header: 'CURP', key: 'curp', width: 22 },
       { header: 'Puesto', key: 'puesto', width: 24 },
-      { header: 'Agente capacitador', key: 'agenteCapacitador', width: 30 },
       { header: 'Marca', key: 'marca', width: 24 },
       { header: 'Agencia', key: 'agencia', width: 30 },
       { header: 'Razón social', key: 'razonSocial', width: 36 },
       { header: 'RFC', key: 'rfc', width: 18 },
-      { header: 'Fecha de registro', key: 'fecha', width: 24 },
-      { header: 'Estado', key: 'estado', width: 16 },
+      { header: 'Nombre del curso', key: 'nombreCurso', width: 40 },
+      { header: 'Área temática', key: 'areaTematica', width: 24 },
+      { header: 'Agente capacitador', key: 'agenteCapacitador', width: 30 },
+      { header: 'Fecha inicio', key: 'fechaInicio', width: 16 },
+      { header: 'Fecha fin', key: 'fechaFin', width: 16 },
+      { header: 'Duración', key: 'duracion', width: 16 },
     ];
     sheet.getRow(1).font = { bold: true };
     const cursor = RegistroFormulario.find(filter).sort({ fechaRegistro: -1 }).lean().cursor();
@@ -471,13 +545,20 @@ async function exportFormularioRegistros(req, res, next) {
         nombre: excelCell(registro.trabajador.nombreCompleto),
         curp: excelCell(registro.trabajador.curp),
         puesto: excelCell(registro.trabajador.puesto),
-        agenteCapacitador: excelCell(registro.trabajador.agenteCapacitador),
         marca: excelCell(registro.marcaId),
         agencia: excelCell(registro.datosAgencia.nombreAgencia),
         razonSocial: excelCell(registro.datosAgencia.razonSocial),
-        rfc: excelCell(registro.datosAgencia.rfc),
-        fecha: registro.fechaRegistro,
-        estado: excelCell(registro.estado),
+        rfc: excelCell(registro.datosAgencia.rfc || rfcByAgencyId.get(String(registro.agenciaId))),
+        nombreCurso: excelCell(registro.datosConstancia.nombreCurso || formulario.nombreCurso),
+        areaTematica: excelCell(registro.datosConstancia.areaTematica || formulario.areaTematica),
+        agenteCapacitador: excelCell(registro.trabajador.agenteCapacitador || formulario.agenteCapacitador),
+        fechaInicio: excelDateCell(
+          registro.datosConstancia.fechaInicioVigencia
+            || formulario.configuracionFechas?.fechaCurso
+            || formulario.configuracionFechas?.fechaInicioVigencia,
+        ),
+        fechaFin: excelDateCell(registro.datosConstancia.fechaFinVigencia || formulario.configuracionFechas?.fechaFinVigencia),
+        duracion: '8 horas',
       }).commit();
     }
     sheet.commit();
