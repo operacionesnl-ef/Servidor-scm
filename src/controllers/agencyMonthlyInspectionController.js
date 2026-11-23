@@ -6,7 +6,11 @@ const AgencyMonthlyInspection = require('../models/AgencyMonthlyInspection');
 const CalendarEvent = require('../models/CalendarEvent');
 const { success } = require('../utils/response');
 const { recordAgencyHistory } = require('../services/agencyHistory');
-const { notifyConsultant } = require('../services/consultantNotifications');
+const { notifyAgencyConsultants } = require('../services/consultantNotifications');
+const {
+  getAgencyConsultantFilter,
+  getAgencyConsultants,
+} = require('../utils/agencyConsultants');
 
 const AUTHORIZATION_STATUSES = new Set(['pending', 'authorized', 'unauthorized']);
 
@@ -42,6 +46,11 @@ function serializeRecord(record) {
     period: record.period,
     authorizationStatus: record.authorizationStatus,
     visitStatus: record.visitStatus,
+    attendanceStatus: record.attendanceStatus || null,
+    attendanceConfirmedBy: record.attendanceConfirmedBy
+      ? String(record.attendanceConfirmedBy)
+      : null,
+    attendanceConfirmedAt: record.attendanceConfirmedAt || null,
     calendarEventId: record.calendarEventId ? String(record.calendarEventId) : null,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -49,7 +58,8 @@ function serializeRecord(record) {
 }
 
 async function findAgencyOr404(agencyId, res) {
-  const agency = await Agency.findById(agencyId).select('_id nombre consultantId status');
+  const agency = await Agency.findById(agencyId)
+    .select('_id nombre consultantId auxiliaryConsultantId status');
   if (!agency) {
     res.status(404).json({ success: false, message: 'Agency not found' });
     return null;
@@ -75,7 +85,7 @@ async function getMonthlyInspectionOverview(req, res, next) {
   if (!validPeriod(req.params.period, res)) return;
   try {
     const agencies = await Agency.find({
-      ...(req.user?.rol === 'consultor' ? { consultantId: req.user._id } : {}),
+      ...(req.user?.rol === 'consultor' ? getAgencyConsultantFilter(req.user._id) : {}),
     }).select('_id nombre').lean();
     const agencyIds = agencies.map((agency) => agency._id);
     const records = agencyIds.length
@@ -133,9 +143,26 @@ async function updateMonthlyAuthorization(req, res, next) {
       agencyId: req.params.id,
       period: req.params.period,
     }).select('authorizationStatus calendarEventId').lean();
+    const authorizationChanged = (previous?.authorizationStatus || 'pending') !== authorizationStatus;
+    const attendanceFields = authorizationChanged
+      ? authorizationStatus === 'authorized' && previous?.calendarEventId
+        ? {
+          attendanceStatus: 'pending',
+          attendanceConfirmedBy: null,
+          attendanceConfirmedAt: null,
+        }
+        : {
+          attendanceStatus: null,
+          attendanceConfirmedBy: null,
+          attendanceConfirmedAt: null,
+        }
+      : {};
     const record = await AgencyMonthlyInspection.findOneAndUpdate(
       { agencyId: req.params.id, period: req.params.period },
-      { $set: { authorizationStatus }, $setOnInsert: { visitStatus: 'scheduled' } },
+      {
+        $set: { authorizationStatus, ...attendanceFields },
+        $setOnInsert: { visitStatus: 'scheduled' },
+      },
       { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
     );
     if (record.calendarEventId) {
@@ -160,13 +187,16 @@ async function updateMonthlyAuthorization(req, res, next) {
           to: authorizationStatus,
         },
       });
-      if (agency.consultantId && authorizationStatus !== 'pending') {
+      if (getAgencyConsultants(agency).length && authorizationStatus !== 'pending') {
         const approved = authorizationStatus === 'authorized';
-        await notifyConsultant({
-          consultantId: agency.consultantId,
+        await notifyAgencyConsultants(agency, {
           title: approved ? 'Visita autorizada' : 'Visita no autorizada',
           message: approved
             ? `Se autorizó tu visita a ${agency.nombre} para el período ${req.params.period}.`
+            : `La visita a ${agency.nombre} para el período ${req.params.period} no fue autorizada.`,
+          auxiliaryTitle: approved ? 'Visita autorizada · Auxiliar' : 'Visita no autorizada · Auxiliar',
+          auxiliaryMessage: approved
+            ? `Se autorizó la visita a ${agency.nombre} para el período ${req.params.period}. Al programarse, recibirás una solicitud para confirmar quién asistirá.`
             : `La visita a ${agency.nombre} para el período ${req.params.period} no fue autorizada.`,
           notificationType: approved ? 'visit_authorized' : 'visit_not_authorized',
           actionUrl: `/agencias/${agency._id}?tab=inspections`,
@@ -289,7 +319,15 @@ async function scheduleMonthlyVisit(req, res, next) {
         // El ID quedó huérfano — limpiar y crear uno nuevo
         await AgencyMonthlyInspection.updateOne(
           { _id: record._id },
-          { $set: { calendarEventId: null, visitStatus: 'scheduled' } },
+          {
+            $set: {
+              calendarEventId: null,
+              visitStatus: 'scheduled',
+              attendanceStatus: null,
+              attendanceConfirmedBy: null,
+              attendanceConfirmedAt: null,
+            },
+          },
         );
         record.calendarEventId = null;
       }
@@ -302,7 +340,15 @@ async function scheduleMonthlyVisit(req, res, next) {
       // Reservar el ID en el registro antes de escribir en CalendarEvent
       const reserved = await AgencyMonthlyInspection.updateOne(
         { _id: record._id, calendarEventId: null },
-        { $set: { calendarEventId: newEventId, visitStatus: 'scheduled' } },
+        {
+          $set: {
+            calendarEventId: newEventId,
+            visitStatus: 'scheduled',
+            attendanceStatus: agency.auxiliaryConsultantId ? 'pending' : null,
+            attendanceConfirmedBy: null,
+            attendanceConfirmedAt: null,
+          },
+        },
       );
 
       if (!reserved.modifiedCount) {
@@ -326,19 +372,30 @@ async function scheduleMonthlyVisit(req, res, next) {
     // ── Actualizar visitStatus a 'scheduled' si no lo estaba ya ─────────
     await AgencyMonthlyInspection.updateOne(
       { _id: record._id },
-      { $set: { visitStatus: 'scheduled', calendarEventId: event._id } },
+      {
+        $set: {
+          visitStatus: 'scheduled',
+          calendarEventId: event._id,
+          attendanceStatus: agency.auxiliaryConsultantId ? 'pending' : null,
+          attendanceConfirmedBy: null,
+          attendanceConfirmedAt: null,
+        },
+      },
     );
     const visitDate = new Date(event.startAt).toLocaleString('es-MX', {
       dateStyle: 'medium',
       timeStyle: 'short',
       timeZone: 'America/Mexico_City',
     });
-    await notifyConsultant({
-      consultantId: agency.consultantId,
+    await notifyAgencyConsultants(agency, {
       title: isRescheduling ? 'Cambio de visita' : 'Visita programada',
       message: isRescheduling
         ? `La visita a ${agency.nombre} cambió. Nueva fecha: ${visitDate}.`
         : `Tu visita a ${agency.nombre} está programada para el ${visitDate}.`,
+      auxiliaryTitle: isRescheduling
+        ? 'Cambio de visita · Confirmación pendiente'
+        : 'Visita programada · Confirmación pendiente',
+      auxiliaryMessage: `La visita a ${agency.nombre} está programada para el ${visitDate}. Confirma en Inspecciones si asistirás tú o el consultor principal.`,
       notificationType: isRescheduling ? 'visit_changed' : 'visit_scheduled',
       actionUrl: `/agencias/${agency._id}?tab=inspections`,
       agencyId: agency._id,
@@ -371,6 +428,7 @@ async function scheduleMonthlyVisit(req, res, next) {
         endAt: event.endAt,
         agencyId: String(event.agencyId),
         consultantId: String(event.consultantId),
+        consultantIds: getAgencyConsultants(agency).map(({ id }) => id),
       },
     }, 'Monthly visit scheduled', 201);
 
@@ -390,6 +448,81 @@ async function scheduleMonthlyVisit(req, res, next) {
   }
 }
 
+async function confirmMonthlyVisitAttendance(req, res, next) {
+  if (!validAgencyId(req.params.id, res) || !validPeriod(req.params.period, res)) return;
+  const { attendanceStatus } = req.body || {};
+  if (Object.keys(req.body || {}).some((field) => field !== 'attendanceStatus')
+    || !['primary', 'auxiliary'].includes(attendanceStatus)) {
+    return validationFailure(res, { attendanceStatus: 'Must be primary or auxiliary' });
+  }
+  if (req.user?.rol !== 'consultor') {
+    return res.status(403).json({ success: false, message: 'Only the assigned auxiliary consultant can confirm attendance.' });
+  }
+  try {
+    const agency = await Agency.findOne({
+      _id: req.params.id,
+      auxiliaryConsultantId: req.user._id,
+    }).select('_id nombre consultantId auxiliaryConsultantId');
+    if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
+    const record = await AgencyMonthlyInspection.findOne({
+      agencyId: agency._id,
+      period: req.params.period,
+    });
+    if (!record || record.authorizationStatus !== 'authorized'
+      || record.visitStatus !== 'scheduled' || !record.calendarEventId) {
+      return res.status(409).json({
+        success: false,
+        message: 'An authorized, scheduled visit is required before confirming attendance.',
+      });
+    }
+    const eventExists = await CalendarEvent.exists({
+      _id: record.calendarEventId,
+      agencyId: agency._id,
+      type: 'agency_visit',
+      authorized: true,
+    });
+    if (!eventExists) {
+      return res.status(409).json({ success: false, message: 'The scheduled visit is no longer available.' });
+    }
+    if (record.attendanceStatus !== 'pending') {
+      if (record.attendanceStatus === attendanceStatus) {
+        return success(res, serializeRecord(record), 'Visit attendance already confirmed');
+      }
+      return res.status(409).json({
+        success: false,
+        message: 'Visit attendance has already been confirmed.',
+      });
+    }
+    record.attendanceStatus = attendanceStatus;
+    record.attendanceConfirmedBy = req.user._id;
+    record.attendanceConfirmedAt = new Date();
+    await record.save();
+    const attendeeName = attendanceStatus === 'auxiliary'
+      ? 'el consultor auxiliar'
+      : 'el consultor principal';
+    await notifyAgencyConsultants(agency, {
+      title: 'Asistencia confirmada',
+      message: `Se confirmó que ${attendeeName} asistirá a la visita de ${agency.nombre}.`,
+      auxiliaryTitle: 'Confirmaste la asistencia',
+      auxiliaryMessage: `Confirmaste que ${attendeeName} asistirá a la visita de ${agency.nombre}.`,
+      notificationType: 'visit_attendance_confirmed',
+      actionUrl: `/agencias/${agency._id}?tab=inspections`,
+      agencyId: agency._id,
+      idempotencyKey: `monthly:${agency._id}:${req.params.period}:attendance:${attendanceStatus}:${record.updatedAt.getTime()}`,
+    });
+    await recordAgencyHistory({
+      agencyId: agency._id,
+      actor: req.user,
+      action: 'monthly_visit_attendance_confirmed',
+      summary: `Asistencia confirmada: ${attendeeName}`,
+      details: { period: req.params.period, attendanceStatus },
+    });
+    return success(res, serializeRecord(record), 'Visit attendance confirmed');
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function updateMonthlyVisitStatus(req, res, next) {
   if (!validAgencyId(req.params.id, res) || !validPeriod(req.params.period, res)) return;
   if (!['admin', 'developer', 'consultor'].includes(req.user?.rol)) {
@@ -401,7 +534,10 @@ async function updateMonthlyVisitStatus(req, res, next) {
   }
   try {
     if (req.user?.rol === 'consultor'
-      && !await Agency.exists({ _id: req.params.id, consultantId: req.user._id })) {
+      && !await Agency.exists({
+        _id: req.params.id,
+        ...getAgencyConsultantFilter(req.user._id),
+      })) {
       return res.status(404).json({ success: false, message: 'Agency not found' });
     }
     const record = await AgencyMonthlyInspection.findOne({
@@ -440,5 +576,6 @@ module.exports = {
   scheduleMonthlyVisit,
   updateMonthlyAuthorization,
   updateMonthlyVisitStatus,
+  confirmMonthlyVisitAttendance,
   validateVisitBody,
 };

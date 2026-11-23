@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const mongoose = require('mongoose');
 const Agency = require('../../../models/Agency');
+const { getAgencyConsultantFilter } = require('../../../utils/agencyConsultants');
 const RevReport = require('../models/RevReport');
 const { createGoogleDriveClient } = require('../../../config/googleDrive');
 const { syncRevReportMonthlyFile } = require('../services/revMonthlyFileSync');
@@ -48,7 +49,7 @@ async function getAccessibleAgency(user, agencyId) {
   const role = String(user?.rol || '').trim().toLowerCase();
   if (!ALLOWED_ROLES.has(role)) throw new RevRequestError(403, 'Tu cuenta no puede acceder a REV.');
   const filter = { _id: agencyId };
-  if (role === 'consultor') filter.consultantId = user._id;
+  if (role === 'consultor') Object.assign(filter, getAgencyConsultantFilter(user._id));
   const agency = await Agency.findOne(filter)
     .select('_id nombre razonSocial direccion brand marca fileNameCode consultantId')
     .lean();

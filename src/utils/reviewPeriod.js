@@ -1,5 +1,7 @@
 'use strict';
 
+const PERIOD_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/;
+
 function resolveReviewPeriod(inspectionPeriod, settings) {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(inspectionPeriod || '') || !settings?.startPeriod) {
     return inspectionPeriod;
@@ -15,6 +17,23 @@ function resolveReviewPeriod(inspectionPeriod, settings) {
   return `${scheduledYear}-${String(normalizedMonth).padStart(2, '0')}`;
 }
 
+function isReviewDue(reviewPeriods, category, year, month) {
+  const period = `${year}-${String(month).padStart(2, '0')}`;
+  const periodMatch = PERIOD_PATTERN.exec(period);
+  if (!periodMatch) return true;
+
+  const settings = reviewPeriods?.get?.(category) || reviewPeriods?.[category];
+  const startMatch = PERIOD_PATTERN.exec(String(settings?.startPeriod || ''));
+  if (!startMatch) return true;
+
+  const elapsedMonths = (
+    (Number(periodMatch[1]) - Number(startMatch[1])) * 12
+    + Number(periodMatch[2]) - Number(startMatch[2])
+  );
+  return elapsedMonths >= 0
+    && elapsedMonths % getReviewIntervalMonths(reviewPeriods, category) === 0;
+}
+
 function getReviewIntervalMonths(reviewPeriods, category) {
   const settings = reviewPeriods?.get?.(category) || reviewPeriods?.[category];
   const intervalMonths = Number(settings?.intervalMonths);
@@ -23,4 +42,4 @@ function getReviewIntervalMonths(reviewPeriods, category) {
     : 1;
 }
 
-module.exports = { getReviewIntervalMonths, resolveReviewPeriod };
+module.exports = { getReviewIntervalMonths, isReviewDue, resolveReviewPeriod };

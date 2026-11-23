@@ -7,6 +7,7 @@ const AgencyTag = require('../models/AgencyTag');
 const { AGENCY_TAG_COLORS } = require('../models/AgencyTag');
 const { success } = require('../utils/response');
 const { recordAgencyHistory } = require('../services/agencyHistory');
+const { getAgencyConsultantFilter } = require('../utils/agencyConsultants');
 
 const ROLES = new Set(['developer', 'admin', 'user']);
 
@@ -94,7 +95,7 @@ const getAgencyPersonalization = async (req, res, next) => {
         ? AgencyPersonalization.find({
           userId: req.user._id,
           favorite: true,
-          agencyId: { $in: await Agency.find({ consultantId: req.user._id }).distinct('_id') },
+          agencyId: { $in: await Agency.find(getAgencyConsultantFilter(req.user._id)).distinct('_id') },
         }).select('agencyId favorite tags').lean()
         : Agency.find({
           $or: [{ favorite: true }, { tags: { $exists: true, $ne: [] } }],
@@ -159,7 +160,10 @@ const updateAgencyPersonalization = async (req, res, next) => {
           message: 'Los consultores solo pueden actualizar sus favoritos personales.',
         });
       }
-      const agency = await Agency.findOne({ _id: id, consultantId: req.user._id }).select('_id');
+      const agency = await Agency.findOne({
+        _id: id,
+        ...getAgencyConsultantFilter(req.user._id),
+      }).select('_id');
       if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
       const preference = await AgencyPersonalization.findOneAndUpdate(
         { userId: req.user._id, agencyId: agency._id },

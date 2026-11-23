@@ -68,3 +68,58 @@ test('creating an agency assigned to a consultant saves a private deep-linked no
     Subscription.exists = originals.subscriptionExists;
   }
 });
+
+test('creating an agency gives the auxiliary consultant a distinct private notice', async () => {
+  const originals = {
+    agencyCreate: Agency.create,
+    userExists: User.exists,
+    historyCreate: AgencyHistory.create,
+    notificationFindOneAndUpdate: Notification.findOneAndUpdate,
+    subscriptionExists: Subscription.exists,
+  };
+  const consultantId = new mongoose.Types.ObjectId();
+  const auxiliaryConsultantId = new mongoose.Types.ObjectId();
+  const agencyId = new mongoose.Types.ObjectId();
+  const notices = [];
+  User.exists = async () => true;
+  Agency.create = async (input) => ({
+    ...input,
+    _id: agencyId,
+    updatedAt: new Date('2026-10-22T12:00:00.000Z'),
+  });
+  AgencyHistory.create = async (entry) => entry;
+  Notification.findOneAndUpdate = async (_filter, update) => {
+    notices.push(update.$setOnInsert);
+    return { _id: new mongoose.Types.ObjectId(), ...update.$setOnInsert };
+  };
+  Subscription.exists = async () => false;
+
+  try {
+    const res = response();
+    await createAgency({
+      user: { _id: new mongoose.Types.ObjectId(), rol: 'admin', nombre: 'Administración' },
+      body: {
+        nombre: 'Agencia Compartida',
+        entidadFederativa: 'Nuevo León',
+        consultantId: String(consultantId),
+        auxiliaryConsultantId: String(auxiliaryConsultantId),
+      },
+    }, res, (error) => { throw error; });
+
+    const auxiliaryNotice = notices.find(({ recipientUserId }) => (
+      String(recipientUserId) === String(auxiliaryConsultantId)
+    ));
+    assert.equal(res.statusCode, 201);
+    assert.equal(notices.length, 2);
+    assert.equal(auxiliaryNotice.notificationType, 'agency_assigned_auxiliary');
+    assert.match(auxiliaryNotice.title, /Auxiliar/);
+    assert.match(auxiliaryNotice.message, /consultor auxiliar/);
+    assert.notEqual(notices[0].idempotencyKey, notices[1].idempotencyKey);
+  } finally {
+    Agency.create = originals.agencyCreate;
+    User.exists = originals.userExists;
+    AgencyHistory.create = originals.historyCreate;
+    Notification.findOneAndUpdate = originals.notificationFindOneAndUpdate;
+    Subscription.exists = originals.subscriptionExists;
+  }
+});

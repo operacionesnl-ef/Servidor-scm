@@ -1,8 +1,15 @@
 'use strict';
 
 const { getFilePeriod } = require('./agencyFileRefreshUtils');
+const { isReviewDue } = require('./reviewPeriod');
 
-const FILE_KEYS = ['archivo1', 'archivo2', 'archivo3', 'archivo4'];
+const FILE_REPORTS = [
+  { key: 'archivo1', code: 'ANX', category: 'seguridad' },
+  { key: 'archivo2', code: 'FOR', category: 'ambiental' },
+  { key: 'archivo3', code: 'REP', category: 'seguridad' },
+  { key: 'archivo4', code: 'REV', category: 'seguridad' },
+];
+const FILE_KEYS = FILE_REPORTS.map(({ key }) => key);
 
 function getMexicoPeriod(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -16,12 +23,13 @@ function getMexicoPeriod(now = new Date()) {
   };
 }
 
-function agencyHasCurrentReports(agency, year, month) {
-  return FILE_KEYS.every((key) => {
+function getMissingCurrentReportCodes(agency, year, month) {
+  return FILE_REPORTS.filter(({ key, category }) => {
+    if (!isReviewDue(agency.reviewPeriods, category, year, month)) return false;
     const file = agency.archivos?.[key];
-    if (!file?.driveId) return false;
+    if (!file?.driveId) return true;
     if (Number.isInteger(file.periodYear) && Number.isInteger(file.periodMonth)) {
-      return file.periodYear === year && file.periodMonth === month;
+      return file.periodYear !== year || file.periodMonth !== month;
     }
 
     const parsedPeriod = getFilePeriod({
@@ -29,23 +37,34 @@ function agencyHasCurrentReports(agency, year, month) {
       path: file.path,
       folderPath: file.pseudoPath,
     });
-    return parsedPeriod?.year === year && parsedPeriod?.month === month;
-  });
+    return parsedPeriod?.year !== year || parsedPeriod?.month !== month;
+  }).map(({ code }) => code);
 }
 
-function createAgencyReminder(agency, year, month, createdAt = new Date()) {
+function agencyHasCurrentReports(agency, year, month) {
+  return getMissingCurrentReportCodes(agency, year, month).length === 0;
+}
+
+function createAgencyReminder(
+  agency,
+  year,
+  month,
+  createdAt = new Date(),
+  missingFileCodes = getMissingCurrentReportCodes(agency, year, month),
+) {
   const period = `${String(month).padStart(2, '0')}/${year}`;
   return {
     id: `reminder:${year}-${String(month).padStart(2, '0')}:${String(agency._id)}`,
     category: 'reminder',
     title: 'Falta actualizar reportes',
-    summary: `${agency.nombre}: faltan reportes del período ${period}.`,
+    summary: `${agency.nombre}: faltan ${missingFileCodes.join(', ')} del período ${period}.`,
     createdAt: createdAt.toISOString(),
     severity: 'medium',
     read: false,
     persistent: true,
     agencyId: String(agency._id),
     agencyName: agency.nombre,
+    missingFileCodes,
     period: { year, month, label: period },
     actionUrl: '/agencias',
   };
@@ -99,9 +118,13 @@ function serializeJob(job, category, title) {
 }
 
 function buildNotificationFeed({ agencies, announcements, refreshJobs, mailJobs, userId, period, now = new Date() }) {
-  const reminders = agencies
-    .filter((agency) => agency.status === 'activa' && !agencyHasCurrentReports(agency, period.year, period.month))
-    .map((agency) => createAgencyReminder(agency, period.year, period.month, now));
+  const reminders = agencies.flatMap((agency) => {
+    if (agency.status !== 'activa') return [];
+    const missingFileCodes = getMissingCurrentReportCodes(agency, period.year, period.month);
+    return missingFileCodes.length
+      ? [createAgencyReminder(agency, period.year, period.month, now, missingFileCodes)]
+      : [];
+  });
   const announcementItems = announcements.map((notification) => serializeAnnouncement(notification, userId));
   const jobs = [
     ...refreshJobs.map((job) => serializeJob(
@@ -137,6 +160,7 @@ module.exports = {
   agencyHasCurrentReports,
   buildNotificationFeed,
   createAgencyReminder,
+  getMissingCurrentReportCodes,
   getMexicoPeriod,
   serializeAnnouncement,
   serializeJob,

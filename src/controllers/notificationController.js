@@ -8,6 +8,7 @@ const MailJob = require('../models/MailJob');
 const Notification = require('../models/Notification');
 const Subscription = require('../models/Subscription');
 const User = require('../models/User');
+const { getAgencyConsultantFilter } = require('../utils/agencyConsultants');
 const { subscribeToNotificationChanges } = require('../services/notificationEvents');
 const { sendPushToAudience, sendPushToUser } = require('../services/pushNotificationService');
 const {
@@ -105,9 +106,9 @@ async function getNotifications(req, res, next) {
     const [agencies, monthlyRecords, announcements, refreshJobs, mailJobs] = await Promise.all([
       Agency.find({
         status: 'activa',
-        ...(isConsultant ? { consultantId: userId } : {}),
+        ...(isConsultant ? getAgencyConsultantFilter(userId) : {}),
       })
-        .select('_id nombre status archivos')
+        .select('_id nombre status archivos reviewPeriods')
         .lean(),
       AgencyMonthlyFiles.find({
         period: `${period.year}-${String(period.month).padStart(2, '0')}`,
