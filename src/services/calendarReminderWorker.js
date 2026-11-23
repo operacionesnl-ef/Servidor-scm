@@ -1,8 +1,10 @@
 'use strict';
 
 const CalendarEvent = require('../models/CalendarEvent');
+const AgencyMonthlyInspection = require('../models/AgencyMonthlyInspection');
 const pushNotificationService = require('./pushNotificationService');
 const { createConsultantNotification } = require('./consultantNotifications');
+const { getAgencyConsultants } = require('../utils/agencyConsultants');
 const { dispatchMonthlyInspectionReminders } = require('./agencyMonthlyInspectionReminders');
 const { logEvent } = require('../utils/consoleLogger');
 
@@ -27,8 +29,9 @@ function formatTimeUntilVisit(startAt, now) {
     : hourLabel;
 }
 
-async function dispatchOneReminder(event, minutesBefore, now) {
-  const userId = String(event.consultantId);
+async function dispatchOneReminder(event, recipient, minutesBefore, now, attendanceStatus) {
+  const userId = recipient.id;
+  const isAuxiliary = recipient.role === 'auxiliary';
   const dispatchKey = getDispatchKey(event, userId, minutesBefore);
   const claimed = await CalendarEvent.updateOne(
     {
@@ -55,20 +58,32 @@ async function dispatchOneReminder(event, minutesBefore, now) {
     const isVisitToday = event.startAt.toLocaleDateString('es-MX', {
       timeZone: 'America/Mexico_City',
     }) === now.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
-    const notification = await createConsultantNotification({
-      consultantId: event.consultantId,
-      title: `Recordatorio: ${agencyName}`,
-      message: event.type === 'agency_visit'
+    const visitMessage = event.type === 'agency_visit'
         ? isVisitToday
           ? `Tienes que ir a ${agencyName}; tienes una visita hoy en ${formatTimeUntilVisit(event.startAt, now)}.`
           : `Tienes que ir a ${agencyName}; tu visita está programada para el ${visitDate} (en ${formatTimeUntilVisit(event.startAt, now)}).`
-        : `${agencyName} está programado para el ${visitDate}.`,
-      notificationType: event.type === 'agency_visit' ? 'visit_reminder' : 'calendar_reminder',
+        : `${agencyName} está programado para el ${visitDate}.`;
+    const auxiliaryMessage = attendanceStatus === 'pending'
+      ? `${agencyName} tiene una visita programada para el ${visitDate}. Confirma en Inspecciones si asistirás tú o el consultor principal.`
+      : attendanceStatus
+        ? `${agencyName} tiene una visita programada para el ${visitDate}. La asistencia ya fue confirmada.`
+        : visitMessage;
+    const notification = await createConsultantNotification({
+      consultantId: userId,
+      title: isAuxiliary
+        ? attendanceStatus === 'pending'
+          ? `Confirmación pendiente: ${agencyName}`
+          : `Recordatorio de visita · Auxiliar: ${agencyName}`
+        : `Recordatorio: ${agencyName}`,
+      message: isAuxiliary ? auxiliaryMessage : visitMessage,
+      notificationType: isAuxiliary
+        ? attendanceStatus === 'pending' ? 'visit_attendance_confirmation' : 'visit_reminder_auxiliary'
+        : event.type === 'agency_visit' ? 'visit_reminder' : 'calendar_reminder',
       actionUrl: agency
         ? `/agencias/${agency._id}?tab=inspections`
         : '/calendario',
       agencyId: agency?._id || null,
-      idempotencyKey: `calendar-reminder:${event._id}:${minutesBefore}:${event.startAt.getTime()}`,
+      idempotencyKey: `calendar-reminder:${event._id}:${minutesBefore}:${event.startAt.getTime()}:${userId}`,
     });
     if (!notification) {
       await CalendarEvent.updateOne(
@@ -77,11 +92,11 @@ async function dispatchOneReminder(event, minutesBefore, now) {
       );
       return false;
     }
-    const result = await pushNotificationService.sendPushToUser(event.consultantId, {
+    const result = await pushNotificationService.sendPushToUser(userId, {
       title: notification.title,
       body: notification.message,
       url: notification.actionUrl,
-      tag: `calendar-reminder-${String(event._id)}-${minutesBefore}-${event.startAt.getTime()}`,
+      tag: `calendar-reminder-${String(event._id)}-${minutesBefore}-${event.startAt.getTime()}-${userId}`,
     });
     if (!result.sent && result.total > 0) {
       logEvent('calendar_reminder_web_push_not_delivered', {
@@ -108,21 +123,40 @@ async function dispatchCalendarReminders(now = new Date()) {
     'reminders.enabled': true,
     startAt: { $gt: now, $lte: latestStartAt },
   })
-    .populate('agencyId', 'nombre consultantId')
+    .populate('agencyId', 'nombre consultantId auxiliaryConsultantId')
     .select('_id title type startAt consultantId reminders agencyId')
     .lean();
 
+  const agencyVisitIds = events
+    .filter((event) => event.type === 'agency_visit')
+    .map((event) => event._id);
+  const inspectionRecords = agencyVisitIds.length
+    ? await AgencyMonthlyInspection.find({ calendarEventId: { $in: agencyVisitIds } })
+      .select('calendarEventId attendanceStatus')
+      .lean()
+    : [];
+  const attendanceByEventId = new Map(inspectionRecords.map((record) => [
+    String(record.calendarEventId),
+    record.attendanceStatus,
+  ]));
   let dispatched = 0;
   for (const event of events) {
-    if (event.type === 'agency_visit'
-      && (!event.agencyId?.consultantId
-        || String(event.agencyId.consultantId) !== String(event.consultantId))) {
-      logEvent('calendar_reminder_recipient_mismatch', { eventId: String(event._id) });
-      continue;
-    }
+    const recipients = event.type === 'agency_visit'
+      ? getAgencyConsultants(event.agencyId)
+      : event.consultantId ? [{ id: String(event.consultantId), role: 'principal' }] : [];
+    if (!recipients.length) continue;
     for (const minutesBefore of event.reminders?.minutesBefore || []) {
       const dueAt = new Date(event.startAt.getTime() - minutesBefore * 60 * 1000);
-      if (dueAt <= now && await dispatchOneReminder(event, minutesBefore, now)) dispatched += 1;
+      if (dueAt > now) continue;
+      for (const recipient of recipients) {
+        if (await dispatchOneReminder(
+          event,
+          recipient,
+          minutesBefore,
+          now,
+          attendanceByEventId.get(String(event._id)),
+        )) dispatched += 1;
+      }
     }
   }
   return { events: events.length, dispatched };

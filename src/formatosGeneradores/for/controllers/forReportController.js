@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { Readable } = require('node:stream');
 const mongoose = require('mongoose');
 const Agency = require('../../../models/Agency');
+const { getAgencyConsultantFilter } = require('../../../utils/agencyConsultants');
 const ForReport = require('../models/ForReport');
 const { createGoogleDriveClient } = require('../../../config/googleDrive');
 const {
@@ -67,7 +68,7 @@ async function getAccessibleAgency(user, agencyId) {
   const role = String(user?.rol || '').toLowerCase();
   if (!ACCESS_ROLES.has(role)) throw new RequestError(403, 'Tu cuenta no puede acceder a este formulario.');
   const filter = { _id: agencyId };
-  if (role === 'consultor') filter.consultantId = user._id;
+  if (role === 'consultor') Object.assign(filter, getAgencyConsultantFilter(user._id));
   const agency = await Agency.findOne(filter)
     .select('_id nombre razonSocial entidadFederativa marca fileNameCode')
     .lean();

@@ -19,9 +19,21 @@ const agencyMonthlyInspectionSchema = new mongoose.Schema({
     enum: ['scheduled', 'completed'],
     default: 'scheduled',
   },
+  attendanceStatus: {
+    type: String,
+    enum: ['pending', 'primary', 'auxiliary'],
+    default: null,
+  },
+  attendanceConfirmedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  attendanceConfirmedAt: { type: Date, default: null },
   calendarEventId: { type: mongoose.Schema.Types.ObjectId, ref: 'CalendarEvent', default: null },
   reminderClaimedAt: { type: Date, default: null, select: false },
   reminderSentAt: { type: Date, default: null, select: false },
+  reminderSentTo: {
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    default: [],
+    select: false,
+  },
 }, { timestamps: true });
 
 agencyMonthlyInspectionSchema.index({ agencyId: 1, period: 1 }, { unique: true });

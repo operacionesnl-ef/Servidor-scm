@@ -22,7 +22,8 @@ const { normalizeEmailList } = require('../utils/emailList');
 const { getMexicoPeriod } = require('../utils/notificationUtils');
 const { logEvent } = require('../utils/consoleLogger');
 const { recordAgencyHistory } = require('../services/agencyHistory');
-const { notifyConsultant } = require('../services/consultantNotifications');
+const { notifyAgencyConsultants, notifyConsultant } = require('../services/consultantNotifications');
+const { getAgencyConsultantFilter, getAgencyConsultants } = require('../utils/agencyConsultants');
 
 const AGENCY_SEARCH_PERIOD_SETTING = 'agency-search-period';
 
@@ -94,6 +95,7 @@ const ALLOWED_FIELDS = new Set([
   'status',
   'archivos',
   'consultantId',
+  'auxiliaryConsultantId',
   'reviewPeriods',
 ]);
 const ALLOWED_STATUSES = new Set(['activa', 'inactiva', 'suspendida']);
@@ -119,6 +121,7 @@ const AGENCY_HISTORY_FIELD_LABELS = {
   marca: 'Marca para carpeta de recorridos',
   status: 'Estado',
   consultantId: 'Consultor responsable',
+  auxiliaryConsultantId: 'Consultor auxiliar',
   fileNameCode: 'Código de nombre de archivos',
   archivos: 'Archivos asociados',
 };
@@ -309,6 +312,21 @@ const validateAgencyInput = (body, partial) => {
     } else {
       value.consultantId = body.consultantId;
     }
+    if (body.auxiliaryConsultantId !== undefined) {
+      if (body.auxiliaryConsultantId === null || body.auxiliaryConsultantId === '') {
+        value.auxiliaryConsultantId = null;
+      } else if (!mongoose.isValidObjectId(body.auxiliaryConsultantId)) {
+        errors.auxiliaryConsultantId = 'Must be a valid auxiliary consultant ID or null';
+      } else {
+        value.auxiliaryConsultantId = body.auxiliaryConsultantId;
+      }
+    }
+    const consultantId = value.consultantId;
+    const auxiliaryConsultantId = value.auxiliaryConsultantId;
+    if (consultantId && auxiliaryConsultantId
+      && String(consultantId) === String(auxiliaryConsultantId)) {
+      errors.auxiliaryConsultantId = 'The primary and auxiliary consultants must be different';
+    }
   }
 
   for (const field of ['cc', 'cco']) {
@@ -495,7 +513,7 @@ const getAgencies = async (req, res, next) => {
     }
     const filter = {
       ...(req.query.status ? { status: req.query.status } : {}),
-      ...(req.user.rol === 'consultor' ? { consultantId: req.user._id } : {}),
+      ...(req.user.rol === 'consultor' ? getAgencyConsultantFilter(req.user._id) : {}),
     };
     const agencies = await Agency.find(filter).sort({ createdAt: -1 }).lean();
     if (period) {
@@ -531,7 +549,8 @@ const getAgencyById = async (req, res, next) => {
 const createAgency = async (req, res, next) => {
   const { errors, value } = validateAgencyInput(req.body, false);
   if (Object.keys(errors).length) return validationFailure(res, errors);
-  if (value.consultantId !== undefined && !['admin', 'developer'].includes(req.user.rol)) {
+  if ((value.consultantId !== undefined || value.auxiliaryConsultantId !== undefined)
+    && !['admin', 'developer'].includes(req.user.rol)) {
     return res.status(403).json({
       success: false,
       message: 'Only administrators can assign the responsible consultant.',
@@ -542,21 +561,29 @@ const createAgency = async (req, res, next) => {
   }
 
   try {
+    if (value.auxiliaryConsultantId && !value.consultantId) {
+      return validationFailure(res, {
+        consultantId: 'A primary consultant is required when an auxiliary consultant is assigned',
+      });
+    }
     if (value.consultantId && !await isActiveConsultant(value.consultantId)) {
       return validationFailure(res, { consultantId: 'Active consultant not found' });
     }
-    const agency = await Agency.create(value);
-    if (agency.consultantId) {
-      await notifyConsultant({
-        consultantId: agency.consultantId,
-        title: 'Nueva agencia asignada',
-        message: `Se te asignó la agencia ${agency.nombre}. Consulta sus detalles.`,
-        notificationType: 'agency_assigned',
-        actionUrl: `/agencias/${agency._id}`,
-        agencyId: agency._id,
-        idempotencyKey: `agency:${agency._id}:assigned:${agency.updatedAt.getTime()}`,
-      });
+    if (value.auxiliaryConsultantId
+      && !await isActiveConsultant(value.auxiliaryConsultantId)) {
+      return validationFailure(res, { auxiliaryConsultantId: 'Active consultant not found' });
     }
+    const agency = await Agency.create(value);
+    await notifyAgencyConsultants(agency, {
+      title: 'Nueva agencia asignada',
+      message: `Se te asignó la agencia ${agency.nombre} como consultor principal. Consulta sus detalles.`,
+      auxiliaryTitle: 'Nueva agencia asignada · Auxiliar',
+      auxiliaryMessage: `Se te asignó la agencia ${agency.nombre} como consultor auxiliar. Consulta sus detalles.`,
+      notificationType: 'agency_assigned',
+      actionUrl: `/agencias/${agency._id}`,
+      agencyId: agency._id,
+      idempotencyKey: `agency:${agency._id}:assigned:${agency.updatedAt.getTime()}`,
+    });
     await recordAgencyHistory({
       agencyId: agency._id,
       actor: req.user,
@@ -584,7 +611,8 @@ const updateAgency = async (req, res, next) => {
       message: 'Solo un developer puede editar las coordenadas de la agencia.',
     });
   }
-  if (value.consultantId !== undefined && !['admin', 'developer'].includes(req.user.rol)) {
+  if ((value.consultantId !== undefined || value.auxiliaryConsultantId !== undefined)
+    && !['admin', 'developer'].includes(req.user.rol)) {
     return res.status(403).json({
       success: false,
       message: 'Solo los administradores pueden asignar el consultor responsable.',
@@ -598,12 +626,33 @@ const updateAgency = async (req, res, next) => {
     if (value.consultantId && !await isActiveConsultant(value.consultantId)) {
       return validationFailure(res, { consultantId: 'Active consultant not found' });
     }
+    if (value.auxiliaryConsultantId
+      && !await isActiveConsultant(value.auxiliaryConsultantId)) {
+      return validationFailure(res, { auxiliaryConsultantId: 'Active consultant not found' });
+    }
     const agency = await Agency.findById(req.params.id);
     if (!agency) return res.status(404).json({ success: false, message: 'Agency not found' });
+    const nextPrimaryId = value.consultantId !== undefined
+      ? value.consultantId
+      : agency.consultantId;
+    const nextAuxiliaryId = value.auxiliaryConsultantId !== undefined
+      ? value.auxiliaryConsultantId
+      : agency.auxiliaryConsultantId;
+    if (nextAuxiliaryId && !nextPrimaryId) {
+      return validationFailure(res, {
+        consultantId: 'A primary consultant is required when an auxiliary consultant is assigned',
+      });
+    }
+    if (nextPrimaryId && nextAuxiliaryId
+      && String(nextPrimaryId) === String(nextAuxiliaryId)) {
+      return validationFailure(res, {
+        auxiliaryConsultantId: 'The primary and auxiliary consultants must be different',
+      });
+    }
 
     const historyFields = [
       'nombre', 'razonSocial', 'RFC', 'direccion', 'ciudad', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente',
-      'seguimiento', 'cc', 'cco', 'entidadFederativa', 'status', 'consultantId', 'fileNameCode', 'archivos',
+      'seguimiento', 'cc', 'cco', 'entidadFederativa', 'status', 'consultantId', 'auxiliaryConsultantId', 'fileNameCode', 'archivos',
       'marca', 'reviewPeriods',
     ];
     const previousValues = Object.fromEntries(
@@ -611,7 +660,7 @@ const updateAgency = async (req, res, next) => {
     );
     for (const field of [
       'nombre','razonSocial','RFC','direccion', 'ciudad', 'longitud', 'latitud', 'correo', 'gerente', 'telefonoGerente', 'seguimiento',
-      'cc', 'cco', 'entidadFederativa', 'status', 'consultantId',
+      'cc', 'cco', 'entidadFederativa', 'status', 'consultantId', 'auxiliaryConsultantId',
       'marca',
       'fileNameCode',
       'reviewPeriods',
@@ -672,43 +721,75 @@ const updateAgency = async (req, res, next) => {
         ? []
         : [{ field, label: AGENCY_HISTORY_FIELD_LABELS[field], from, to }];
     });
-    const previousConsultantId = previousValues.consultantId ? String(previousValues.consultantId) : '';
-    const nextConsultantId = agency.consultantId ? String(agency.consultantId) : '';
     const notificationKey = `agency:${agency._id}:${agency.updatedAt.getTime()}`;
-    if (previousConsultantId && previousConsultantId !== nextConsultantId) {
+    const previousAssignments = getAgencyConsultants({
+      consultantId: previousValues.consultantId,
+      auxiliaryConsultantId: previousValues.auxiliaryConsultantId,
+    });
+    const nextAssignments = getAgencyConsultants(agency);
+    const previousById = new Map(previousAssignments.map((assignment) => [assignment.id, assignment.role]));
+    const nextById = new Map(nextAssignments.map((assignment) => [assignment.id, assignment.role]));
+    const assignmentsChanged = previousAssignments.some(({ id, role }) => nextById.get(id) !== role)
+      || nextAssignments.some(({ id, role }) => previousById.get(id) !== role);
+    if (assignmentsChanged) {
+      await AgencyMonthlyInspection.updateMany(
+        { agencyId: agency._id, reminderSentAt: { $ne: null } },
+        { $set: { reminderSentAt: null } },
+      );
+      await AgencyMonthlyInspection.updateMany(
+        {
+          agencyId: agency._id,
+          authorizationStatus: 'authorized',
+          visitStatus: 'scheduled',
+          calendarEventId: { $ne: null },
+        },
+        {
+          $set: {
+            attendanceStatus: agency.auxiliaryConsultantId ? 'pending' : null,
+            attendanceConfirmedBy: null,
+            attendanceConfirmedAt: null,
+          },
+        },
+      );
+    }
+    for (const { id, role } of previousAssignments) {
+      if (nextById.has(id)) continue;
       await notifyConsultant({
-        consultantId: previousConsultantId,
-        title: 'Agencia reasignada',
+        consultantId: id,
+        title: role === 'auxiliary' ? 'Agencia reasignada · Auxiliar' : 'Agencia reasignada',
         message: `La agencia ${agency.nombre} ya no está asignada a tu cuenta.`,
         notificationType: 'agency_unassigned',
         actionUrl: '/agencias',
         agencyId: agency._id,
-        idempotencyKey: `${notificationKey}:unassigned:${previousConsultantId}`,
+        idempotencyKey: `${notificationKey}:unassigned:${role}:${id}`,
       });
     }
-    if (nextConsultantId && previousConsultantId !== nextConsultantId) {
+    for (const { id, role } of nextAssignments) {
+      if (previousById.get(id) === role) continue;
       await notifyConsultant({
-        consultantId: nextConsultantId,
-        title: 'Nueva agencia asignada',
-        message: `Se te asignó la agencia ${agency.nombre}. Consulta sus detalles.`,
+        consultantId: id,
+        title: role === 'auxiliary' ? 'Nueva agencia asignada · Auxiliar' : 'Nueva agencia asignada',
+        message: role === 'auxiliary'
+          ? `Se te asignó la agencia ${agency.nombre} como consultor auxiliar. Consulta sus detalles.`
+          : `Se te asignó la agencia ${agency.nombre} como consultor principal. Consulta sus detalles.`,
         notificationType: 'agency_assigned',
         actionUrl: `/agencias/${agency._id}`,
         agencyId: agency._id,
-        idempotencyKey: `${notificationKey}:assigned:${nextConsultantId}`,
+        idempotencyKey: `${notificationKey}:assigned:${role}:${id}`,
       });
-    } else if (nextConsultantId) {
+    }
+    if (nextAssignments.length) {
       const relevantChanges = changes.filter(({ field }) => (
         ['nombre', 'direccion', 'gerente', 'telefonoGerente', 'seguimiento', 'status'].includes(field)
       ));
       if (relevantChanges.length) {
-        await notifyConsultant({
-          consultantId: nextConsultantId,
+        await notifyAgencyConsultants(agency, {
           title: 'Cambios en una agencia asignada',
           message: `Se actualizaron datos de ${agency.nombre} que pueden afectar tu trabajo.`,
           notificationType: 'agency_updated',
           actionUrl: `/agencias/${agency._id}`,
           agencyId: agency._id,
-          idempotencyKey: `${notificationKey}:updated:${nextConsultantId}`,
+          idempotencyKey: `${notificationKey}:updated`,
         });
       }
     }

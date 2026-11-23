@@ -1,6 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const Agency = require('../models/Agency');
+const { getAgencyConsultantFilter } = require('../utils/agencyConsultants');
 const requireAuth = require('../middlewares/requireAuth');
 const requireAdminOrDeveloper = require('../middlewares/requireAdminOrDeveloper');
 const {
@@ -45,6 +46,7 @@ const {
   scheduleMonthlyVisit,
   updateMonthlyAuthorization,
   updateMonthlyVisitStatus,
+  confirmMonthlyVisitAttendance,
 } = require('../controllers/agencyMonthlyInspectionController');
 
 const router = express.Router();
@@ -66,11 +68,18 @@ router.use(async (req, res, next) => {
     && /^\/[a-f\d]{24}\/monthly-records\/[^/]+\/visit$/.test(req.path)
     && req.body?.status === 'completed'
     && Object.keys(req.body || {}).length === 1;
+  const isAttendanceConfirmation = req.method === 'PATCH'
+    && /^\/[a-f\d]{24}\/monthly-records\/[^/]+\/attendance$/.test(req.path)
+    && Object.keys(req.body || {}).length === 1
+    && ['primary', 'auxiliary'].includes(req.body?.attendanceStatus);
   const isPersonalizationUpdate = req.method === 'PUT'
     && /^\/[a-f\d]{24}\/personalization$/.test(req.path);
   const isNoteAppend = req.method === 'POST'
     && /^\/[a-f\d]{24}\/notes$/.test(req.path);
-  const isAllowedConsultantWrite = isVisitCompletion || isPersonalizationUpdate || isNoteAppend;
+  const isAllowedConsultantWrite = isVisitCompletion
+    || isAttendanceConfirmation
+    || isPersonalizationUpdate
+    || isNoteAppend;
   if ((!isAllowedConsultantWrite && req.method !== 'GET')
     || (!isAllowedConsultantWrite && !allowedReadPaths.some((pattern) => pattern.test(req.path)))) {
     return res.status(403).json({ success: false, message: 'Los consultores solo tienen acceso de lectura a sus agencias asignadas.' });
@@ -83,7 +92,7 @@ router.use(async (req, res, next) => {
     try {
       const assigned = await Agency.exists({
         _id: agencyId,
-        consultantId: req.user._id,
+        ...getAgencyConsultantFilter(req.user._id),
       });
       if (!assigned) return res.status(404).json({ success: false, message: 'Agency not found' });
     } catch (error) {
@@ -113,6 +122,7 @@ router.get('/monthly-records/:period/overview', getMonthlyInspectionOverview);
 router.put('/:id/monthly-records/:period', requireAdminOrDeveloper, updateMonthlyAuthorization);
 router.post('/:id/monthly-records/:period/visit', requireAdminOrDeveloper, scheduleMonthlyVisit);
 router.patch('/:id/monthly-records/:period/visit', updateMonthlyVisitStatus);
+router.patch('/:id/monthly-records/:period/attendance', confirmMonthlyVisitAttendance);
 router.get('/', getAgencies);
 router.post('/', createAgency);
 router.post('/refresh-jobs', createAgencyRefreshJob);

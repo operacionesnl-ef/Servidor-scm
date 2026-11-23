@@ -43,6 +43,8 @@ test('monthly reminders only include active agencies missing current-period repo
   assert.equal(feed.unreadCount, 1);
   assert.equal(feed.items[0].agencyId, 'pending');
   assert.equal(feed.items[0].period.label, '10/2026');
+  assert.deepEqual(feed.items[0].missingFileCodes, ['ANX', 'FOR', 'REP', 'REV']);
+  assert.match(feed.items[0].summary, /faltan ANX, FOR, REP, REV/);
   assert.equal(feed.items[0].createdAt, now.toISOString());
 });
 
@@ -54,6 +56,37 @@ test('all four files must exist and match the selected reporting period', () => 
   assert.equal(agencyHasCurrentReports(complete, 2026, 10), true);
   assert.equal(agencyHasCurrentReports(complete, 2026, 9), false);
   assert.equal(agencyHasCurrentReports(incomplete, 2026, 10), false);
+});
+
+test('notifications only require reports scheduled for the selected month', () => {
+  const scheduled = agency('scheduled', 'activa', null);
+  scheduled.reviewPeriods = {
+    ambiental: { startPeriod: '2026-10', intervalMonths: 2 },
+    seguridad: { startPeriod: '2026-10', intervalMonths: 3 },
+  };
+
+  assert.equal(agencyHasCurrentReports(scheduled, 2026, 11), true);
+  assert.equal(agencyHasCurrentReports(scheduled, 2026, 12), false);
+
+  const feed = buildNotificationFeed({
+    agencies: [scheduled],
+    announcements: [],
+    refreshJobs: [],
+    mailJobs: [],
+    userId: 'user-id',
+    period: { year: 2026, month: 11 },
+  });
+  assert.equal(feed.counts.reminders, 0);
+
+  const environmentalDue = buildNotificationFeed({
+    agencies: [scheduled],
+    announcements: [],
+    refreshJobs: [],
+    mailJobs: [],
+    userId: 'user-id',
+    period: { year: 2026, month: 12 },
+  });
+  assert.equal(environmentalDue.items[0].summary, 'Agencia scheduled: faltan FOR del período 12/2026.');
 });
 
 test('global announcements track read state per user and administrative jobs are summarized', () => {

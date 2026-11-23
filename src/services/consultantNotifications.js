@@ -4,6 +4,7 @@ const Notification = require('../models/Notification');
 const Subscription = require('../models/Subscription');
 const { publishNotificationChange } = require('./notificationEvents');
 const { sendPushToUser } = require('./pushNotificationService');
+const { getAgencyConsultants } = require('../utils/agencyConsultants');
 
 async function createConsultantNotification({
   consultantId,
@@ -73,4 +74,25 @@ async function notifyConsultant(payload) {
   return notification;
 }
 
-module.exports = { createConsultantNotification, notifyConsultant };
+async function notifyAgencyConsultants(agency, payload) {
+  const recipients = getAgencyConsultants(agency);
+  return Promise.all(recipients.map(({ id, role }) => {
+    const isAuxiliary = role === 'auxiliary';
+    return notifyConsultant({
+      ...payload,
+      consultantId: id,
+      title: isAuxiliary ? payload.auxiliaryTitle || `${payload.title} · Auxiliar` : payload.title,
+      message: isAuxiliary ? payload.auxiliaryMessage || payload.message : payload.message,
+      notificationType: isAuxiliary
+        ? payload.auxiliaryNotificationType || `${payload.notificationType}_auxiliary`
+        : payload.notificationType,
+      idempotencyKey: `${payload.idempotencyKey}:${role}:${id}`,
+    });
+  }));
+}
+
+module.exports = {
+  createConsultantNotification,
+  notifyAgencyConsultants,
+  notifyConsultant,
+};

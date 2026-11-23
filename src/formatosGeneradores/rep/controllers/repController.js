@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const mongoose = require('mongoose');
 const Agency = require('../../../models/Agency');
+const { getAgencyConsultantFilter } = require('../../../utils/agencyConsultants');
 const CalendarEvent = require('../../../models/CalendarEvent');
 const RepReport = require('../models/RepReport');
 const ANX = require('../models/ANX');
@@ -89,7 +90,7 @@ async function getAccessibleAgency(user, agencyId) {
   const role = String(user?.rol || '').trim().toLowerCase();
   if (!ACCESS_ROLES.has(role)) throw new RepRequestError(403, 'Tu cuenta no puede acceder a REP.');
   const filter = { _id: agencyId };
-  if (role === 'consultor') filter.consultantId = user._id;
+  if (role === 'consultor') Object.assign(filter, getAgencyConsultantFilter(user._id));
   const agency = await Agency.findOne(filter)
     .select('_id nombre razonSocial direccion ciudad entidadFederativa brand marca fileNameCode consultantId')
     .lean();

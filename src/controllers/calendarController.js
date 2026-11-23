@@ -3,10 +3,12 @@
 const mongoose = require('mongoose');
 const CalendarEvent = require('../models/CalendarEvent');
 const Agency = require('../models/Agency');
+const AgencyMonthlyInspection = require('../models/AgencyMonthlyInspection');
 const User = require('../models/User');
 const { success } = require('../utils/response');
 const { recordAgencyHistory } = require('../services/agencyHistory');
 const { notifyConsultant } = require('../services/consultantNotifications');
+const { getAgencyConsultantFilter, getAgencyConsultants } = require('../utils/agencyConsultants');
 
 const EVENT_TYPES = new Set([
   'agency_visit',
@@ -22,7 +24,14 @@ const EVENT_FIELDS = new Set([
 const RECURRENCE_FREQUENCIES = new Set(['daily', 'weekly', 'monthly']);
 const MAX_SERIES_OCCURRENCES = 500;
 const POPULATES = [
-  { path: 'agencyId', select: 'nombre' },
+  {
+    path: 'agencyId',
+    select: 'nombre consultantId auxiliaryConsultantId',
+    populate: [
+      { path: 'consultantId', select: 'nombre correo rol' },
+      { path: 'auxiliaryConsultantId', select: 'nombre correo rol' },
+    ],
+  },
   { path: 'consultantId', select: 'nombre correo rol' },
 ];
 const isAdmin = (user) => ['admin', 'developer'].includes(user.rol);
@@ -123,6 +132,12 @@ function serializeEvent(event) {
   const consultant = event.consultantId && typeof event.consultantId === 'object'
     ? event.consultantId
     : null;
+  const consultantIds = [...new Set([
+    ...getAgencyConsultants(agency).map(({ id }) => id),
+    consultant
+      ? String(consultant._id)
+      : event.consultantId ? String(event.consultantId) : '',
+  ].filter(Boolean))];
   const authorized = Boolean(event.authorized);
   return {
     id: String(event._id),
@@ -141,6 +156,7 @@ function serializeEvent(event) {
       email: consultant.correo,
       role: consultant.rol,
     } : null,
+    consultantIds,
     notes: event.notes || '',
     authorized,
     status: authorized ? 'authorized' : 'pending',
@@ -160,11 +176,12 @@ function validId(value) {
 
 async function getVisitConsultant(event) {
   if (!event?.agencyId || event.type !== 'agency_visit') return null;
-  const agency = await Agency.findById(event.agencyId).select('_id nombre consultantId').lean();
+  const agency = await Agency.findById(event.agencyId)
+    .select('_id nombre consultantId auxiliaryConsultantId')
+    .lean();
   if (!agency?.consultantId) return null;
-  if (event.consultantId && String(event.consultantId) !== String(agency.consultantId)) return null;
   return {
-    id: agency.consultantId,
+    consultants: getAgencyConsultants(agency),
     agencyId: agency._id,
     agencyName: agency.nombre,
     actionUrl: `/agencias/${agency._id}?tab=inspections`,
@@ -175,6 +192,9 @@ async function notifyVisitChange(event, notification, idempotencySuffix) {
   try {
     const recipient = await getVisitConsultant(event);
     if (!recipient) return;
+    const inspection = await AgencyMonthlyInspection.findOne({ calendarEventId: event._id })
+      .select('attendanceStatus')
+      .lean();
     const date = event.startAt instanceof Date ? event.startAt : new Date(event.startAt);
     const dateLabel = Number.isNaN(date.getTime())
       ? 'fecha no disponible'
@@ -188,31 +208,56 @@ async function notifyVisitChange(event, notification, idempotencySuffix) {
         title: 'Visita programada',
         message: `Tu visita a ${recipient.agencyName} está programada para el ${dateLabel}.`,
         type: 'visit_scheduled',
+        auxiliaryTitle: inspection
+          ? 'Visita programada · Confirmación pendiente'
+          : 'Visita programada · Auxiliar',
+        auxiliaryMessage: inspection
+          ? `La visita a ${recipient.agencyName} está programada para el ${dateLabel}. Confirma en Inspecciones si asistirás tú o el consultor principal.`
+          : `La visita a ${recipient.agencyName} está programada para el ${dateLabel}.`,
+        auxiliaryType: inspection ? 'visit_attendance_confirmation' : 'visit_scheduled_auxiliary',
       },
       authorized: {
         title: 'Visita autorizada',
         message: `Se autorizó tu visita a ${recipient.agencyName} para el ${dateLabel}.`,
         type: 'visit_authorized',
+        auxiliaryTitle: 'Visita autorizada · Auxiliar',
+        auxiliaryMessage: `Se autorizó la visita a ${recipient.agencyName} para el ${dateLabel}. Al programarse, recibirás una solicitud para confirmar quién asistirá.`,
+        auxiliaryType: 'visit_authorized_auxiliary',
       },
       changed: {
         title: 'Cambio de visita',
         message: `La visita a ${recipient.agencyName} cambió. Nueva fecha: ${dateLabel}.`,
         type: 'visit_changed',
+        auxiliaryTitle: inspection
+          ? 'Cambio de visita · Confirmación pendiente'
+          : 'Cambio de visita · Auxiliar',
+        auxiliaryMessage: inspection
+          ? `La visita a ${recipient.agencyName} cambió y está programada para el ${dateLabel}. Confirma en Inspecciones si asistirás tú o el consultor principal.`
+          : `La visita a ${recipient.agencyName} cambió. Nueva fecha: ${dateLabel}.`,
+        auxiliaryType: inspection ? 'visit_attendance_confirmation' : 'visit_changed_auxiliary',
       },
       cancelled: {
         title: 'Visita cancelada',
         message: `La visita a ${recipient.agencyName} del ${dateLabel} fue cancelada.`,
         type: 'visit_cancelled',
+        auxiliaryTitle: 'Visita cancelada · Auxiliar',
+        auxiliaryMessage: `La visita a ${recipient.agencyName} del ${dateLabel} fue cancelada.`,
+        auxiliaryType: 'visit_cancelled_auxiliary',
       },
     };
     const content = messages[notification];
-    await notifyConsultant({
-      consultantId: recipient.id,
-      agencyId: recipient.agencyId,
-      actionUrl: recipient.actionUrl,
-      ...content,
-      idempotencyKey: `calendar:${event._id}:${idempotencySuffix}`,
-    });
+    await Promise.all(recipient.consultants.map(({ id, role }) => {
+      const auxiliary = role === 'auxiliary';
+      return notifyConsultant({
+        consultantId: id,
+        agencyId: recipient.agencyId,
+        actionUrl: recipient.actionUrl,
+        title: auxiliary ? content.auxiliaryTitle : content.title,
+        message: auxiliary ? content.auxiliaryMessage : content.message,
+        notificationType: auxiliary ? content.auxiliaryType : content.type,
+        idempotencyKey: `calendar:${event._id}:${idempotencySuffix}:${role}:${id}`,
+      });
+    }));
   } catch (error) {
     console.error('[Notifications] No se pudo procesar un aviso de visita:', error.message);
   }
@@ -339,24 +384,36 @@ async function getCalendarEvents(req, res, next) {
     endAt: { $gt: rangeStart },
     ...(isAdmin(req.user) ? {} : { authorized: true }),
   };
+  let accessibleAgencyIds = null;
   if (req.user.rol === 'consultor') {
-    const assignedAgencyIds = await Agency.find({ consultantId: req.user._id }).distinct('_id');
-    filter.agencyId = { $in: assignedAgencyIds };
+    accessibleAgencyIds = await Agency.find(getAgencyConsultantFilter(req.user._id)).distinct('_id');
+    filter.agencyId = { $in: accessibleAgencyIds };
   }
   if (req.query.agencyId !== undefined) {
     if (!validId(req.query.agencyId)) return validationFailure(res, { agencyId: 'Must be a valid ID' });
-    if (req.user.rol === 'consultor' && !filter.agencyId.$in.some((id) => String(id) === req.query.agencyId)) {
+    if (req.user.rol === 'consultor'
+      && !accessibleAgencyIds.some((id) => String(id) === req.query.agencyId)) {
       return res.status(404).json({ success: false, message: 'Agency not found' });
     }
     filter.agencyId = req.query.agencyId;
   }
+  let selectedConsultantId = null;
   if (req.query.consultantId !== undefined) {
-    if (req.query.consultantId === 'me') filter.consultantId = req.user._id;
+    if (req.query.consultantId === 'me') selectedConsultantId = req.user._id;
     else if (!validId(req.query.consultantId)) {
       return validationFailure(res, { consultantId: 'Must be a valid ID or "me"' });
-    } else filter.consultantId = req.query.consultantId;
+    } else selectedConsultantId = req.query.consultantId;
   }
-  if (req.query.view === 'mine') filter.consultantId = req.user._id;
+  if (req.query.view === 'mine') selectedConsultantId = req.user._id;
+  if (selectedConsultantId) {
+    const assignedAgencyIds = await Agency.find(
+      getAgencyConsultantFilter(selectedConsultantId),
+    ).distinct('_id');
+    filter.$or = [
+      { consultantId: selectedConsultantId },
+      { agencyId: { $in: assignedAgencyIds } },
+    ];
+  }
   if (req.query.authorized !== undefined) {
     if (!isAdmin(req.user) && req.query.authorized !== 'true') {
       return res.status(403).json({ success: false, message: 'Only administrators can view unauthorized events.' });
@@ -381,13 +438,27 @@ async function getCalendarEvents(req, res, next) {
 async function getCalendarConsultants(req, res, next) {
   try {
     if (req.user.rol === 'consultor') {
+      const agencies = await Agency.find(
+        getAgencyConsultantFilter(req.user._id),
+      ).select('consultantId auxiliaryConsultantId').lean();
+      const consultantIds = [...new Set([String(req.user._id), ...agencies.flatMap((agency) => (
+        getAgencyConsultants(agency).map(({ id }) => id)
+      ))])];
+      const consultants = await User.find({
+        _id: { $in: consultantIds },
+        rol: 'consultor',
+        status: 'activo',
+      })
+        .select('nombre correo rol')
+        .sort({ nombre: 1 })
+        .lean();
       return success(res, {
-        consultants: [{
-          id: String(req.user._id),
-          name: req.user.nombre,
-          email: req.user.correo,
-          role: req.user.rol,
-        }],
+        consultants: consultants.map((user) => ({
+          id: String(user._id),
+          name: user.nombre,
+          email: user.correo,
+          role: user.rol,
+        })),
       }, 'Calendar consultants fetched');
     }
     const consultants = await User.find({ rol: { $in: ['consultor', 'user'] }, status: 'activo' })
@@ -561,7 +632,24 @@ async function updateCalendarEvent(req, res, next) {
       || previousEvent.endAt.getTime() !== event.endAt.getTime()
       || previousEvent.agencyId?.toString() !== event.agencyId?.toString()
       || previousEvent.title !== event.title;
-    const recipientChanged = String(previousRecipient?.id || '') !== String(nextRecipient?.id || '');
+    const previousRecipientIds = new Set((previousRecipient?.consultants || []).map(({ id }) => id));
+    const nextRecipientIds = new Set((nextRecipient?.consultants || []).map(({ id }) => id));
+    const recipientChanged = previousRecipientIds.size !== nextRecipientIds.size
+      || [...previousRecipientIds].some((id) => !nextRecipientIds.has(id));
+    if (scheduleChanged && event.type === 'agency_visit') {
+      await AgencyMonthlyInspection.updateOne(
+        { calendarEventId: event._id },
+        {
+          $set: {
+            attendanceStatus: nextRecipient?.consultants.some(({ role }) => role === 'auxiliary')
+              ? 'pending'
+              : null,
+            attendanceConfirmedBy: null,
+            attendanceConfirmedAt: null,
+          },
+        },
+      );
+    }
     if (previousRecipient && (!nextRecipient || recipientChanged || !event.authorized)) {
       await notifyVisitChange(previousEvent, 'cancelled', `cancelled:${event.updatedAt.getTime()}`);
     }

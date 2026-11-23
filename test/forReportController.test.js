@@ -68,7 +68,13 @@ test('allows a consultant to load a report for an assigned agency', async () => 
 
   assert.equal(nextCalled, true);
   assert.equal(req.forReport, report);
-  assert.deepEqual(agencyFilter, { _id: agencyId, consultantId: userId });
+  assert.deepEqual(agencyFilter, {
+    _id: agencyId,
+    $or: [
+      { consultantId: userId },
+      { auxiliaryConsultantId: userId },
+    ],
+  });
 });
 
 test('does not load a report when the consultant is not assigned to its agency', async () => {

@@ -52,6 +52,7 @@ const agencySchema = new mongoose.Schema(
     },
     favorite: { type: Boolean, default: false },
     consultantId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    auxiliaryConsultantId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     tags: [{ type: mongoose.Schema.Types.ObjectId, ref: 'AgencyTag' }],
     personalizationMigrated: { type: Boolean, default: false, select: false },
     archivos: {

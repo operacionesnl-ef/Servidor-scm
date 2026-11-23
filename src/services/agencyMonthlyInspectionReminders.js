@@ -5,6 +5,7 @@ const AgencyMonthlyInspection = require('../models/AgencyMonthlyInspection');
 const User = require('../models/User');
 const pushNotificationService = require('./pushNotificationService');
 const { getMexicoPeriod } = require('../utils/notificationUtils');
+const { getAgencyConsultants } = require('../utils/agencyConsultants');
 
 const REMINDER_CLAIM_TTL_MS = 5 * 60 * 1000;
 
@@ -14,7 +15,7 @@ function getCurrentPeriod(now) {
 }
 
 async function sendPendingInspectionReminder(agency, period, now) {
-  const record = await AgencyMonthlyInspection.findOneAndUpdate(
+  const recordQuery = AgencyMonthlyInspection.findOneAndUpdate(
     {
       agencyId: agency._id,
       period,
@@ -27,24 +28,50 @@ async function sendPendingInspectionReminder(agency, period, now) {
     },
     { $set: { reminderClaimedAt: now } },
     { new: true },
-  );
+  ).select('+reminderSentTo');
+  const record = await recordQuery;
   if (!record) return false;
 
   try {
-    if (!await User.exists({ _id: agency.consultantId, rol: 'consultor', status: 'activo' })) {
-      await AgencyMonthlyInspection.updateOne(
-        { _id: record._id, reminderSentAt: null },
-        { $set: { reminderClaimedAt: null } },
-      );
-      return false;
+    const sentTo = new Set((record.reminderSentTo || []).map(String));
+    let deliveryPending = false;
+    for (const recipient of getAgencyConsultants(agency)) {
+      if (sentTo.has(recipient.id)) continue;
+      const activeConsultant = await User.exists({
+        _id: recipient.id,
+        rol: 'consultor',
+        status: 'activo',
+      });
+      if (!activeConsultant) {
+        await AgencyMonthlyInspection.updateOne(
+          { _id: record._id },
+          { $addToSet: { reminderSentTo: recipient.id } },
+        );
+        sentTo.add(recipient.id);
+        continue;
+      }
+      const isAuxiliary = recipient.role === 'auxiliary';
+      const result = await pushNotificationService.sendPushToUser(recipient.id, {
+        title: isAuxiliary
+          ? 'Inspección mensual pendiente · Auxiliar'
+          : 'Inspección mensual pendiente',
+        body: isAuxiliary
+          ? `La inspección de ${agency.nombre} para ${period} sigue pendiente. Revisa la visita en Inspecciones y confirma quién asistirá cuando esté programada.`
+          : `La inspección de ${agency.nombre} para ${period} sigue pendiente.`,
+        url: `/agencias/${agency._id}?tab=inspections`,
+        tag: `agency-inspection-${String(agency._id)}-${period}-${recipient.id}`,
+      });
+      if (result.sent) {
+        await AgencyMonthlyInspection.updateOne(
+          { _id: record._id },
+          { $addToSet: { reminderSentTo: recipient.id } },
+        );
+        sentTo.add(recipient.id);
+      } else {
+        deliveryPending = true;
+      }
     }
-    const result = await pushNotificationService.sendPushToUser(agency.consultantId, {
-      title: 'Inspección mensual pendiente',
-      body: `La inspección de ${agency.nombre} para ${period} sigue pendiente.`,
-      url: '/agencias',
-      tag: `agency-inspection-${String(agency._id)}-${period}`,
-    });
-    if (!result.sent) {
+    if (deliveryPending) {
       await AgencyMonthlyInspection.updateOne(
         { _id: record._id, reminderSentAt: null },
         { $set: { reminderClaimedAt: null } },
@@ -53,7 +80,10 @@ async function sendPendingInspectionReminder(agency, period, now) {
     }
     await AgencyMonthlyInspection.updateOne(
       { _id: record._id, reminderClaimedAt: now },
-      { $set: { reminderSentAt: new Date() }, $unset: { reminderClaimedAt: 1 } },
+      {
+        $set: { reminderSentAt: new Date() },
+        $unset: { reminderClaimedAt: 1 },
+      },
     );
     return true;
   } catch (error) {
@@ -71,7 +101,7 @@ async function dispatchMonthlyInspectionReminders(now = new Date()) {
   const agencies = await Agency.find({
     status: 'activa',
     consultantId: { $ne: null },
-  }).select('_id nombre consultantId').lean();
+  }).select('_id nombre consultantId auxiliaryConsultantId').lean();
 
   let dispatched = 0;
   for (const agency of agencies) {

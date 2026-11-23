@@ -160,11 +160,59 @@ test('calendar listing overlaps date ranges, scopes non-admins to authorized eve
       },
     }, res, (error) => { throw error; });
     assert.equal(filter.authorized, true);
-    assert.deepEqual(filter.consultantId, userId);
     assert.deepEqual(filter.agencyId, { $in: [] });
+    assert.deepEqual(filter.$or, [
+      { consultantId: userId },
+      { agencyId: { $in: [] } },
+    ]);
     assert.equal(filter.startAt.$lt.toISOString(), '2026-10-15T00:00:00.000Z');
     assert.equal(filter.endAt.$gt.toISOString(), '2026-10-14T00:00:00.000Z');
     assert.deepEqual(res.body.data.events, []);
+  } finally {
+    CalendarEventModel.find = originalFind;
+    Agency.find = originalAgencyFind;
+  }
+});
+
+test('calendar consultant filtering includes agencies assigned to the auxiliary consultant', async () => {
+  const originalFind = CalendarEventModel.find;
+  const originalAgencyFind = Agency.find;
+  const auxiliaryId = new mongoose.Types.ObjectId();
+  const agencyId = new mongoose.Types.ObjectId();
+  let filter;
+  CalendarEventModel.find = (query) => {
+    filter = query;
+    return {
+      populate() { return this; },
+      sort() { return this; },
+      lean: async () => [],
+    };
+  };
+  Agency.find = (query) => {
+    assert.deepEqual(query, {
+      $or: [
+        { consultantId: String(auxiliaryId) },
+        { auxiliaryConsultantId: String(auxiliaryId) },
+      ],
+    });
+    return { distinct: async () => [agencyId] };
+  };
+
+  try {
+    const res = response();
+    await getCalendarEvents({
+      user: { _id: new mongoose.Types.ObjectId(), rol: 'admin' },
+      query: {
+        rangeStart: '2026-10-14T00:00:00Z',
+        rangeEnd: '2026-10-15T00:00:00Z',
+        consultantId: String(auxiliaryId),
+      },
+    }, res, (error) => { throw error; });
+
+    assert.deepEqual(filter.$or, [
+      { consultantId: String(auxiliaryId) },
+      { agencyId: { $in: [agencyId] } },
+    ]);
   } finally {
     CalendarEventModel.find = originalFind;
     Agency.find = originalAgencyFind;
