@@ -38,10 +38,14 @@ router.use(requireAuth, (req, res, next) => {
   const canAddOrganizerAgencyNote = isOrganizer
     && req.method === 'POST'
     && /^\/agencies\/[a-f\d]{24}\/notes$/.test(path);
+  const canManageOrganizerFlyer = isOrganizer
+    && req.method === 'POST'
+    && /^\/formularios\/(?:flyer\/fondo|[a-f\d]{24}\/flyer\/(?:guardar|fondos\/seleccionar))$/i.test(path);
   if (isOrganizer
     && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)
     && !canUpdateOrganizerNotification
-    && !canAddOrganizerAgencyNote) {
+    && !canAddOrganizerAgencyNote
+    && !canManageOrganizerFlyer) {
     return res.status(403).json({
       success: false,
       message: 'El rol Organizador solo tiene permisos de lectura.',

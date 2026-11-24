@@ -28,6 +28,11 @@ npm run dev   # Desarrollo con nodemon
 npm start     # Producción
 ```
 
+## Prueba de generación de imágenes con Cloudflare
+Ejecuta `npm run ai:test-image` desde la raíz del proyecto. El script usa el modelo `@cf/black-forest-labs/flux-1-schnell` y guarda la imagen de prueba como `imagen.jpg`. Puedes indicar otra ruta con `npm run ai:test-image -- ruta/de/salida.jpg`.
+
+Configura `CLOUDFLARE_ACCOUNT_ID` y `CLOUD_API_TOKEN` en `.env`; también se acepta `CLOUDFLARE_API_TOKEN` como nombre alternativo para el token. El script requiere Node.js 18 o posterior y no inicia ni modifica el servidor.
+
 ## Envíos masivos en segundo plano
 Habilita Gmail API en el mismo proyecto de Google Cloud que usa el front. La cuenta debe autorizar el permiso `https://www.googleapis.com/auth/gmail.send` la primera vez que envía un correo. Si la pantalla de consentimiento está en modo de pruebas, agrega esa cuenta como usuario de prueba.
 
