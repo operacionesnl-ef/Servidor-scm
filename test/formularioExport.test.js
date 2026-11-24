@@ -164,7 +164,7 @@ test('exports the saved agency RFC or falls back to the current agency RFC for o
     'Agencia',
     'Razón social',
     'RFC',
-    'Nombre del curso',
+    'Nombre DC3 completo',
     'Área temática',
     'Agente capacitador',
     'Fecha inicio',

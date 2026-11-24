@@ -12,6 +12,7 @@ const {
 
 const PROTECTED_FIELDS = new Set([
   'tokenPublico',
+  'flyerBackgroundDriveId',
   'estado',
   'camposParticipante',
   'creadoPor',
@@ -51,6 +52,7 @@ function normalizeFormularioBody(body = {}) {
       ? body.tituloCurso.trim().replace(/\s+/g, ' ')
       : (typeof body.nombreCurso === 'string' ? body.nombreCurso.trim().replace(/\s+/g, ' ') : ''),
     areaTematica: typeof body.areaTematica === 'string' ? body.areaTematica.trim().replace(/\s+/g, ' ') : '',
+    norma: typeof body.norma === 'string' ? body.norma.trim().replace(/\s+/g, ' ') : '',
     descripcion: typeof body.descripcion === 'string' ? body.descripcion.trim() : '',
     agenteCapacitador: typeof body.agenteCapacitador === 'string'
       ? body.agenteCapacitador.trim().replace(/\s+/g, ' ')
@@ -64,6 +66,8 @@ function normalizeFormularioBody(body = {}) {
   else if (data.nombreCurso.length > 120) errors.nombreCurso = 'El nombre no puede superar 120 caracteres.';
   if (!data.areaTematica) errors.areaTematica = 'El área temática es obligatoria.';
   else if (data.areaTematica.length > 120) errors.areaTematica = 'El área temática no puede superar 120 caracteres.';
+  if (!data.norma) errors.norma = 'La norma es obligatoria.';
+  else if (data.norma.length > 120) errors.norma = 'La norma no puede superar 120 caracteres.';
   if (data.descripcion.length > 1000) errors.descripcion = 'La descripción no puede superar 1,000 caracteres.';
   if (data.agenteCapacitador.length > 160) errors.agenteCapacitador = 'El agente capacitador no puede superar 160 caracteres.';
 
@@ -116,6 +120,8 @@ function serializeFormulario(form, cantidadParticipantes = 0) {
     tituloCurso: form.tituloCurso || form.nombreCurso,
     nombreCurso: form.nombreCurso,
     areaTematica: form.areaTematica,
+    norma: form.norma || '',
+    flyerBackgroundDriveId: form.flyerBackgroundDriveId || '',
     descripcion: form.descripcion || '',
     agenteCapacitador: form.agenteCapacitador || '',
     configuracionFechas: {
@@ -158,7 +164,7 @@ function getListFilter(query, now) {
   const area = String(query.areaTematica || '').trim();
   if (search) {
     const pattern = { $regex: escapeRegExp(search), $options: 'i' };
-    filter.$or = [{ nombreCurso: pattern }, { tituloCurso: pattern }];
+    filter.$or = [{ nombreCurso: pattern }, { tituloCurso: pattern }, { norma: pattern }];
   }
   if (area) filter.areaTematica = { $regex: escapeRegExp(area), $options: 'i' };
   if (query.estado) {
@@ -239,6 +245,7 @@ async function normalizeFormularioInput(body) {
       tituloCurso: data.tituloCurso,
       nombreCurso: data.nombreCurso,
       areaTematica: data.areaTematica,
+      norma: data.norma,
       descripcion: data.descripcion,
       agenteCapacitador: data.agenteCapacitador,
       configuracionFechas: {
@@ -502,7 +509,7 @@ async function exportFormularioRegistros(req, res, next) {
   }
   try {
     const formulario = await Formulario.findById(req.params.id)
-      .select('tituloCurso nombreCurso areaTematica agenteCapacitador configuracionFechas')
+      .select('tituloCurso nombreCurso areaTematica norma agenteCapacitador configuracionFechas')
       .lean();
     if (!formulario) return res.status(404).json({ success: false, message: 'Formulario no encontrado.' });
     const filter = buildRegistrationFilter(new mongoose.Types.ObjectId(req.params.id), req.query);
@@ -514,7 +521,7 @@ async function exportFormularioRegistros(req, res, next) {
       String(agency._id),
       agency.rfc || agency.RFC || '',
     ]));
-    const safeName = (formulario.tituloCurso || formulario.nombreCurso).replace(/[^\p{L}\p{N}-]+/gu, '_').slice(0, 80) || 'formularios';
+    const safeName = (formulario.nombreCurso || formulario.tituloCurso).replace(/[^\p{L}\p{N}-]+/gu, '_').slice(0, 80) || 'formularios';
     res.status(200);
     res.set({
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -531,7 +538,7 @@ async function exportFormularioRegistros(req, res, next) {
       { header: 'Agencia', key: 'agencia', width: 30 },
       { header: 'Razón social', key: 'razonSocial', width: 36 },
       { header: 'RFC', key: 'rfc', width: 18 },
-      { header: 'Nombre del curso', key: 'nombreCurso', width: 40 },
+      { header: 'Nombre DC3 completo', key: 'nombreCurso', width: 40 },
       { header: 'Área temática', key: 'areaTematica', width: 24 },
       { header: 'Agente capacitador', key: 'agenteCapacitador', width: 30 },
       { header: 'Fecha inicio', key: 'fechaInicio', width: 16 },

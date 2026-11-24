@@ -74,6 +74,7 @@ test('creates a fully configured form with fixed participant fields and a genera
       tituloCurso: 'Prevención de riesgos',
       nombreCurso: '  Seguridad industrial ',
       areaTematica: 'Higiene y Seguridad',
+      norma: 'NOM-029-STPS-2011',
       descripcion: '',
       configuracionFechas: {
         fechaApertura: '2099-01-01T08:00',
@@ -91,6 +92,7 @@ test('creates a fully configured form with fixed participant fields and a genera
   assert.match(saved.codigoCorto, /^[A-Za-z0-9_-]{16}$/);
   assert.equal(saved.tituloCurso, 'Prevención de riesgos');
   assert.equal(saved.nombreCurso, 'Seguridad industrial');
+  assert.equal(saved.norma, 'NOM-029-STPS-2011');
   assert.equal(saved.configuracionFechas.fechaCierre.toISOString(), '2099-01-17T15:00:00.000Z');
   assert.equal(saved.agenteCapacitador, Formulario.DEFAULT_AGENT);
   assert.deepEqual(saved.camposParticipante, ['nombreCompleto', 'curp', 'puesto', 'marca', 'agencia']);
@@ -204,6 +206,7 @@ test('creates a participant snapshot and returns a controlled duplicate-registra
     tituloCurso: 'Capacitación de seguridad',
     nombreCurso: 'Seguridad industrial',
     areaTematica: 'Higiene y Seguridad',
+    norma: 'NOM-029-STPS-2011',
     agenteCapacitador: 'ANA GARCÍA',
     configuracionFechas: {
       fechaApertura: new Date('2020-01-01T00:00:00Z'),
@@ -271,6 +274,7 @@ test('creates a participant snapshot and returns a controlled duplicate-registra
   assert.equal(capturedRegistration.avisoPrivacidad.aceptado, true);
   assert.equal(capturedRegistration.datosConstancia.tituloCurso, 'Capacitación de seguridad');
   assert.equal(capturedRegistration.datosConstancia.nombreCurso, 'Seguridad industrial');
+  assert.equal(capturedRegistration.datosConstancia.norma, 'NOM-029-STPS-2011');
   assert.equal(reservationReleased, true);
   assert.equal(request.auditRequestSummary.curp, undefined);
 });

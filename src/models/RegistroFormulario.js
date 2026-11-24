@@ -24,6 +24,7 @@ const datosConstanciaSchema = new mongoose.Schema(
     tituloCurso: { type: String, required: true },
     nombreCurso: { type: String, required: true },
     areaTematica: { type: String, required: true },
+    norma: { type: String, default: '' },
     fechaInicioVigencia: { type: Date, required: true },
     fechaFinVigencia: { type: Date, required: true },
     duracionHoras: { type: Number, required: true },

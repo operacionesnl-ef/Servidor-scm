@@ -29,6 +29,8 @@ const formularioSchema = new mongoose.Schema(
     tituloCurso: { type: String, required: true, trim: true, maxlength: 120 },
     nombreCurso: { type: String, required: true, trim: true, maxlength: 120 },
     areaTematica: { type: String, required: true, trim: true, maxlength: 120 },
+    norma: { type: String, trim: true, maxlength: 120, default: '' },
+    flyerBackgroundDriveId: { type: String, trim: true, default: '' },
     descripcion: { type: String, trim: true, maxlength: 1000, default: '' },
     agenteCapacitador: { type: String, trim: true, maxlength: 160, default: DEFAULT_AGENT },
     configuracionFechas: { type: configuracionFechasSchema, required: true },

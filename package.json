@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "ai:test-image": "node src/scripts/testCloudflareImageGeneration.js"
   },
   "dependencies": {
     "cors": "^2.8.6",

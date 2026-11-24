@@ -1,5 +1,14 @@
 const express = require('express');
+const { rateLimit } = require('express-rate-limit');
 const requireAuth = require('../middlewares/requireAuth');
+const {
+  generateFlyerBackground,
+  getFlyerBackgroundImage,
+  getFlyerBackgrounds,
+  receiveFlyerFiles,
+  saveFlyerToDrive,
+  selectFlyerBackground,
+} = require('../controllers/flyerController');
 const {
   getFormularios,
   createFormulario,
@@ -12,6 +21,26 @@ const {
 } = require('../controllers/formularioController');
 
 const router = express.Router();
+const flyerBackgroundLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Se alcanzó el límite de generación de fondos. Inténtalo más tarde.',
+  },
+});
+const flyerDriveSaveLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Se alcanzó el límite de guardados del flyer. Inténtalo más tarde.',
+  },
+});
 const requireFormAccess = (req, res, next) => {
   if (!['admin', 'developer', 'organizador'].includes(req.user?.rol)) {
     return res.status(403).json({ success: false, message: 'No tienes permiso para consultar formularios.' });
@@ -26,6 +55,11 @@ const requireFormManagement = (req, res, next) => {
 };
 
 router.use(requireAuth, requireFormAccess);
+router.post('/flyer/fondo', flyerBackgroundLimit, generateFlyerBackground);
+router.post('/:id/flyer/guardar', flyerDriveSaveLimit, receiveFlyerFiles, saveFlyerToDrive);
+router.get('/:id/flyer/fondos', getFlyerBackgrounds);
+router.get('/:id/flyer/fondos/:fileId/imagen', getFlyerBackgroundImage);
+router.post('/:id/flyer/fondos/seleccionar', selectFlyerBackground);
 router.get('/', getFormularios);
 router.post('/', requireFormManagement, createFormulario);
 router.get('/:id/qr', getFormularioQR);
