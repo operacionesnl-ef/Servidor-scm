@@ -3,14 +3,15 @@
 const mongoose = require('mongoose');
 const Agency = require('../models/Agency');
 const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
+const AgencyMonthlyInspection = require('../models/AgencyMonthlyInspection');
 const AgencyRefreshJob = require('../models/AgencyRefreshJob');
+const CalendarEvent = require('../models/CalendarEvent');
 const MailJob = require('../models/MailJob');
 const Notification = require('../models/Notification');
-const Subscription = require('../models/Subscription');
 const User = require('../models/User');
 const { getAgencyConsultantFilter } = require('../utils/agencyConsultants');
 const { subscribeToNotificationChanges } = require('../services/notificationEvents');
-const { sendPushToAudience, sendPushToUser } = require('../services/pushNotificationService');
+const { sendPushToAudience } = require('../services/pushNotificationService');
 const {
   buildNotificationFeed,
   getMexicoPeriod,
@@ -20,43 +21,14 @@ const ACTIVE_STATUSES = ['queued', 'processing'];
 const RECENT_COMPLETION_DAYS = 7;
 const MAX_QUICK_VIEW_HIDDEN_NOTIFICATIONS = 1000;
 const REMINDER_ID_PATTERN = /^reminder:\d{4}-\d{2}:[a-f\d]{24}$/i;
+const PENDING_GROUP_ID_PATTERN = /^pending_(?:files|schedule|authorization):(?:global|admin|consultant:[a-f\d]{24}):\d{4}-\d{2}$/i;
 const JOB_ID_PATTERN = /^job:(refresh|integrity|mail):[a-f\d]{24}$/i;
 
 function isQuickViewNotificationId(id) {
-  return mongoose.isValidObjectId(id) || REMINDER_ID_PATTERN.test(id) || JOB_ID_PATTERN.test(id);
-}
-
-async function pushMonthlyReminderOnce(userId, period, count) {
-  if (!count || !await Subscription.exists({ userId })) return;
-
-  const periodKey = `${period.year}-${String(period.month).padStart(2, '0')}`;
-  const claimed = await User.findOneAndUpdate(
-    { _id: userId, lastPushReminderPeriod: { $ne: periodKey } },
-    { $set: { lastPushReminderPeriod: periodKey } },
-    { new: true },
-  );
-  if (!claimed) return;
-
-  try {
-    const result = await sendPushToUser(userId, {
-      title: 'Recordatorio de reportes pendientes',
-      body: `Hay ${count} agencia${count === 1 ? '' : 's'} con reportes pendientes para ${String(period.month).padStart(2, '0')}/${period.year}.`,
-      url: '/agencias',
-      tag: `agency-reminder-${periodKey}`,
-    });
-    if (!result.sent) {
-      await User.updateOne(
-        { _id: userId, lastPushReminderPeriod: periodKey },
-        { $unset: { lastPushReminderPeriod: 1 } },
-      );
-    }
-  } catch (error) {
-    await User.updateOne(
-      { _id: userId, lastPushReminderPeriod: periodKey },
-      { $unset: { lastPushReminderPeriod: 1 } },
-    );
-    throw error;
-  }
+  return mongoose.isValidObjectId(id)
+    || REMINDER_ID_PATTERN.test(id)
+    || PENDING_GROUP_ID_PATTERN.test(id)
+    || JOB_ID_PATTERN.test(id);
 }
 
 function streamNotificationEvents(req, res) {
@@ -103,13 +75,16 @@ async function getNotifications(req, res, next) {
     const isConsultant = req.user.rol === 'consultor';
     const now = new Date();
     const period = getMexicoPeriod(now);
-    const [agencies, monthlyRecords, announcements, refreshJobs, mailJobs] = await Promise.all([
-      Agency.find({
+    const agenciesPromise = isAdmin || isConsultant
+      ? Agency.find({
         status: 'activa',
         ...(isConsultant ? getAgencyConsultantFilter(userId) : {}),
       })
-        .select('_id nombre status archivos reviewPeriods')
-        .lean(),
+        .select('_id nombre status archivos reviewPeriods consultantId auxiliaryConsultantId')
+        .lean()
+      : Promise.resolve([]);
+    const [agencies, monthlyRecords, announcements, refreshJobs, mailJobs] = await Promise.all([
+      agenciesPromise,
       AgencyMonthlyFiles.find({
         period: `${period.year}-${String(period.month).padStart(2, '0')}`,
       }).select('agencyId archivos').lean(),
@@ -137,16 +112,56 @@ async function getNotifications(req, res, next) {
       }).select('ownerEmail status year month total completed currentName templateName createdAt updatedAt')
         .sort({ updatedAt: -1 }).limit(30).lean(),
     ]);
+    const agencyIds = agencies.map((agency) => agency._id);
+    const periodKey = `${period.year}-${String(period.month).padStart(2, '0')}`;
+    const inspections = agencyIds.length
+      ? await AgencyMonthlyInspection.find({
+        period: periodKey,
+        agencyId: { $in: agencyIds },
+        visitStatus: { $ne: 'completed' },
+      }).select('agencyId authorizationStatus visitStatus scheduleStatus scheduleReason calendarEventId')
+        .lean()
+      : [];
+    const eventIds = inspections.map((inspection) => inspection.calendarEventId).filter(Boolean);
+    const calendarEvents = eventIds.length
+      ? await CalendarEvent.find({
+        _id: { $in: eventIds },
+        agencyId: { $in: agencyIds },
+        type: 'agency_visit',
+      }).select('_id agencyId startAt authorized').lean()
+      : [];
+    const consultantIds = isAdmin
+      ? [...new Set(agencies.flatMap((agency) => [
+        agency.consultantId,
+        agency.auxiliaryConsultantId,
+      ]).filter(Boolean).map(String))]
+      : [];
+    const consultants = consultantIds.length
+      ? await User.find({ _id: { $in: consultantIds } }).select('_id nombre').lean()
+      : [];
+    const consultantNames = new Map(consultants.map((consultant) => [
+      String(consultant._id),
+      consultant.nombre,
+    ]));
+    const agenciesWithConsultants = agencies.map((agency) => ({
+      ...agency,
+      consultantNames: [
+        consultantNames.get(String(agency.consultantId)),
+        consultantNames.get(String(agency.auxiliaryConsultantId)),
+      ].filter(Boolean),
+    }));
 
     const filesByAgency = new Map(monthlyRecords.map((record) => [
       String(record.agencyId),
       record.archivos || {},
     ]));
     const feed = buildNotificationFeed({
-      agencies: agencies.map((agency) => ({
+      agencies: agenciesWithConsultants.map((agency) => ({
         ...agency,
         archivos: filesByAgency.get(String(agency._id)) || {},
       })),
+      inspections,
+      calendarEvents,
       announcements: isConsultant
         ? announcements.filter((item) => item.audience === 'personal'
           ? String(item.recipientUserId) === String(userId)
@@ -157,10 +172,9 @@ async function getNotifications(req, res, next) {
       mailJobs: isConsultant ? [] : mailJobs,
       userId,
       period,
+      scope: isConsultant ? 'consultant' : 'global',
       now,
     });
-    pushMonthlyReminderOnce(userId, period, feed.counts.reminders)
-      .catch((error) => console.error('[Push] No se pudo enviar el recordatorio mensual:', error.message));
     const readIds = new Set(req.user.readNotificationIds || []);
     const hiddenIds = new Set(req.user.quickViewHiddenNotifications || []);
     const items = feed.items.map((item) => (
@@ -195,7 +209,7 @@ async function getNotifications(req, res, next) {
 async function markNotificationRead(req, res, next) {
   try {
     const notificationId = req.params.id;
-    if (REMINDER_ID_PATTERN.test(notificationId)) {
+    if (REMINDER_ID_PATTERN.test(notificationId) || PENDING_GROUP_ID_PATTERN.test(notificationId)) {
       await User.updateOne(
         { _id: req.user._id },
         { $addToSet: { readNotificationIds: notificationId } },

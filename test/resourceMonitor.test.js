@@ -2,12 +2,16 @@
 
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { getResourceMetrics } = require('../src/services/resourceMonitor');
+const {
+  getResourceMetrics,
+  shouldPauseMailJobs,
+} = require('../src/services/resourceMonitor');
 
 const RESOURCE_ENVIRONMENT_KEYS = [
   'MEMORY_LIMIT_BYTES',
   'MEMORY_PAUSE_THRESHOLD_PERCENT',
   'MEMORY_RESUME_THRESHOLD_PERCENT',
+  'MAIL_MIN_AVAILABLE_MEMORY_BYTES',
 ];
 
 function saveResourceEnvironment() {
@@ -61,6 +65,31 @@ test('resource monitor rejects invalid threshold configuration', () => {
   try {
     assert.throws(getResourceMetrics, /reanudación sea menor que pausa/);
   } finally {
+    restoreResourceEnvironment(originalEnvironment);
+  }
+});
+
+test('mail workers reserve memory before starting the next recipient', () => {
+  const originalEnvironment = saveResourceEnvironment();
+
+  try {
+    process.env.MEMORY_LIMIT_BYTES = '9007199254740991';
+    process.env.MAIL_MIN_AVAILABLE_MEMORY_BYTES = '9007199254740991';
+
+    const reserved = getResourceMetrics();
+    assert.equal(reserved.complexJobs.paused, false);
+    assert.equal(reserved.complexJobs.mailJobsPaused, true);
+    assert.equal(reserved.complexJobs.mailPauseReason, 'mail_memory_reserve');
+    assert.equal(shouldPauseMailJobs(), true);
+
+    process.env.MAIL_MIN_AVAILABLE_MEMORY_BYTES = '1';
+    const available = getResourceMetrics();
+    assert.equal(available.complexJobs.mailJobsPaused, false);
+    assert.equal(shouldPauseMailJobs(), false);
+  } finally {
+    process.env.MEMORY_LIMIT_BYTES = '9007199254740991';
+    process.env.MAIL_MIN_AVAILABLE_MEMORY_BYTES = '1';
+    getResourceMetrics();
     restoreResourceEnvironment(originalEnvironment);
   }
 });

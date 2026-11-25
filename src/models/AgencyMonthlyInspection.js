@@ -1,6 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const { publishNotificationChange } = require('../services/notificationEvents');
 
 const agencyMonthlyInspectionSchema = new mongoose.Schema({
   agencyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Agency', required: true },
@@ -16,8 +17,19 @@ const agencyMonthlyInspectionSchema = new mongoose.Schema({
   },
   visitStatus: {
     type: String,
-    enum: ['scheduled', 'completed'],
-    default: 'scheduled',
+    enum: ['pending', 'scheduled', 'completed'],
+    default: 'pending',
+  },
+  scheduleStatus: {
+    type: String,
+    enum: ['pending', 'scheduled', 'unscheduled'],
+    default: 'pending',
+  },
+  scheduleReason: { type: String, trim: true, maxlength: 500, default: '' },
+  scheduleGenerationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'MonthlyScheduleGeneration',
+    default: null,
   },
   attendanceStatus: {
     type: String,
@@ -38,5 +50,11 @@ const agencyMonthlyInspectionSchema = new mongoose.Schema({
 
 agencyMonthlyInspectionSchema.index({ agencyId: 1, period: 1 }, { unique: true });
 agencyMonthlyInspectionSchema.index({ period: 1, visitStatus: 1 });
+agencyMonthlyInspectionSchema.post('save', publishNotificationChange);
+agencyMonthlyInspectionSchema.post('findOneAndUpdate', publishNotificationChange);
+agencyMonthlyInspectionSchema.post('updateOne', publishNotificationChange);
+agencyMonthlyInspectionSchema.post('updateMany', publishNotificationChange);
+agencyMonthlyInspectionSchema.post('deleteOne', publishNotificationChange);
+agencyMonthlyInspectionSchema.post('findOneAndDelete', publishNotificationChange);
 
 module.exports = mongoose.model('AgencyMonthlyInspection', agencyMonthlyInspectionSchema);

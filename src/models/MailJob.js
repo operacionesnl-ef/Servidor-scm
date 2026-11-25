@@ -24,7 +24,12 @@ const jobResultSchema = new mongoose.Schema({
   correo: { type: String, required: true },
   cc: { type: [String], default: [] },
   cco: { type: [String], default: [] },
-  status: { type: String, enum: ['sent', 'failed', 'cancelled'], required: true },
+  status: {
+    type: String,
+    enum: ['pending', 'preparing', 'sending', 'sent', 'failed', 'unknown', 'cancelled'],
+    required: true,
+  },
+  retryable: { type: Boolean, default: false },
   gmailMessageId: String,
   error: String,
   attachedFiles: {

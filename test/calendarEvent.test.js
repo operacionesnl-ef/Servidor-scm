@@ -7,8 +7,10 @@ const CalendarEvent = require('../src/models/CalendarEvent');
 const CalendarEventModel = require('../src/models/CalendarEvent');
 const Agency = require('../src/models/Agency');
 const {
+  createCalendarEvent,
   createCalendarEventSeries,
   getCalendarEvents,
+  updateCalendarEvent,
   validateEventSeriesInput,
   validateEventInput,
 } = require('../src/controllers/calendarController');
@@ -63,6 +65,68 @@ test('calendar input validation accepts the API contract and rejects malformed r
     endAt: '2026-10-14T10:00:00Z',
   }, false);
   assert.ok(invalid.errors.startAt);
+});
+
+test('calendar API rejects an agency visit scheduled before Saturday opening', async () => {
+  const originalCreate = CalendarEvent.create;
+  let created = false;
+  CalendarEvent.create = async (input) => {
+    created = true;
+    return input;
+  };
+  try {
+    const res = response();
+    await createCalendarEvent({
+      user: { _id: new mongoose.Types.ObjectId() },
+      body: {
+        title: 'Visita sabatina',
+        type: 'agency_visit',
+        startAt: '2026-10-03T14:00:00-06:00',
+        endAt: '2026-10-03T15:00:00-06:00',
+        agencyId: null,
+        consultantId: null,
+      },
+    }, res, (error) => { throw error; });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body.errors.startAt, /sábados.*entre 09:00 y 12:00/i);
+    assert.equal(created, false);
+  } finally {
+    CalendarEvent.create = originalCreate;
+  }
+});
+
+test('calendar API rejects moving an existing visit outside working hours', async () => {
+  const originalFindById = CalendarEvent.findById;
+  const event = {
+    _id: new mongoose.Types.ObjectId(),
+    title: 'Visita de agencia',
+    type: 'agency_visit',
+    startAt: new Date('2026-10-05T16:00:00.000Z'),
+    endAt: new Date('2026-10-05T17:00:00.000Z'),
+    agencyId: null,
+    consultantId: new mongoose.Types.ObjectId(),
+    authorized: false,
+    updatedAt: new Date(),
+    saves: 0,
+    async save() { this.saves += 1; },
+  };
+  CalendarEvent.findById = async () => event;
+  try {
+    const res = response();
+    await updateCalendarEvent({
+      params: { id: String(event._id) },
+      user: { _id: new mongoose.Types.ObjectId() },
+      body: {
+        startAt: '2026-10-03T14:00:00-06:00',
+        endAt: '2026-10-03T15:00:00-06:00',
+      },
+    }, res, (error) => { throw error; });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body.errors.startAt, /sábados.*entre 09:00 y 12:00/i);
+    assert.equal(event.saves, 0);
+  } finally {
+    CalendarEvent.findById = originalFindById;
+  }
 });
 
 test('calendar series validation requires a bounded recurrence and consistent occurrences', () => {

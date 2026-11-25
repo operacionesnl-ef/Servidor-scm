@@ -5,6 +5,7 @@ const os = require('node:os');
 
 const DEFAULT_PAUSE_THRESHOLD_PERCENT = 90;
 const DEFAULT_RESUME_THRESHOLD_PERCENT = 80;
+const DEFAULT_MAIL_MIN_AVAILABLE_MEMORY_BYTES = 256 * 1024 * 1024;
 const SAMPLE_INTERVAL_MS = 5000;
 const CGROUP_MEMORY_PATHS = [
   ['/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory.current'],
@@ -45,6 +46,13 @@ function getThresholds() {
   }
 
   return { pauseThresholdPercent, resumeThresholdPercent };
+}
+
+function getMailMinimumAvailableMemoryBytes() {
+  const configured = process.env.MAIL_MIN_AVAILABLE_MEMORY_BYTES?.trim();
+  return configured
+    ? readPositiveInteger(configured, 'MAIL_MIN_AVAILABLE_MEMORY_BYTES')
+    : DEFAULT_MAIL_MIN_AVAILABLE_MEMORY_BYTES;
 }
 
 function readCgroupMemory() {
@@ -90,6 +98,7 @@ function updatePauseState(usagePercentage, { pauseThresholdPercent, resumeThresh
 
 function getResourceMetrics() {
   const thresholds = getThresholds();
+  const mailMinimumAvailableMemoryBytes = getMailMinimumAvailableMemoryBytes();
   const processMemory = process.memoryUsage();
   const configuredMemoryLimit = process.env.MEMORY_LIMIT_BYTES?.trim();
   const cgroupMemory = readCgroupMemory();
@@ -100,8 +109,13 @@ function getResourceMetrics() {
   const memoryUsagePercentage = memoryLimitBytes === null
     ? null
     : (memoryUsedBytes / memoryLimitBytes) * 100;
+  const memoryAvailableBytes = memoryLimitBytes === null
+    ? null
+    : Math.max(0, memoryLimitBytes - memoryUsedBytes);
 
   updatePauseState(memoryUsagePercentage, thresholds);
+  const mailMemoryPaused = memoryAvailableBytes !== null
+    && memoryAvailableBytes < mailMinimumAvailableMemoryBytes;
 
   const disk = fs.statfsSync(process.cwd());
   const diskBlockSize = disk.bsize;
@@ -112,9 +126,7 @@ function getResourceMetrics() {
     memory: {
       limitBytes: memoryLimitBytes,
       usedBytes: memoryUsedBytes,
-      availableBytes: memoryLimitBytes === null
-        ? null
-        : Math.max(0, memoryLimitBytes - memoryUsedBytes),
+      availableBytes: memoryAvailableBytes,
       usagePercentage: memoryUsagePercentage,
       limitSource: configuredMemoryLimit ? 'configured' : cgroupMemory ? 'cgroup' : null,
       usageSource: cgroupMemory ? 'cgroup' : 'process',
@@ -138,12 +150,21 @@ function getResourceMetrics() {
     complexJobs: {
       paused: complexWorkPaused,
       reason: complexWorkPaused ? 'memory_threshold' : null,
+      mailJobsPaused: complexWorkPaused || mailMemoryPaused,
+      mailPauseReason: complexWorkPaused
+        ? 'memory_threshold'
+        : mailMemoryPaused ? 'mail_memory_reserve' : null,
+      mailMinimumAvailableMemoryBytes,
     },
   };
 }
 
 function shouldPauseComplexJobs() {
   return getResourceMetrics().complexJobs.paused;
+}
+
+function shouldPauseMailJobs() {
+  return getResourceMetrics().complexJobs.mailJobsPaused;
 }
 
 function startResourceMonitor() {
@@ -162,5 +183,6 @@ function startResourceMonitor() {
 module.exports = {
   getResourceMetrics,
   shouldPauseComplexJobs,
+  shouldPauseMailJobs,
   startResourceMonitor,
 };

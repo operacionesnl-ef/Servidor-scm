@@ -5,7 +5,9 @@ const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
 const Agency = require('../src/models/Agency');
 const AgencyMonthlyFiles = require('../src/models/AgencyMonthlyFiles');
+const AgencyMonthlyInspection = require('../src/models/AgencyMonthlyInspection');
 const AgencyRefreshJob = require('../src/models/AgencyRefreshJob');
+const CalendarEvent = require('../src/models/CalendarEvent');
 const MailJob = require('../src/models/MailJob');
 const Notification = require('../src/models/Notification');
 const Subscription = require('../src/models/Subscription');
@@ -145,6 +147,8 @@ test('consultant feed includes only personal notices addressed to the authentica
   const originalMethods = {
     agencyFind: Agency.find,
     monthlyFilesFind: AgencyMonthlyFiles.find,
+    inspectionFind: AgencyMonthlyInspection.find,
+    calendarEventFind: CalendarEvent.find,
     globalSettingFindById: GlobalSetting.findById,
     notificationFind: Notification.find,
     refreshFind: AgencyRefreshJob.find,
@@ -181,6 +185,8 @@ test('consultant feed includes only personal notices addressed to the authentica
       { driveId: `${key}-drive`, periodYear: period.year, periodMonth: period.month },
     ])),
   }]);
+  AgencyMonthlyInspection.find = () => listQuery([]);
+  CalendarEvent.find = () => listQuery([]);
   GlobalSetting.findById = () => ({ lean: async () => null });
   Notification.find = () => listQuery(notices);
   AgencyRefreshJob.find = () => listQuery([]);
@@ -200,6 +206,8 @@ test('consultant feed includes only personal notices addressed to the authentica
   } finally {
     Agency.find = originalMethods.agencyFind;
     AgencyMonthlyFiles.find = originalMethods.monthlyFilesFind;
+    AgencyMonthlyInspection.find = originalMethods.inspectionFind;
+    CalendarEvent.find = originalMethods.calendarEventFind;
     GlobalSetting.findById = originalMethods.globalSettingFindById;
     Notification.find = originalMethods.notificationFind;
     AgencyRefreshJob.find = originalMethods.refreshFind;
@@ -358,6 +366,27 @@ test('marking a synthetic reminder as read is stored per user', async () => {
     assert.deepEqual(update, [
       { _id: 'user-id' },
       { $addToSet: { readNotificationIds: 'reminder:2026-10:507f1f77bcf86cd799439011' } },
+    ]);
+    assert.equal(res.body.success, true);
+  } finally {
+    User.updateOne = originalUpdate;
+  }
+});
+
+test('marking a grouped pending notification as read uses its stable group key', async () => {
+  const originalUpdate = User.updateOne;
+  let update;
+  User.updateOne = async (...args) => { update = args; return { modifiedCount: 1 }; };
+
+  try {
+    const res = response();
+    await markNotificationRead({
+      params: { id: 'pending_files:global:2026-10' },
+      user: { _id: 'user-id' },
+    }, res, (error) => { throw error; });
+    assert.deepEqual(update, [
+      { _id: 'user-id' },
+      { $addToSet: { readNotificationIds: 'pending_files:global:2026-10' } },
     ]);
     assert.equal(res.body.success, true);
   } finally {

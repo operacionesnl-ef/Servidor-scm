@@ -7,7 +7,7 @@ const { createOrGetPublicDriveCopy, findOrCreateAuxiliaryFolder } = require('./g
 const { logConsoleEvent, logServerEvent } = require('../utils/serverLogger');
 const { logEvent } = require('../utils/consoleLogger');
 const { sendPushToUser } = require('./pushNotificationService');
-const { shouldPauseComplexJobs } = require('./resourceMonitor');
+const { shouldPauseMailJobs } = require('./resourceMonitor');
 
 const GOOGLE_EXPORT_TYPES = {
   'application/vnd.google-apps.document': 'application/pdf',
@@ -17,6 +17,7 @@ const GOOGLE_EXPORT_TYPES = {
 };
 const MAX_DIRECT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_GMAIL_RAW_BYTES = 25 * 1024 * 1024;
+const RESOURCE_RESUME_POLL_MS = 5000;
 
 let workerPromise = null;
 let pollTimer = null;
@@ -29,6 +30,28 @@ function assertGmailRawMessageBytes(messageBytes) {
   if (messageBytes > MAX_GMAIL_RAW_BYTES) {
     throw new Error('El correo excede el límite de tamaño que acepta Gmail después de codificar los adjuntos. Reduce el tamaño de los archivos o envíalos mediante un enlace de Google Drive.');
   }
+}
+
+function getResumableRecipientIndexes(job) {
+  const indexes = [];
+  for (let index = 0; index < job.recipients.length; index += 1) {
+    const result = job.results[index];
+    if (
+      result?.status === 'cancelled' ||
+      result?.status === 'pending' ||
+      (result?.status === 'failed' && result.retryable)
+    ) indexes.push(index);
+  }
+  return indexes;
+}
+
+function classifySendFailure(error, sendStarted) {
+  if (!sendStarted) return { status: 'failed', retryable: true };
+  const statusCode = Number(error?.response?.status || error?.code);
+  const definitelyRejected = Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 500;
+  return definitelyRejected
+    ? { status: 'failed', retryable: true }
+    : { status: 'unknown', retryable: false };
 }
 
 async function buildRawMessageWithinLimit(drive, { to, cc, cco, subject, message, preparedAttachments }) {
@@ -78,7 +101,7 @@ function resolveText(text, { month, year, agencyName }) {
     .replace(/\{\{SUCURSAL\}\}/g, agencyName);
 }
 
-async function readDriveFile(drive, file) {
+async function readDriveFile(drive, file, maxBytes = MAX_DIRECT_ATTACHMENT_BYTES) {
   const { data: metadata } = await drive.files.get({
     fileId: file.driveId,
     fields: 'id,name,mimeType,size',
@@ -89,7 +112,7 @@ async function readDriveFile(drive, file) {
   if (isNativeFile && !exportType) throw new Error(`El archivo ${metadata.name} no se puede adjuntar en este formato.`);
   const nombre = file.nombre || metadata.name;
   const mimeType = isNativeFile ? exportType : metadata.mimeType || 'application/octet-stream';
-  if (!isNativeFile && Number(metadata.size) > MAX_DIRECT_ATTACHMENT_BYTES) {
+  if (maxBytes <= 0 || (!isNativeFile && Number(metadata.size) > maxBytes)) {
     return { nombre, mimeType, content: null };
   }
 
@@ -101,15 +124,14 @@ async function readDriveFile(drive, file) {
   for await (const chunk of response.data) {
     const buffer = Buffer.from(chunk);
     size += buffer.length;
-    if (size > MAX_DIRECT_ATTACHMENT_BYTES) break;
+    if (size > maxBytes) {
+      response.data.destroy?.();
+      return { nombre, mimeType, content: null };
+    }
     chunks.push(buffer);
   }
 
-  return {
-    nombre,
-    mimeType,
-    content: size > MAX_DIRECT_ATTACHMENT_BYTES ? null : Buffer.concat(chunks),
-  };
+  return { nombre, mimeType, content: Buffer.concat(chunks) };
 }
 
 async function buildAttachments(drive, recipient, globalAttachments) {
@@ -121,8 +143,12 @@ async function buildAttachments(drive, recipient, globalAttachments) {
   for (const file of files) {
     let attachment;
     try {
-      attachment = await readDriveFile(drive, file);
-      if (!attachment.content || totalBytes + attachment.content.length > MAX_DIRECT_ATTACHMENT_BYTES) {
+      attachment = await readDriveFile(
+        drive,
+        file,
+        MAX_DIRECT_ATTACHMENT_BYTES - totalBytes,
+      );
+      if (!attachment.content) {
         if (!auxiliaryFolderId) {
           const folder = await findOrCreateAuxiliaryFolder(drive);
           auxiliaryFolderId = folder.id;
@@ -160,19 +186,26 @@ async function buildAttachments(drive, recipient, globalAttachments) {
 async function recordMailLog(job) {
   const asuntoResuelto = resolveText(job.subject, { month: job.month, year: job.year, agencyName: '[SUCURSAL]' });
   const cuerpoResuelto = resolveText(job.message, { month: job.month, year: job.year, agencyName: '[SUCURSAL]' });
-  const recipients = job.results.map((result) => ({
-    agencyId: result.agencyId,
-    agencyName: result.agencyName,
-    correo: result.correo,
-    cc: result.cc || [],
-    cco: result.cco || [],
-    status: result.status === 'sent' ? 'sent' : 'failed',
-    gmailMessageId: result.gmailMessageId,
-    error: result.error,
-    attachedFiles: result.attachedFiles.filter((file) => file.code),
-  }));
-  const log = await MailLog.create({
+  const recipients = job.recipients.map((recipient, index) => {
+    const result = job.results[index] || {};
+    return {
+      agencyId: recipient.agencyId,
+      agencyName: recipient.agencyName,
+      correo: recipient.correo,
+      cc: recipient.cc || [],
+      cco: recipient.cco || [],
+      status: ['sent', 'failed', 'unknown', 'cancelled'].includes(result.status)
+        ? result.status
+        : 'cancelled',
+      retryable: Boolean(result.retryable),
+      gmailMessageId: result.gmailMessageId,
+      error: result.error,
+      attachedFiles: (result.attachedFiles || []).filter((file) => file.code),
+    };
+  });
+  const values = {
     mailJobId: job._id,
+    mailJobStatus: job.status,
     sentBy: job.ownerEmail,
     templateKey: job.templateKey,
     templateName: job.templateName,
@@ -182,33 +215,50 @@ async function recordMailLog(job) {
     cuerpoResuelto,
     archivosGlobales: job.globalAttachments,
     recipients,
-  });
+  };
+  const log = await MailLog.findOne({ mailJobId: job._id }) || new MailLog();
+  Object.assign(log, values);
+  await log.save();
   return log._id;
 }
 
 async function finishJob(job, status, error = '', event = 'job_finished') {
-  const remaining = job.recipients.slice(job.results.length);
-  if (remaining.length) {
-    const isFirstUnresolvedFailure = status === 'failed' && job.results.length === 0;
-    remaining.forEach((recipient, index) => {
-      const failed = isFirstUnresolvedFailure && index === 0;
-      job.results.push({
-        agencyId: recipient.agencyId,
-        agencyName: recipient.agencyName,
-        correo: recipient.correo,
-        cc: recipient.cc || [],
-        cco: recipient.cco || [],
-        status: failed ? 'failed' : 'cancelled',
-        error: failed ? error : 'Cancelado porque el proceso no pudo continuar.',
-        attachedFiles: [],
-      });
-    });
-  }
+  for (let index = 0; index < job.recipients.length; index += 1) {
+    const recipient = job.recipients[index];
+    const result = job.results[index]?.toObject?.() || job.results[index] || {};
+    const common = {
+      agencyId: recipient.agencyId,
+      agencyName: recipient.agencyName,
+      correo: recipient.correo,
+      cc: recipient.cc || [],
+      cco: recipient.cco || [],
+      attachedFiles: result.attachedFiles || [],
+      ...result,
+    };
 
-  try {
-    if (!job.mailLogId) job.mailLogId = await recordMailLog(job);
-  } catch (logError) {
-    job.logError = logError.message || 'No se pudo guardar el historial del envío.';
+    if (result.status === 'sending') {
+      job.results[index] = {
+        ...common,
+        status: 'unknown',
+        retryable: false,
+        error: 'No se pudo confirmar si Gmail aceptó este mensaje. No se reenviará para evitar duplicados; revisa Elementos enviados.',
+      };
+    } else if (result.status === 'preparing') {
+      job.results[index] = {
+        ...common,
+        status: 'failed',
+        retryable: true,
+        error: error || 'El servidor se detuvo antes de iniciar el envío a Gmail.',
+      };
+    } else if (!result.status || result.status === 'pending') {
+      job.results[index] = {
+        ...common,
+        status: 'cancelled',
+        retryable: false,
+        error: 'No se procesó porque el proceso se detuvo antes de enviar este correo.',
+        attachedFiles: [],
+      };
+    }
   }
 
   job.status = status;
@@ -216,6 +266,12 @@ async function finishJob(job, status, error = '', event = 'job_finished') {
   job.currentName = '';
   job.completed = job.recipients.length;
   job.expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  try {
+    job.mailLogId = await recordMailLog(job);
+  } catch (logError) {
+    job.logError = logError.message || 'No se pudo guardar el historial del envío.';
+  }
+
   await job.save();
   try {
     await sendPushToUser(job.owner, {
@@ -244,18 +300,44 @@ async function processJob(job) {
     const gmail = google.gmail({ version: 'v1', auth });
     const drive = google.drive({ version: 'v3', auth });
 
-    for (let index = job.completed; index < job.recipients.length; index += 1) {
+    for (let index = 0; index < job.recipients.length; index += 1) {
+      const previous = job.results[index];
+      const shouldProcess = !previous
+        || previous.status === 'pending'
+        || previous.status === 'cancelled'
+        || (previous.status === 'failed' && previous.retryable);
+      if (!shouldProcess) continue;
+
       const recipient = job.recipients[index];
       job.currentIndex = index;
       job.currentName = recipient.agencyName;
+      job.results[index] = {
+        agencyId: recipient.agencyId,
+        agencyName: recipient.agencyName,
+        correo: recipient.correo,
+        cc: recipient.cc || [],
+        cco: recipient.cco || [],
+        status: 'pending',
+        retryable: false,
+        attachedFiles: [],
+      };
+      await job.save();
+
+      while (shouldPauseMailJobs()) {
+        await new Promise((resolve) => setTimeout(resolve, RESOURCE_RESUME_POLL_MS));
+      }
+
+      job.results[index].status = 'preparing';
       await job.save();
 
       let result;
+      let sendStarted = false;
+      let attachedFiles = [];
       try {
         const preparedAttachments = await buildAttachments(drive, recipient, job.globalAttachments);
         const subject = resolveText(job.subject, { month: job.month, year: job.year, agencyName: recipient.agencyName });
         const message = resolveText(job.message, { month: job.month, year: job.year, agencyName: recipient.agencyName });
-        const { raw, preparedAttachments: finalAttachments } = await buildRawMessageWithinLimit(drive, {
+        const { raw, preparedAttachments: finalPreparedAttachments } = await buildRawMessageWithinLimit(drive, {
           to: recipient.correo,
           cc: recipient.cc,
           cco: recipient.cco,
@@ -263,6 +345,17 @@ async function processJob(job) {
           message,
           preparedAttachments,
         });
+        attachedFiles = finalPreparedAttachments
+          .map(({ code, driveId, nombre }) => ({ code, driveId, nombre }))
+          .filter((file) => file.code);
+        finalPreparedAttachments.forEach((attachment) => { attachment.content = null; });
+        job.results[index] = {
+          ...job.results[index].toObject(),
+          status: 'sending',
+          retryable: false,
+        };
+        await job.save();
+        sendStarted = true;
         const { data } = await gmail.users.messages.send({
           userId: 'me',
           requestBody: { raw },
@@ -275,23 +368,26 @@ async function processJob(job) {
           cco: recipient.cco,
           status: 'sent',
           gmailMessageId: data.id || '',
-          attachedFiles: finalAttachments.map(({ code, driveId, nombre }) => ({ code, driveId, nombre })).filter((file) => file.code),
+          attachedFiles,
         };
       } catch (error) {
+        const disposition = classifySendFailure(error, sendStarted);
         result = {
           agencyId: recipient.agencyId,
           agencyName: recipient.agencyName,
           correo: recipient.correo,
           cc: recipient.cc,
           cco: recipient.cco,
-          status: 'failed',
-          error: error.message || 'No se pudo enviar el correo.',
-          attachedFiles: [],
+          ...disposition,
+          error: disposition.status === 'unknown'
+            ? `No se pudo confirmar si Gmail aceptó este mensaje. No se reenviará para evitar duplicados; revisa Elementos enviados.${error.message ? ` Detalle: ${error.message}` : ''}`
+            : error.message || 'No se pudo preparar el correo antes de enviarlo.',
+          attachedFiles: disposition.status === 'unknown' ? attachedFiles : [],
         };
       }
 
-      job.results.push(result);
-      job.completed = index + 1;
+      job.results[index] = result;
+      job.completed = job.results.filter((item) => ['sent', 'failed', 'unknown'].includes(item.status)).length;
       job.currentIndex = index + 1;
       await job.save();
       logConsoleEvent('mail_job.recipient', {
@@ -303,28 +399,24 @@ async function processJob(job) {
         total: job.total,
         ...(result.error ? { error: result.error.slice(0, 300) } : {}),
       });
-      if (result.status === 'failed') {
+      if (result.status === 'failed' || result.status === 'unknown') {
         await finishJob(job, 'failed', result.error);
         return;
       }
     }
 
-    await finishJob(job, 'completed');
+    const unresolvedDelivery = job.results.some((result) => (
+      result.status === 'unknown' || (result.status === 'failed' && !result.retryable)
+    ));
+    await finishJob(
+      job,
+      unresolvedDelivery ? 'failed' : 'completed',
+      unresolvedDelivery
+        ? 'El proceso continuó sin reenviar correos cuyo resultado no se pudo confirmar. Revisa esos mensajes en Elementos enviados.'
+        : '',
+    );
   } catch (error) {
     const message = error.message || 'El proceso no pudo continuar.';
-    if (job.currentIndex < job.recipients.length && job.results.length === job.currentIndex) {
-      const recipient = job.recipients[job.currentIndex];
-      job.results.push({
-        agencyId: recipient.agencyId,
-        agencyName: recipient.agencyName,
-        correo: recipient.correo,
-        cc: recipient.cc,
-        cco: recipient.cco,
-        status: 'failed',
-        error: message,
-        attachedFiles: [],
-      });
-    }
     await finishJob(job, 'failed', message);
   }
 }
@@ -332,17 +424,37 @@ async function processJob(job) {
 async function recoverInterruptedJobs() {
   const interrupted = await MailJob.find({ status: 'processing' }).select('+encryptedGoogleAccessToken');
   for (const job of interrupted) {
-    const message = 'El servidor se reinició durante el envío; se cancelaron los destinatarios restantes para evitar duplicados.';
-    const unresolved = job.recipients[job.results.length];
-    if (unresolved) {
-      job.results.push({
-        agencyId: unresolved.agencyId,
-        agencyName: unresolved.agencyName,
-        correo: unresolved.correo,
-        status: 'failed',
-        error: 'El resultado de este envío no se pudo confirmar tras reiniciar el servidor.',
+    const message = 'El servidor se reinició durante el envío. Los mensajes con resultado incierto no se reenviarán para evitar duplicados; los demás destinatarios se pueden continuar desde el historial.';
+    const firstUnrecordedIndex = job.results.length < job.recipients.length
+      ? job.results.length
+      : -1;
+    const legacyUnresolvedIndex = firstUnrecordedIndex === job.currentIndex
+      ? firstUnrecordedIndex
+      : -1;
+    for (let index = 0; index < job.results.length; index += 1) {
+      const result = job.results[index];
+      if (result?.status === 'sending') {
+        job.results[index] = {
+          ...result.toObject(),
+          status: 'unknown',
+          retryable: false,
+          error: 'El servidor se reinició durante el envío. Revisa Elementos enviados; este correo no se reenviará automáticamente.',
+        };
+      }
+    }
+    if (legacyUnresolvedIndex >= 0 && !job.results[legacyUnresolvedIndex]) {
+      const recipient = job.recipients[legacyUnresolvedIndex];
+      job.results[legacyUnresolvedIndex] = {
+        agencyId: recipient.agencyId,
+        agencyName: recipient.agencyName,
+        correo: recipient.correo,
+        cc: recipient.cc || [],
+        cco: recipient.cco || [],
+        status: 'unknown',
+        retryable: false,
+        error: 'El resultado no se pudo confirmar tras reiniciar el servidor. Revisa Elementos enviados antes de actuar.',
         attachedFiles: [],
-      });
+      };
     }
     await finishJob(job, 'failed', message, 'job_recovered');
   }
@@ -352,7 +464,7 @@ async function processQueuedJobs() {
   if (workerPromise) return workerPromise;
   workerPromise = (async () => {
     while (true) {
-      if (shouldPauseComplexJobs()) break;
+      if (shouldPauseMailJobs()) break;
       const job = await MailJob.findOneAndUpdate(
         { status: 'queued' },
         { $set: { status: 'processing' } },
@@ -391,6 +503,11 @@ module.exports = {
   assertGmailRawMessageSize,
   buildAttachments,
   buildRawMessageWithinLimit,
+  classifySendFailure,
+  readDriveFile,
+  recordMailLog,
+  finishJob,
+  getResumableRecipientIndexes,
   startMailJobWorker,
   kickMailJobWorker,
 };

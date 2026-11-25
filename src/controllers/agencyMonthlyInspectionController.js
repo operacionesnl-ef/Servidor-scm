@@ -7,6 +7,11 @@ const CalendarEvent = require('../models/CalendarEvent');
 const { success } = require('../utils/response');
 const { recordAgencyHistory } = require('../services/agencyHistory');
 const { notifyAgencyConsultants } = require('../services/consultantNotifications');
+const { ensureMonthlyRecalendarization } = require('../services/monthlyRecalendarization');
+const {
+  formatSuggestedStartAt,
+  validateCalendarSlots,
+} = require('../services/calendarAvailability');
 const {
   getAgencyConsultantFilter,
   getAgencyConsultants,
@@ -46,6 +51,9 @@ function serializeRecord(record) {
     period: record.period,
     authorizationStatus: record.authorizationStatus,
     visitStatus: record.visitStatus,
+    scheduleStatus: record.scheduleStatus || (record.calendarEventId ? 'scheduled' : 'pending'),
+    scheduleReason: record.scheduleReason || '',
+    scheduleGenerationId: record.scheduleGenerationId ? String(record.scheduleGenerationId) : null,
     attendanceStatus: record.attendanceStatus || null,
     attendanceConfirmedBy: record.attendanceConfirmedBy
       ? String(record.attendanceConfirmedBy)
@@ -71,6 +79,7 @@ async function getMonthlyInspection(req, res, next) {
   if (!validAgencyId(req.params.id, res) || !validPeriod(req.params.period, res)) return;
   try {
     if (!await findAgencyOr404(req.params.id, res)) return;
+    await ensureMonthlyRecalendarization(req.params.period);
     const record = await AgencyMonthlyInspection.findOne({
       agencyId: req.params.id,
       period: req.params.period,
@@ -84,13 +93,14 @@ async function getMonthlyInspection(req, res, next) {
 async function getMonthlyInspectionOverview(req, res, next) {
   if (!validPeriod(req.params.period, res)) return;
   try {
+    await ensureMonthlyRecalendarization(req.params.period);
     const agencies = await Agency.find({
       ...(req.user?.rol === 'consultor' ? getAgencyConsultantFilter(req.user._id) : {}),
     }).select('_id nombre').lean();
     const agencyIds = agencies.map((agency) => agency._id);
     const records = agencyIds.length
       ? await AgencyMonthlyInspection.find({ agencyId: { $in: agencyIds }, period: req.params.period })
-        .select('agencyId authorizationStatus visitStatus calendarEventId')
+        .select('agencyId authorizationStatus visitStatus scheduleStatus scheduleReason calendarEventId')
         .lean()
       : [];
     const recordByAgencyId = new Map(records.map((record) => [String(record.agencyId), record]));
@@ -114,6 +124,8 @@ async function getMonthlyInspectionOverview(req, res, next) {
           agencyName: agency.nombre,
           authorizationStatus: record?.authorizationStatus || 'pending',
           visitStatus: record?.visitStatus || 'pending',
+          scheduleStatus: record?.scheduleStatus || (record?.calendarEventId ? 'scheduled' : 'pending'),
+          scheduleReason: record?.scheduleReason || '',
           calendarEventId,
           calendarEventExists: Boolean(calendarEventId
             && linkedEventKeys.has(`${agency._id}:${record.calendarEventId}`)),
@@ -161,7 +173,7 @@ async function updateMonthlyAuthorization(req, res, next) {
       { agencyId: req.params.id, period: req.params.period },
       {
         $set: { authorizationStatus, ...attendanceFields },
-        $setOnInsert: { visitStatus: 'scheduled' },
+        $setOnInsert: { visitStatus: 'pending' },
       },
       { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
     );
@@ -268,18 +280,9 @@ async function scheduleMonthlyVisit(req, res, next) {
     // ── Obtener o crear el registro mensual ──────────────────────────────
     const record = await AgencyMonthlyInspection.findOneAndUpdate(
       { agencyId: agency._id, period: req.params.period },
-      { $setOnInsert: { authorizationStatus: 'pending', visitStatus: 'scheduled' } },
+      { $setOnInsert: { authorizationStatus: 'pending', visitStatus: 'pending' } },
       { new: true, upsert: true, setDefaultsOnInsert: true },
     );
-
-    // ── Verificar autorización ───────────────────────────────────────────
-    if (record.authorizationStatus !== 'authorized') {
-      return res.status(409).json({
-        success: false,
-        message: 'No se puede programar la visita mensual hasta que la autorización del período esté autorizada.',
-        code: 'MONTHLY_AUTHORIZATION_REQUIRED',
-      });
-    }
 
     // ── Bloquear reprogramación si la visita ya fue completada ───────────
     if (record.visitStatus === 'completed') {
@@ -287,6 +290,31 @@ async function scheduleMonthlyVisit(req, res, next) {
         success: false,
         message: 'La visita de este período ya fue marcada como realizada y no puede reprogramarse.',
         code: 'MONTHLY_VISIT_ALREADY_COMPLETED',
+      });
+    }
+
+    const availability = await validateCalendarSlots([{
+      startAt: value.startAt,
+      endAt: value.endAt,
+    }], {
+      consultantId: agency.consultantId,
+      excludeEventId: record.calendarEventId,
+      period: req.params.period,
+    });
+    if (availability.error) {
+      return validationFailure(res, { startAt: availability.error });
+    }
+    if (availability.conflict) {
+      const suggestedStartAt = availability.conflict.suggestedStartAt;
+      const suggestionMessage = suggestedStartAt
+        ? ` La fecha más próxima disponible es ${formatSuggestedStartAt(suggestedStartAt)}.`
+        : ' No queda otro horario disponible dentro del mes seleccionado.';
+      return res.status(409).json({
+        success: false,
+        message: `El consultor no está disponible en ese horario. Deja un margen mínimo de 15 minutos entre visitas.${suggestionMessage}`,
+        code: 'MONTHLY_VISIT_CONFLICT',
+        suggestedStartAt: suggestedStartAt?.toISOString() || null,
+        suggestedEndAt: availability.conflict.suggestedEndAt?.toISOString() || null,
       });
     }
 
@@ -300,7 +328,7 @@ async function scheduleMonthlyVisit(req, res, next) {
       agencyId: agency._id,
       consultantId: agency.consultantId,
       notes: req.body.notes?.trim() || '',
-      authorized: true,
+      authorized: record.authorizationStatus === 'authorized',
       reminders: req.body.reminders || { enabled: false, minutesBefore: [] },
       updatedBy: req.user._id,
     };
@@ -323,6 +351,8 @@ async function scheduleMonthlyVisit(req, res, next) {
             $set: {
               calendarEventId: null,
               visitStatus: 'scheduled',
+              scheduleStatus: 'pending',
+              scheduleReason: '',
               attendanceStatus: null,
               attendanceConfirmedBy: null,
               attendanceConfirmedAt: null,
@@ -344,6 +374,8 @@ async function scheduleMonthlyVisit(req, res, next) {
           $set: {
             calendarEventId: newEventId,
             visitStatus: 'scheduled',
+            scheduleStatus: 'scheduled',
+            scheduleReason: '',
             attendanceStatus: agency.auxiliaryConsultantId ? 'pending' : null,
             attendanceConfirmedBy: null,
             attendanceConfirmedAt: null,
@@ -375,6 +407,8 @@ async function scheduleMonthlyVisit(req, res, next) {
       {
         $set: {
           visitStatus: 'scheduled',
+          scheduleStatus: 'scheduled',
+          scheduleReason: '',
           calendarEventId: event._id,
           attendanceStatus: agency.auxiliaryConsultantId ? 'pending' : null,
           attendanceConfirmedBy: null,
@@ -387,20 +421,22 @@ async function scheduleMonthlyVisit(req, res, next) {
       timeStyle: 'short',
       timeZone: 'America/Mexico_City',
     });
-    await notifyAgencyConsultants(agency, {
-      title: isRescheduling ? 'Cambio de visita' : 'Visita programada',
-      message: isRescheduling
-        ? `La visita a ${agency.nombre} cambió. Nueva fecha: ${visitDate}.`
-        : `Tu visita a ${agency.nombre} está programada para el ${visitDate}.`,
-      auxiliaryTitle: isRescheduling
-        ? 'Cambio de visita · Confirmación pendiente'
-        : 'Visita programada · Confirmación pendiente',
-      auxiliaryMessage: `La visita a ${agency.nombre} está programada para el ${visitDate}. Confirma en Inspecciones si asistirás tú o el consultor principal.`,
-      notificationType: isRescheduling ? 'visit_changed' : 'visit_scheduled',
-      actionUrl: `/agencias/${agency._id}?tab=inspections`,
-      agencyId: agency._id,
-      idempotencyKey: `monthly:${agency._id}:${req.params.period}:${isRescheduling ? 'rescheduled' : 'scheduled'}:${event.startAt.getTime()}`,
-    });
+    if (record.authorizationStatus === 'authorized') {
+      await notifyAgencyConsultants(agency, {
+        title: isRescheduling ? 'Cambio de visita' : 'Visita programada',
+        message: isRescheduling
+          ? `La visita a ${agency.nombre} cambió. Nueva fecha: ${visitDate}.`
+          : `Tu visita a ${agency.nombre} está programada para el ${visitDate}.`,
+        auxiliaryTitle: isRescheduling
+          ? 'Cambio de visita · Confirmación pendiente'
+          : 'Visita programada · Confirmación pendiente',
+        auxiliaryMessage: `La visita a ${agency.nombre} está programada para el ${visitDate}. Confirma en Inspecciones si asistirás tú o el consultor principal.`,
+        notificationType: isRescheduling ? 'visit_changed' : 'visit_scheduled',
+        actionUrl: `/agencias/${agency._id}?tab=inspections`,
+        agencyId: agency._id,
+        idempotencyKey: `monthly:${agency._id}:${req.params.period}:${isRescheduling ? 'rescheduled' : 'scheduled'}:${event.startAt.getTime()}`,
+      });
+    }
 
     await recordAgencyHistory({
       agencyId: agency._id,

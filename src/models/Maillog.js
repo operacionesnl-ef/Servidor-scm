@@ -8,7 +8,8 @@ const recipientResultSchema = new mongoose.Schema(
     correo:     { type: String, required: true, trim: true },
     cc:         { type: [String], default: [] },
     cco:        { type: [String], default: [] },
-    status:     { type: String, enum: ['sent', 'failed'], required: true },
+    status:     { type: String, enum: ['sent', 'failed', 'unknown', 'cancelled'], required: true },
+    retryable:  { type: Boolean, default: false },
     gmailMessageId: { type: String, trim: true }, // ID devuelto por Gmail API
     error:      { type: String, trim: true },      // mensaje de error si status === 'failed'
     /* Archivos individuales que se adjuntaron a esta agencia */
@@ -71,8 +72,13 @@ const mailLogSchema = new mongoose.Schema(
     /* ── Estado general del lote ── */
     batchStatus: {
       type: String,
-      enum: ['completed', 'completed-with-errors', 'failed'],
+      enum: ['processing', 'interrupted', 'completed', 'completed-with-errors', 'failed'],
       default: 'completed',
+    },
+    mailJobStatus: {
+      type: String,
+      enum: ['queued', 'processing', 'completed', 'failed'],
+      default: null,
     },
   },
   { timestamps: true }
@@ -83,7 +89,11 @@ mailLogSchema.pre('save', function (next) {
   this.totalEnviados = this.recipients.filter((r) => r.status === 'sent').length;
   this.totalFallidos = this.recipients.filter((r) => r.status === 'failed').length;
 
-  if (this.totalEnviados === 0) {
+  if (this.mailJobStatus === 'queued' || this.mailJobStatus === 'processing') {
+    this.batchStatus = 'processing';
+  } else if (this.recipients.some((r) => r.status === 'unknown' || r.status === 'cancelled')) {
+    this.batchStatus = 'interrupted';
+  } else if (this.totalEnviados === 0) {
     this.batchStatus = 'failed';
   } else if (this.totalFallidos > 0) {
     this.batchStatus = 'completed-with-errors';

@@ -7,7 +7,68 @@ const {
   assertGmailRawMessageBytes,
   buildAttachments,
   buildRawMessageWithinLimit,
+  classifySendFailure,
+  getResumableRecipientIndexes,
+  readDriveFile,
 } = require('../src/services/mailJobWorker');
+
+test('does not download an attachment larger than the remaining per-message memory budget', async () => {
+  const calls = [];
+  const drive = {
+    files: {
+      async get({ alt }) {
+        calls.push(alt || 'metadata');
+        if (alt === 'media') assert.fail('attachment exceeds the remaining budget');
+        return { data: { name: 'large.pdf', mimeType: 'application/pdf', size: '10' } };
+      },
+    },
+  };
+
+  const attachment = await readDriveFile(drive, { driveId: 'drive-file' }, 8);
+
+  assert.equal(attachment.content, null);
+  assert.deepEqual(calls, ['metadata']);
+});
+
+test('resume candidates exclude sent, uncertain, and non-retryable failed recipients', () => {
+  const job = {
+    recipients: Array.from({ length: 7 }, () => ({})),
+    results: [
+      { status: 'sent' },
+      { status: 'unknown' },
+      { status: 'cancelled' },
+      { status: 'failed', retryable: false },
+      { status: 'failed', retryable: true },
+      { status: 'pending' },
+      { status: 'cancelled' },
+    ],
+  };
+
+  assert.deepEqual(getResumableRecipientIndexes(job), [2, 4, 5, 6]);
+});
+
+test('only retries a Gmail request when Gmail explicitly rejected it', () => {
+  assert.deepEqual(classifySendFailure(new Error('Drive unavailable'), false), {
+    status: 'failed',
+    retryable: true,
+  });
+  assert.deepEqual(classifySendFailure({ response: { status: 429 } }, true), {
+    status: 'failed',
+    retryable: true,
+  });
+  assert.deepEqual(classifySendFailure({ code: 401 }, true), {
+    status: 'failed',
+    retryable: true,
+  });
+  assert.deepEqual(classifySendFailure({ response: { status: 500 } }, true), {
+    status: 'unknown',
+    retryable: false,
+  });
+  assert.deepEqual(classifySendFailure(new Error('Connection reset'), true), {
+    status: 'unknown',
+    retryable: false,
+  });
+});
 
 test('rejects encoded Gmail messages above the API size limit before sending', () => {
   assert.throws(
