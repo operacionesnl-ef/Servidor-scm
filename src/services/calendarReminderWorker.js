@@ -6,6 +6,7 @@ const pushNotificationService = require('./pushNotificationService');
 const { createConsultantNotification } = require('./consultantNotifications');
 const { getAgencyConsultants } = require('../utils/agencyConsultants');
 const { dispatchMonthlyInspectionReminders } = require('./agencyMonthlyInspectionReminders');
+const { dispatchMonthlyReportReminders } = require('./monthlyReportReminderWorker');
 const { logEvent } = require('../utils/consoleLogger');
 
 const CALENDAR_REMINDER_POLL_MS = 60 * 1000;
@@ -167,6 +168,7 @@ function runCalendarReminderWorker() {
   workerPromise = Promise.all([
     dispatchCalendarReminders(),
     dispatchMonthlyInspectionReminders(),
+    dispatchMonthlyReportReminders(),
   ])
     .catch((error) => {
       logEvent('calendar_reminder_worker_failed', { message: error.message });

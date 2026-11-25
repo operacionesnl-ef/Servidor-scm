@@ -3,9 +3,13 @@ const { google } = require('googleapis');
 const Agency = require('../models/Agency');
 const AgencyMonthlyFiles = require('../models/AgencyMonthlyFiles');
 const MailJob = require('../models/MailJob');
+const MailLog = require('../models/Maillog');
 const Template = require('../models/Template');
 const { encryptGoogleToken } = require('../utils/mailJobCrypto');
-const { kickMailJobWorker } = require('../services/mailJobWorker');
+const {
+  getResumableRecipientIndexes,
+  kickMailJobWorker,
+} = require('../services/mailJobWorker');
 const { logServerEvent } = require('../utils/serverLogger');
 const { mergeEmailLists } = require('../utils/emailList');
 const { getFilePeriod } = require('../utils/agencyFileRefreshUtils');
@@ -61,6 +65,7 @@ function serializeJob(job) {
     completed: job.completed,
     currentName: job.currentName,
     recipients: job.results,
+    canResume: job.status === 'failed' && getResumableRecipientIndexes(job).length > 0,
     error: job.error,
     logError: job.logError,
     createdAt: job.createdAt,
@@ -216,4 +221,138 @@ async function getMailJob(req, res, next) {
   }
 }
 
-module.exports = { createMailJob, getActiveMailJob, getMailJob, resolveAgencyAttachments };
+async function resumeMailJob(req, res, next) {
+  try {
+    if (!mongoose.isValidObjectId(req.params.jobId)) {
+      return res.status(404).json({ message: 'No se encontró el proceso.' });
+    }
+
+    const { googleAccessToken } = req.body || {};
+    if (typeof googleAccessToken !== 'string' || !googleAccessToken.trim()) {
+      return res.status(400).json({ message: 'Autoriza Gmail antes de continuar el envío.' });
+    }
+
+    const job = await MailJob.findOne({
+      _id: req.params.jobId,
+      owner: req.user._id,
+      status: 'failed',
+    });
+    if (!job) {
+      return res.status(404).json({ message: 'El proceso no existe o ya no se puede continuar.' });
+    }
+
+    const resumableIndexes = getResumableRecipientIndexes(job);
+    if (!resumableIndexes.length) {
+      return res.status(409).json({
+        message: 'No hay destinatarios seguros para reintentar. Revisa Elementos enviados para confirmar los correos con resultado incierto.',
+      });
+    }
+
+    const activeJob = await MailJob.exists({
+      owner: req.user._id,
+      status: { $in: ['queued', 'processing'] },
+    });
+    if (activeJob) {
+      return res.status(409).json({ message: 'Ya tienes un envío en proceso. Espera a que termine antes de continuar otro.' });
+    }
+
+    const oauthClient = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID);
+    oauthClient.setCredentials({ access_token: googleAccessToken });
+    let profile;
+    let scopes;
+    try {
+      const [profileResponse, tokenInfo] = await Promise.all([
+        google.oauth2({ version: 'v2', auth: oauthClient }).userinfo.get(),
+        oauthClient.getTokenInfo(googleAccessToken),
+      ]);
+      profile = profileResponse.data;
+      scopes = tokenInfo.scopes || [];
+    } catch {
+      return res.status(401).json({ message: 'No se pudo validar la autorización de Google. Autoriza Gmail e inténtalo de nuevo.' });
+    }
+
+    if (!profile.verified_email || profile.email?.toLowerCase() !== job.ownerEmail.toLowerCase()) {
+      return res.status(403).json({ message: 'La cuenta autorizada de Google debe coincidir con la cuenta propietaria del envío.' });
+    }
+    if (!scopes.includes(REQUIRED_GMAIL_SCOPE)) {
+      return res.status(403).json({ message: 'Falta el permiso de Gmail para continuar. Autoriza Gmail e inténtalo de nuevo.' });
+    }
+    const needsDrive = job.globalAttachments.length > 0 || resumableIndexes.some((index) => (
+      (job.recipients[index].attachments || []).length > 0
+    ));
+    if (needsDrive && !scopes.includes(REQUIRED_DRIVE_SCOPE)) {
+      return res.status(403).json({ message: 'Falta el permiso de Google Drive para preparar los adjuntos. Autoriza Drive e inténtalo de nuevo.' });
+    }
+
+    const results = job.results.map((result) => result.toObject?.() || result);
+    resumableIndexes.forEach((index) => {
+      results[index] = {
+        ...results[index],
+        status: 'pending',
+        retryable: false,
+        error: '',
+        gmailMessageId: '',
+        attachedFiles: [],
+      };
+    });
+    const completed = results.filter((result) => (
+      ['sent', 'failed', 'unknown'].includes(result.status)
+    )).length;
+    const queuedJob = await MailJob.findOneAndUpdate(
+      { _id: job._id, owner: req.user._id, status: 'failed' },
+      {
+        $set: {
+          status: 'queued',
+          results,
+          completed,
+          currentIndex: resumableIndexes[0],
+          currentName: '',
+          error: '',
+          logError: '',
+          expiresAt: null,
+          encryptedGoogleAccessToken: encryptGoogleToken(googleAccessToken),
+        },
+      },
+      { new: true, runValidators: true },
+    );
+    if (!queuedJob) {
+      return res.status(409).json({ message: 'El proceso ya está en curso o cambió de estado. Actualiza el historial.' });
+    }
+
+    let logError = '';
+    try {
+      const mailLog = await MailLog.findOne({ mailJobId: queuedJob._id });
+      if (mailLog) {
+        mailLog.mailJobStatus = 'queued';
+        await mailLog.save();
+      }
+    } catch (error) {
+      logError = `El envío se reanudó, pero el historial no se pudo actualizar: ${error.message}`;
+      logServerEvent('job_resume_log_update_failed', {
+        userId: req.user._id,
+        jobId: queuedJob._id,
+        message: error.message,
+      });
+    }
+
+    await logServerEvent('job_resumed', {
+      userId: req.user._id,
+      jobId: queuedJob._id,
+      status: queuedJob.status,
+      total: queuedJob.total,
+      resumedRecipients: resumableIndexes.length,
+    });
+    kickMailJobWorker();
+    return res.status(202).json({ ...serializeJob(queuedJob), logError });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+module.exports = {
+  createMailJob,
+  getActiveMailJob,
+  getMailJob,
+  resumeMailJob,
+  resolveAgencyAttachments,
+};

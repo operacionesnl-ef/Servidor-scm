@@ -104,6 +104,88 @@ test('developer can list reports sent by all users', async () => {
   }
 });
 
+test('history distinguishes uncertain and not-sent recipients and exposes safe resumable results', async () => {
+  const originalCount = MailLog.countDocuments;
+  const originalFind = MailLog.find;
+  const now = new Date();
+  const found = [{
+    _id: '507f1f77bcf86cd799439011',
+    mailJobId: '507f1f77bcf86cd799439014',
+    mailJobStatus: 'failed',
+    sentBy: 'ana@example.com',
+    templateKey: 'monthly',
+    templateName: 'Reporte mensual',
+    recipients: [
+      { agencyId: '507f1f77bcf86cd799439012', agencyName: 'Agencia Norte', correo: 'norte@example.com', status: 'sent' },
+      { agencyId: '507f1f77bcf86cd799439013', agencyName: 'Agencia Sur', correo: 'sur@example.com', status: 'unknown' },
+      { agencyId: '507f1f77bcf86cd799439015', agencyName: 'Agencia Centro', correo: 'centro@example.com', status: 'cancelled' },
+      { agencyId: '507f1f77bcf86cd799439016', agencyName: 'Agencia Este', correo: 'este@example.com', status: 'failed', retryable: true },
+    ],
+    batchStatus: 'interrupted',
+    createdAt: now,
+    updatedAt: now,
+  }];
+  MailLog.countDocuments = async () => 1;
+  MailLog.find = () => ({
+    sort() { return this; },
+    skip() { return this; },
+    limit() { return this; },
+    select: async () => found,
+  });
+
+  try {
+    const response = createResponse();
+    await getMailLogs({
+      user: { correo: 'ana@example.com' },
+      query: { page: '1', limit: '20' },
+    }, response);
+
+    assert.equal(response.body.data[0].batchStatus, 'interrupted');
+    assert.equal(response.body.data[0].canResume, true);
+    assert.equal(response.body.data[0].totalInciertos, 1);
+    assert.equal(response.body.data[0].totalCancelados, 1);
+    assert.equal(response.body.data[0].totalFallidos, 1);
+    assert.equal(response.body.data[0].recipients[1].status, 'unknown');
+
+    const adminResponse = createResponse();
+    await getMailLogs({
+      user: { correo: 'developer@example.com', rol: 'developer' },
+      query: { page: '1', limit: '20' },
+    }, adminResponse);
+    assert.equal(adminResponse.body.data[0].canResume, false);
+  } finally {
+    MailLog.countDocuments = originalCount;
+    MailLog.find = originalFind;
+  }
+});
+
+test('history supports selecting multiple batch states', async () => {
+  const originalCount = MailLog.countDocuments;
+  const originalFind = MailLog.find;
+  let countFilter;
+  MailLog.countDocuments = async (filter) => { countFilter = filter; return 0; };
+  MailLog.find = () => ({
+    sort() { return this; },
+    skip() { return this; },
+    limit() { return this; },
+    select: async () => [],
+  });
+
+  try {
+    const response = createResponse();
+    await getMailLogs({
+      user: { correo: 'ana@example.com' },
+      query: { page: '1', limit: '20', batchStatus: 'failed,interrupted' },
+    }, response);
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(countFilter.batchStatus, { $in: ['failed', 'interrupted'] });
+  } finally {
+    MailLog.countDocuments = originalCount;
+    MailLog.find = originalFind;
+  }
+});
+
 test('organizer can list reports sent by all users', async () => {
   const originalCount = MailLog.countDocuments;
   const originalFind = MailLog.find;

@@ -1,6 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const { publishNotificationChange } = require('../services/notificationEvents');
 
 const agencyMonthlyInspectionSchema = new mongoose.Schema({
   agencyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Agency', required: true },
@@ -49,5 +50,11 @@ const agencyMonthlyInspectionSchema = new mongoose.Schema({
 
 agencyMonthlyInspectionSchema.index({ agencyId: 1, period: 1 }, { unique: true });
 agencyMonthlyInspectionSchema.index({ period: 1, visitStatus: 1 });
+agencyMonthlyInspectionSchema.post('save', publishNotificationChange);
+agencyMonthlyInspectionSchema.post('findOneAndUpdate', publishNotificationChange);
+agencyMonthlyInspectionSchema.post('updateOne', publishNotificationChange);
+agencyMonthlyInspectionSchema.post('updateMany', publishNotificationChange);
+agencyMonthlyInspectionSchema.post('deleteOne', publishNotificationChange);
+agencyMonthlyInspectionSchema.post('findOneAndDelete', publishNotificationChange);
 
 module.exports = mongoose.model('AgencyMonthlyInspection', agencyMonthlyInspectionSchema);

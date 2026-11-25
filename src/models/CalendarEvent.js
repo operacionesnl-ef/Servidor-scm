@@ -1,6 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const { publishNotificationChange } = require('../services/notificationEvents');
 
 const reminderSchema = new mongoose.Schema({
   enabled: { type: Boolean, default: false },
@@ -69,5 +70,11 @@ calendarEventSchema.index(
     },
   },
 );
+calendarEventSchema.post('save', publishNotificationChange);
+calendarEventSchema.post('findOneAndUpdate', publishNotificationChange);
+calendarEventSchema.post('updateOne', publishNotificationChange);
+calendarEventSchema.post('updateMany', publishNotificationChange);
+calendarEventSchema.post('deleteOne', publishNotificationChange);
+calendarEventSchema.post('findOneAndDelete', publishNotificationChange);
 
 module.exports = mongoose.model('CalendarEvent', calendarEventSchema);

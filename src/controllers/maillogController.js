@@ -2,8 +2,9 @@ const MailLog = require('../models/Maillog');
 const mongoose = require('mongoose');
 const { logError } = require('../utils/consoleLogger');
 
-const MAIL_LOG_STATUSES = new Set(['completed', 'completed-with-errors', 'failed']);
+const MAIL_LOG_STATUSES = new Set(['processing', 'interrupted', 'completed', 'completed-with-errors', 'failed']);
 const MAX_HISTORY_LIMIT = 100;
+const MAIL_JOB_RESUME_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -22,15 +23,32 @@ function parseHistoryDate(value, field, endOfDay = false) {
   return date;
 }
 
-function serializeHistoryLog(log) {
+function serializeHistoryLog(log, user) {
   const recipients = log.recipients || [];
   const totalSent = recipients.filter((recipient) => recipient.status === 'sent').length;
   const totalFailed = recipients.filter((recipient) => recipient.status === 'failed').length;
-  const batchStatus = totalSent === 0
+  const batchStatus = log.batchStatus || (totalSent === 0
     ? 'failed'
-    : totalFailed ? 'completed-with-errors' : 'completed';
+    : totalFailed ? 'completed-with-errors' : 'completed');
+  const hasRetryableResults = recipients.some((recipient) => (
+    recipient.status === 'cancelled' ||
+    (recipient.status === 'failed' && recipient.retryable)
+  ));
+  const hasLegacyJobFailure = log.mailJobId
+    && !log.mailJobStatus
+    && recipients.some((recipient) => recipient.status === 'failed');
+  const canResume = Boolean(
+    log.mailJobId &&
+    String(log.sentBy || '').toLowerCase() === String(user?.correo || '').toLowerCase() &&
+    log.mailJobStatus !== 'queued' &&
+    log.mailJobStatus !== 'processing' &&
+    Date.now() - new Date(log.updatedAt || log.createdAt).getTime() < MAIL_JOB_RESUME_WINDOW_MS &&
+    (hasRetryableResults || hasLegacyJobFailure),
+  );
   return {
     id: String(log._id),
+    mailJobId: log.mailJobId ? String(log.mailJobId) : '',
+    canResume,
     sentBy: log.sentBy,
     templateKey: log.templateKey,
     templateName: log.templateName,
@@ -40,6 +58,8 @@ function serializeHistoryLog(log) {
     recipientCount: recipients.length,
     totalEnviados: totalSent,
     totalFallidos: totalFailed,
+    totalInciertos: recipients.filter((recipient) => recipient.status === 'unknown').length,
+    totalCancelados: recipients.filter((recipient) => recipient.status === 'cancelled').length,
     batchStatus,
     createdAt: log.createdAt,
     recipients: recipients.map((recipient) => ({
@@ -48,13 +68,14 @@ function serializeHistoryLog(log) {
       correo: recipient.correo,
       status: recipient.status,
       error: recipient.error || '',
+      retryable: Boolean(recipient.retryable),
     })),
   };
 }
 
-function serializeHistoryDetail(log) {
+function serializeHistoryDetail(log, user) {
   return {
-    ...serializeHistoryLog(log),
+    ...serializeHistoryLog(log, user),
     message: log.cuerpoResuelto || '',
     archivosGlobales: log.archivosGlobales || [],
     recipients: (log.recipients || []).map((recipient) => ({
@@ -64,6 +85,7 @@ function serializeHistoryDetail(log) {
       status: recipient.status,
       gmailMessageId: recipient.gmailMessageId || '',
       error: recipient.error || '',
+      retryable: Boolean(recipient.retryable),
       attachedFiles: recipient.attachedFiles || [],
     })),
   };
@@ -162,7 +184,13 @@ async function getMailLogs(req, res) {
     if (month !== undefined && (!/^\d{1,2}$/.test(String(month)) || Number(month) < 1 || Number(month) > 12)) {
       return res.status(400).json({ message: 'month debe ser un número entre 1 y 12.' });
     }
-    if (batchStatus && !MAIL_LOG_STATUSES.has(batchStatus)) {
+    const batchStatuses = batchStatus === undefined
+      ? []
+      : (Array.isArray(batchStatus) ? batchStatus : [batchStatus])
+        .flatMap((value) => String(value).split(','))
+        .map((value) => value.trim())
+        .filter(Boolean);
+    if (batchStatuses.some((status) => !MAIL_LOG_STATUSES.has(status))) {
       return res.status(400).json({ message: 'batchStatus no es un estado de envío válido.' });
     }
     if (search !== undefined && (typeof search !== 'string' || search.trim().length > 120)) {
@@ -180,7 +208,8 @@ async function getMailLogs(req, res) {
       ? {}
       : { sentBy: req.user.correo };
     if (templateKey)  filter.templateKey  = templateKey;
-    if (batchStatus)  filter.batchStatus  = batchStatus;
+    if (batchStatuses.length === 1) filter.batchStatus = batchStatuses[0];
+    else if (batchStatuses.length > 1) filter.batchStatus = { $in: [...new Set(batchStatuses)] };
     if (year)         filter.year         = Number(year);
     if (month)        filter.month        = Number(month);
     if (fromDate || toDate) {
@@ -208,14 +237,14 @@ async function getMailLogs(req, res) {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parsedLimit)
-      .select('sentBy templateKey templateName year month asuntoResuelto recipients.agencyId recipients.agencyName recipients.correo recipients.status recipients.error totalEnviados totalFallidos batchStatus createdAt');
+      .select('mailJobId mailJobStatus sentBy templateKey templateName year month asuntoResuelto recipients.agencyId recipients.agencyName recipients.correo recipients.status recipients.error recipients.retryable totalEnviados totalFallidos batchStatus createdAt updatedAt');
 
     return res.json({
       total,
       page: parsedPage,
       limit: parsedLimit,
       pages: Math.ceil(total / parsedLimit),
-      data: logs.map(serializeHistoryLog),
+      data: logs.map((log) => serializeHistoryLog(log, req.user)),
     });
   } catch (err) {
     logError('No se pudo listar el historial de envíos', err);
@@ -238,7 +267,7 @@ async function getMailLogById(req, res) {
     }
     const log = await MailLog.findOne(filter);
     if (!log) return res.status(404).json({ message: 'No se encontró el registro de envío.' });
-    return res.json(serializeHistoryDetail(log));
+    return res.json(serializeHistoryDetail(log, req.user));
   } catch (err) {
     logError('No se pudo obtener el registro de envío', err);
     return res.status(500).json({ message: 'No se pudo obtener el registro de envío.' });

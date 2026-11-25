@@ -1,6 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const { publishNotificationChange } = require('../services/notificationEvents');
 
 const monthlyFileSchema = new mongoose.Schema({
   nombre: { type: String, trim: true, maxlength: 255 },
@@ -54,5 +55,11 @@ const agencyMonthlyFilesSchema = new mongoose.Schema({
 
 agencyMonthlyFilesSchema.index({ agencyId: 1, period: 1 }, { unique: true });
 agencyMonthlyFilesSchema.index({ period: 1, agencyId: 1 });
+agencyMonthlyFilesSchema.post('save', publishNotificationChange);
+agencyMonthlyFilesSchema.post('findOneAndUpdate', publishNotificationChange);
+agencyMonthlyFilesSchema.post('updateOne', publishNotificationChange);
+agencyMonthlyFilesSchema.post('updateMany', publishNotificationChange);
+agencyMonthlyFilesSchema.post('deleteOne', publishNotificationChange);
+agencyMonthlyFilesSchema.post('findOneAndDelete', publishNotificationChange);
 
 module.exports = mongoose.model('AgencyMonthlyFiles', agencyMonthlyFilesSchema);
