@@ -46,6 +46,11 @@ const calendarEventSchema = new mongoose.Schema({
   reminders: { type: reminderSchema, default: () => ({}) },
   recurrenceSeriesId: { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
   recurrence: { type: recurrenceSchema, default: null },
+  recalendarizationPeriod: {
+    type: String,
+    match: /^\d{4}-(0[1-9]|1[0-2])$/,
+    default: null,
+  },
   reminderDispatchKeys: { type: [String], default: [], select: false },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -54,5 +59,15 @@ const calendarEventSchema = new mongoose.Schema({
 calendarEventSchema.index({ startAt: 1, endAt: 1, authorized: 1 });
 calendarEventSchema.index({ agencyId: 1, startAt: 1 });
 calendarEventSchema.index({ consultantId: 1, startAt: 1 });
+calendarEventSchema.index(
+  { recurrenceSeriesId: 1, recalendarizationPeriod: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      recurrenceSeriesId: { $type: 'objectId' },
+      recalendarizationPeriod: { $type: 'string' },
+    },
+  },
+);
 
 module.exports = mongoose.model('CalendarEvent', calendarEventSchema);

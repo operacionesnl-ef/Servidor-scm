@@ -24,6 +24,7 @@ const { appendAgencyNote } = require('../src/controllers/agencyNoteController');
 const { createAgency, validateAgencyInput } = require('../src/controllers/agencyController');
 const pushNotificationService = require('../src/services/pushNotificationService');
 const { dispatchMonthlyInspectionReminders } = require('../src/services/agencyMonthlyInspectionReminders');
+const { localDateTimeToUtc } = require('../src/services/monthlyRecalendarization');
 
 const originalAgencyHistoryCreate = AgencyHistory.create;
 beforeEach(() => { AgencyHistory.create = async (entry) => entry; });
@@ -98,7 +99,8 @@ test('monthly inspection schema constrains period, authorization and completion 
   };
   const valid = new AgencyMonthlyInspection(base);
   assert.equal(valid.authorizationStatus, 'pending');
-  assert.equal(valid.visitStatus, 'scheduled');
+  assert.equal(valid.visitStatus, 'pending');
+  assert.equal(valid.scheduleStatus, 'pending');
   assert.equal(valid.validateSync(), undefined);
 
   valid.period = '2026-13';
@@ -148,6 +150,7 @@ test('monthly visit uses agency consultant relation and creates exactly one cale
     inspectionFindOne: AgencyMonthlyInspection.findOne,
     inspectionFindById: AgencyMonthlyInspection.findById,
     calendarExists: CalendarEvent.exists,
+    calendarFind: CalendarEvent.find,
     calendarCreate: CalendarEvent.create,
     notificationFindOneAndUpdate: Notification.findOneAndUpdate,
     subscriptionExists: Subscription.exists,
@@ -197,6 +200,10 @@ test('monthly visit uses agency consultant relation and creates exactly one cale
     }),
   });
   CalendarEvent.exists = async () => false;
+  CalendarEvent.find = () => ({
+    select() { return this; },
+    lean: async () => [],
+  });
   CalendarEvent.create = async (input) => {
     createdEvent = input;
     return input;
@@ -222,7 +229,7 @@ test('monthly visit uses agency consultant relation and creates exactly one cale
     assert.equal(createdEvent.type, 'agency_visit');
     assert.equal(res.body.data.record.calendarEventId, String(createdEvent._id));
     assert.equal(createdNotification.audience, 'personal');
-    assert.deepEqual(createdNotification.recipientUserId, consultantId);
+    assert.equal(String(createdNotification.recipientUserId), String(consultantId));
     assert.equal(createdNotification.notificationType, 'visit_scheduled');
     assert.equal(createdNotification.actionUrl, `/agencias/${agencyId}?tab=inspections`);
     assert.equal(reserveCount, 2);
@@ -233,6 +240,7 @@ test('monthly visit uses agency consultant relation and creates exactly one cale
     AgencyMonthlyInspection.findOne = originals.inspectionFindOne;
     AgencyMonthlyInspection.findById = originals.inspectionFindById;
     CalendarEvent.exists = originals.calendarExists;
+    CalendarEvent.find = originals.calendarFind;
     CalendarEvent.create = originals.calendarCreate;
     Notification.findOneAndUpdate = originals.notificationFindOneAndUpdate;
     Subscription.exists = originals.subscriptionExists;
@@ -310,10 +318,26 @@ test('rescheduling a completed inspection with a stale event link reopens its mo
   }
 });
 
-test('monthly visit cannot be scheduled before the monthly authorization is approved', async () => {
-  const originalAgencyFindById = Agency.findById;
-  const originalInspectionFindOneAndUpdate = AgencyMonthlyInspection.findOneAndUpdate;
+test('monthly visit scheduling is independent from its authorization status', async () => {
+  const originals = {
+    agencyFindById: Agency.findById,
+    inspectionFindOneAndUpdate: AgencyMonthlyInspection.findOneAndUpdate,
+    inspectionUpdateOne: AgencyMonthlyInspection.updateOne,
+    inspectionFindById: AgencyMonthlyInspection.findById,
+    calendarFind: CalendarEvent.find,
+    calendarCreate: CalendarEvent.create,
+  };
   const agencyId = new mongoose.Types.ObjectId();
+  const record = {
+    _id: new mongoose.Types.ObjectId(),
+    agencyId,
+    period: '2026-10',
+    calendarEventId: null,
+    authorizationStatus: 'unauthorized',
+    visitStatus: 'pending',
+    scheduleStatus: 'pending',
+  };
+  let createdEvent;
   Agency.findById = () => ({
     select: async () => ({
       _id: agencyId,
@@ -321,11 +345,20 @@ test('monthly visit cannot be scheduled before the monthly authorization is appr
       consultantId: new mongoose.Types.ObjectId(),
     }),
   });
-  AgencyMonthlyInspection.findOneAndUpdate = async () => ({
-    _id: new mongoose.Types.ObjectId(),
-    calendarEventId: null,
-    authorizationStatus: 'unauthorized',
+  AgencyMonthlyInspection.findOneAndUpdate = async () => record;
+  AgencyMonthlyInspection.updateOne = async (_filter, update) => {
+    Object.assign(record, update.$set);
+    return { modifiedCount: 1 };
+  };
+  AgencyMonthlyInspection.findById = () => ({ lean: async () => record });
+  CalendarEvent.find = () => ({
+    select() { return this; },
+    lean: async () => [],
   });
+  CalendarEvent.create = async (input) => {
+    createdEvent = input;
+    return input;
+  };
 
   try {
     const res = response();
@@ -337,12 +370,125 @@ test('monthly visit cannot be scheduled before the monthly authorization is appr
         endAt: '2026-10-20T11:00:00-06:00',
       },
     }, res, (error) => { throw error; });
-    assert.equal(res.statusCode, 409);
-    assert.equal(res.body.code, 'MONTHLY_AUTHORIZATION_REQUIRED');
-    assert.match(res.body.message, /autorización.*autorizada/i);
+    assert.equal(res.statusCode, 201);
+    assert.equal(record.visitStatus, 'scheduled');
+    assert.equal(record.scheduleStatus, 'scheduled');
+    assert.equal(record.authorizationStatus, 'unauthorized');
+    assert.equal(createdEvent.authorized, false);
+    assert.equal(res.body.data.record.authorizationStatus, 'unauthorized');
   } finally {
-    Agency.findById = originalAgencyFindById;
-    AgencyMonthlyInspection.findOneAndUpdate = originalInspectionFindOneAndUpdate;
+    Agency.findById = originals.agencyFindById;
+    AgencyMonthlyInspection.findOneAndUpdate = originals.inspectionFindOneAndUpdate;
+    AgencyMonthlyInspection.updateOne = originals.inspectionUpdateOne;
+    AgencyMonthlyInspection.findById = originals.inspectionFindById;
+    CalendarEvent.find = originals.calendarFind;
+    CalendarEvent.create = originals.calendarCreate;
+  }
+});
+
+test('monthly visit rejects a Saturday appointment before 09:00 on the backend', async () => {
+  const originals = {
+    agencyFindById: Agency.findById,
+    inspectionFindOneAndUpdate: AgencyMonthlyInspection.findOneAndUpdate,
+    calendarCreate: CalendarEvent.create,
+  };
+  const agencyId = new mongoose.Types.ObjectId();
+  let createdEvent = false;
+  Agency.findById = () => ({
+    select: async () => ({
+      _id: agencyId,
+      nombre: 'Agencia Norte',
+      consultantId: new mongoose.Types.ObjectId(),
+    }),
+  });
+  AgencyMonthlyInspection.findOneAndUpdate = async () => ({
+    _id: new mongoose.Types.ObjectId(),
+    agencyId,
+    period: '2026-10',
+    authorizationStatus: 'pending',
+    visitStatus: 'pending',
+    calendarEventId: null,
+  });
+  CalendarEvent.create = async () => {
+    createdEvent = true;
+  };
+
+  try {
+    const res = response();
+    await scheduleMonthlyVisit({
+      params: { id: String(agencyId), period: '2026-10' },
+      user: { _id: new mongoose.Types.ObjectId() },
+      body: {
+        startAt: '2026-10-03T14:00:00-06:00',
+        endAt: '2026-10-03T15:00:00-06:00',
+      },
+    }, res, (error) => { throw error; });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body.errors.startAt, /sábados.*entre 09:00 y 12:00/i);
+    assert.equal(createdEvent, false);
+  } finally {
+    Agency.findById = originals.agencyFindById;
+    AgencyMonthlyInspection.findOneAndUpdate = originals.inspectionFindOneAndUpdate;
+    CalendarEvent.create = originals.calendarCreate;
+  }
+});
+
+test('monthly visit conflict returns the nearest available time', async () => {
+  const originals = {
+    agencyFindById: Agency.findById,
+    inspectionFindOneAndUpdate: AgencyMonthlyInspection.findOneAndUpdate,
+    calendarFind: CalendarEvent.find,
+  };
+  const agencyId = new mongoose.Types.ObjectId();
+  const consultantId = new mongoose.Types.ObjectId();
+  Agency.findById = () => ({
+    select: async () => ({
+      _id: agencyId,
+      nombre: 'Agencia Norte',
+      consultantId,
+    }),
+  });
+  AgencyMonthlyInspection.findOneAndUpdate = async () => ({
+    _id: new mongoose.Types.ObjectId(),
+    agencyId,
+    period: '2026-10',
+    authorizationStatus: 'pending',
+    visitStatus: 'pending',
+    calendarEventId: null,
+  });
+  CalendarEvent.find = () => ({
+    select() { return this; },
+    lean: async () => [{
+      _id: new mongoose.Types.ObjectId(),
+      title: 'Visita existente',
+      startAt: localDateTimeToUtc({ year: 2026, month: 10, day: 3, hour: 9 }),
+      endAt: localDateTimeToUtc({ year: 2026, month: 10, day: 3, hour: 10 }),
+    }],
+  });
+
+  try {
+    const res = response();
+    await scheduleMonthlyVisit({
+      params: { id: String(agencyId), period: '2026-10' },
+      user: { _id: new mongoose.Types.ObjectId() },
+      body: {
+        startAt: localDateTimeToUtc({
+          year: 2026, month: 10, day: 3, hour: 10, minute: 10,
+        }).toISOString(),
+        endAt: localDateTimeToUtc({
+          year: 2026, month: 10, day: 3, hour: 11, minute: 10,
+        }).toISOString(),
+      },
+    }, res, (error) => { throw error; });
+    assert.equal(res.statusCode, 409);
+    assert.match(res.body.message, /fecha más próxima disponible/i);
+    assert.match(res.body.message, /10:15/);
+    assert.ok(res.body.suggestedStartAt);
+    assert.ok(res.body.suggestedEndAt);
+  } finally {
+    Agency.findById = originals.agencyFindById;
+    AgencyMonthlyInspection.findOneAndUpdate = originals.inspectionFindOneAndUpdate;
+    CalendarEvent.find = originals.calendarFind;
   }
 });
 

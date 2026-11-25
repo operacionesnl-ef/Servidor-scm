@@ -12,6 +12,7 @@ const { startMailJobWorker } = require('./services/mailJobWorker');
 const { startAgencyRefreshJobWorker } = require('./services/agencyRefreshJobWorker');
 const { startActivityLogCleanupWorker } = require('./services/activityLogCleanupWorker');
 const { startCalendarReminderWorker } = require('./services/calendarReminderWorker');
+const { startMonthlyRecalendarizationWorker } = require('./services/monthlyRecalendarizationWorker');
 const { startForReportExcelWorker } = require('./formatosGeneradores/for/services/forReportExcelWorker');
 const { startRepExcelWorker } = require('./formatosGeneradores/rep/services/repExcelWorker');
 const { startRepAnxWorker } = require('./formatosGeneradores/rep/services/repAnxWorker');
@@ -192,6 +193,7 @@ connectDB().then(async () => {
   await startGenerationQueue();
   startActivityLogCleanupWorker();
   startCalendarReminderWorker();
+  startMonthlyRecalendarizationWorker();
 
   app.listen(PORT, async () => {
     await logServerEvent('server_started');

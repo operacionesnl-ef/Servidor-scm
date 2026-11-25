@@ -16,8 +16,19 @@ const agencyMonthlyInspectionSchema = new mongoose.Schema({
   },
   visitStatus: {
     type: String,
-    enum: ['scheduled', 'completed'],
-    default: 'scheduled',
+    enum: ['pending', 'scheduled', 'completed'],
+    default: 'pending',
+  },
+  scheduleStatus: {
+    type: String,
+    enum: ['pending', 'scheduled', 'unscheduled'],
+    default: 'pending',
+  },
+  scheduleReason: { type: String, trim: true, maxlength: 500, default: '' },
+  scheduleGenerationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'MonthlyScheduleGeneration',
+    default: null,
   },
   attendanceStatus: {
     type: String,

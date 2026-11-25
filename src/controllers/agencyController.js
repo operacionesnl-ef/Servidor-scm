@@ -24,6 +24,7 @@ const { logEvent } = require('../utils/consoleLogger');
 const { recordAgencyHistory } = require('../services/agencyHistory');
 const { notifyAgencyConsultants, notifyConsultant } = require('../services/consultantNotifications');
 const { getAgencyConsultantFilter, getAgencyConsultants } = require('../utils/agencyConsultants');
+const { ensureMonthlyRecalendarization } = require('../services/monthlyRecalendarization');
 
 const AGENCY_SEARCH_PERIOD_SETTING = 'agency-search-period';
 
@@ -511,6 +512,7 @@ const getAgencies = async (req, res, next) => {
     if (period && !/^(20\d{2})-(0[1-9]|1[0-2])$/.test(period)) {
       return validationFailure(res, { period: 'Must be a period in YYYY-MM format' });
     }
+    if (period) await ensureMonthlyRecalendarization(period);
     const filter = {
       ...(req.query.status ? { status: req.query.status } : {}),
       ...(req.user.rol === 'consultor' ? getAgencyConsultantFilter(req.user._id) : {}),

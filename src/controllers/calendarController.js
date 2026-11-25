@@ -8,6 +8,14 @@ const User = require('../models/User');
 const { success } = require('../utils/response');
 const { recordAgencyHistory } = require('../services/agencyHistory');
 const { notifyConsultant } = require('../services/consultantNotifications');
+const {
+  ensureMonthlyRecalendarization,
+  getPeriodForRange,
+} = require('../services/monthlyRecalendarization');
+const {
+  formatSuggestedStartAt,
+  validateCalendarSlots,
+} = require('../services/calendarAvailability');
 const { getAgencyConsultantFilter, getAgencyConsultants } = require('../utils/agencyConsultants');
 
 const EVENT_TYPES = new Set([
@@ -425,6 +433,7 @@ async function getCalendarEvents(req, res, next) {
   }
 
   try {
+    await ensureMonthlyRecalendarization(getPeriodForRange(rangeStart, rangeEnd));
     const events = await CalendarEvent.find(filter)
       .populate(POPULATES)
       .sort({ startAt: 1 })
@@ -497,6 +506,31 @@ async function validateRelations(value, res) {
   return true;
 }
 
+async function resolveCalendarConsultantId(event) {
+  if (event.consultantId) return event.consultantId;
+  if (event.type !== 'agency_visit' || !event.agencyId) return null;
+  const agency = await Agency.findById(event.agencyId).select('consultantId').lean();
+  return agency?.consultantId || null;
+}
+
+function availabilityFailure(res, availability, code, message) {
+  if (availability.error) return validationFailure(res, { startAt: availability.error });
+  if (availability.conflict) {
+    const suggestedStartAt = availability.conflict.suggestedStartAt;
+    const suggestionMessage = suggestedStartAt
+      ? ` La fecha más próxima disponible es ${formatSuggestedStartAt(suggestedStartAt)}.`
+      : ' No queda otro horario disponible dentro del mes seleccionado.';
+    return res.status(409).json({
+      success: false,
+      message: `${message}${suggestionMessage}`,
+      code,
+      suggestedStartAt: suggestedStartAt?.toISOString() || null,
+      suggestedEndAt: availability.conflict.suggestedEndAt?.toISOString() || null,
+    });
+  }
+  return null;
+}
+
 function validatePathId(id, res) {
   if (validId(id)) return true;
   res.status(400).json({ success: false, message: 'Invalid calendar event ID' });
@@ -508,6 +542,21 @@ async function createCalendarEvent(req, res, next) {
   if (Object.keys(errors).length) return validationFailure(res, errors);
   try {
     if (!await validateRelations(value, res)) return;
+    if (value.type === 'agency_visit') {
+      const consultantId = await resolveCalendarConsultantId(value);
+      const availability = await validateCalendarSlots([{
+        startAt: value.startAt,
+        endAt: value.endAt,
+      }], { consultantId });
+      const failed = availabilityFailure(
+        res,
+        availability,
+        'CALENDAR_CONSULTANT_UNAVAILABLE',
+        'El consultor no está disponible en ese horario. Deja un margen mínimo de 15 minutos entre visitas.',
+      );
+      if (failed) return failed;
+      if (consultantId) value.consultantId = consultantId;
+    }
     const event = await CalendarEvent.create({
       ...value,
       createdBy: req.user._id,
@@ -540,6 +589,24 @@ async function createCalendarEventSeries(req, res, next) {
   if (Object.keys(errors).length) return validationFailure(res, errors);
   try {
     if (!await validateRelations(value.event, res)) return;
+    let seriesConsultantId = value.event.consultantId;
+    if (value.event.type === 'agency_visit') {
+      seriesConsultantId = await resolveCalendarConsultantId(value.event);
+      const availability = await validateCalendarSlots(
+        value.occurrences.map(({ startAt, endAt }) => ({
+          startAt: parseDate(startAt),
+          endAt: parseDate(endAt),
+        })),
+        { consultantId: seriesConsultantId },
+      );
+      const failed = availabilityFailure(
+        res,
+        availability,
+        'CALENDAR_CONSULTANT_UNAVAILABLE',
+        'No se puede guardar la serie: cada visita debe dejar al consultor disponible y respetar 15 minutos entre actividades.',
+      );
+      if (failed) return failed;
+    }
     const recurrenceSeriesId = new mongoose.Types.ObjectId();
     const recurrence = {
       frequency: value.recurrence.frequency,
@@ -549,6 +616,7 @@ async function createCalendarEventSeries(req, res, next) {
     };
     const documents = value.occurrences.map((occurrence) => new CalendarEvent({
       ...value.event,
+      ...(value.event.type === 'agency_visit' ? { consultantId: seriesConsultantId } : {}),
       startAt: parseDate(occurrence.startAt),
       endAt: parseDate(occurrence.endAt),
       recurrenceSeriesId,
@@ -623,6 +691,42 @@ async function updateCalendarEvent(req, res, next) {
       return validationFailure(res, { endAt: 'Must be later than startAt' });
     }
     if (!await validateRelations(value, res)) return;
+    const nextType = value.type || event.type;
+    const requestedAgencyId = value.agencyId === undefined ? event.agencyId : value.agencyId;
+    let nextConsultantId = value.consultantId === undefined
+      ? event.consultantId
+      : value.consultantId;
+    const agencyChanged = value.agencyId !== undefined
+      && String(value.agencyId || '') !== String(event.agencyId || '');
+    if (nextType === 'agency_visit' && agencyChanged && value.consultantId === undefined) {
+      nextConsultantId = null;
+    }
+    if (nextType === 'agency_visit' && (value.startAt !== undefined
+      || value.endAt !== undefined
+      || value.consultantId !== undefined
+      || agencyChanged
+      || value.type !== undefined)) {
+      nextConsultantId = await resolveCalendarConsultantId({
+        type: nextType,
+        agencyId: requestedAgencyId,
+        consultantId: nextConsultantId,
+      });
+      const availability = await validateCalendarSlots([{
+        startAt: value.startAt || event.startAt,
+        endAt: value.endAt || event.endAt,
+      }], {
+        consultantId: nextConsultantId,
+        excludeEventId: event._id,
+      });
+      const failed = availabilityFailure(
+        res,
+        availability,
+        'CALENDAR_CONSULTANT_UNAVAILABLE',
+        'El consultor no está disponible en ese horario. Deja un margen mínimo de 15 minutos entre visitas.',
+      );
+      if (failed) return failed;
+      value.consultantId = nextConsultantId;
+    }
     const previousAgencyId = eventAgencyId(event);
     const previousTitle = event.title;
     Object.assign(event, value, { updatedBy: req.user._id });

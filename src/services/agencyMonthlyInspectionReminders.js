@@ -107,7 +107,7 @@ async function dispatchMonthlyInspectionReminders(now = new Date()) {
   for (const agency of agencies) {
     await AgencyMonthlyInspection.updateOne(
       { agencyId: agency._id, period },
-      { $setOnInsert: { authorizationStatus: 'pending', visitStatus: 'scheduled' } },
+      { $setOnInsert: { authorizationStatus: 'pending', visitStatus: 'pending' } },
       { upsert: true, setDefaultsOnInsert: true },
     );
     if (await sendPendingInspectionReminder(agency, period, now)) dispatched += 1;
